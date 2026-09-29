@@ -180,6 +180,35 @@ def test_tentative_tail_keeps_a_closed_pivot_confirmed():
     assert p.status is Status.CONFIRMED
 
 
+def test_pivot_indices_refer_to_the_input_list_not_the_confirmed_sublist():
+    """前导段（窗口左端被截断的未确认段）不得让中枢下标整体错位。
+
+    真实数据上 24 只里有 15 只带前导段；下标若按「确认线段子列表」计，
+    调用方取 `segments[end_idx + 1]` 拿到的就不是离开段，买卖点会全错。
+    """
+    lead = _seg(0, 15, 25, 1, Status.TENTATIVE)
+    body = [
+        _seg(i + 1, lo, hi, 1 if i % 2 == 0 else -1)
+        for i, (lo, hi) in enumerate([(10, 20), (12, 22), (11, 18), (0, 5)])
+    ]
+    segs = [lead] + body
+    p = find_pivots(segs, "day")[0]
+    assert (p.start_idx, p.end_idx) == (1, 3)
+    assert segs[p.end_idx] is body[2]
+    assert segs[p.end_idx + 1] is body[3]      # 下一段就是「离开段」
+    assert p.segment_count == 3
+    assert p.status is Status.CONFIRMED
+    assert p.confirmed_at == body[3].confirmed_at
+
+
+def test_leading_tentative_segment_does_not_shift_a_later_pivot():
+    lead = _seg(0, 15, 25, 1, Status.TENTATIVE)
+    body = _zigzag([(30, 40), (31, 42), (32, 41), (0, 1)])
+    p = find_pivots([lead] + body, "day")[0]
+    assert (p.start_idx, p.end_idx) == (1, 3)
+    assert p.gg == 42 and p.dd == 30
+
+
 # ---------------------------------------------------------------- 扩展
 def test_next_level_upgrades_periods():
     assert next_level("5") == "30"

@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Protocol, runtime_checkable
 
 from .types import Segment, SegmentBreak, Status, Stroke
@@ -272,7 +273,10 @@ def _make_segment(
         br = next((b for b in breaks if b.stroke_idx == e), None)
         ci = br.confirm_stroke_idx if br and br.confirm_stroke_idx is not None else e
         ci = max(e, min(ci, len(strokes) - 1))
-        confirmed_at = strokes[ci].end.ts
+        # 线段在「确认它被破坏的那一笔」锁定后才能算确认，而那一笔本身要到
+        # 下一笔成形才锁定 —— 所以取该笔的 confirmed_at；手工构造的笔没有
+        # 该字段时退回其终点。
+        confirmed_at = strokes[ci].confirmed_at or strokes[ci].end.ts
     return Segment(
         idx=idx,
         direction=seg[0].direction,
@@ -335,7 +339,29 @@ def build_segments(
             _make_segment(strokes, tail, len(strokes) - 1, len(segments),
                           name, Status.TENTATIVE, breaks)
         )
-    return segments
+    return _monotone_stamps(segments)
+
+
+def _monotone_stamps(segments: list[Segment]) -> list[Segment]:
+    """把确认时间沿序列「压实」成非递减。
+
+    线段 i 的起点就是线段 i-1 的破坏点，所以「线段 i-1 的破坏点被锁定」是
+    「线段 i 成立」的**前置条件**：真实数据上确实出现过前一段因缺口要到
+    2023-08 才确认、后一段却写着 2022-04 的情况（第 78 课第二种情况的确认
+    笔可以远在后面）。这种倒挂会让回测在 as_of 早于前置条件时就用上后一段，
+    属于未来函数，故取前缀最大值。
+    """
+    out: list[Segment] = []
+    last = ""
+    for seg in segments:
+        stamp = seg.confirmed_at
+        if seg.status is Status.CONFIRMED and stamp is not None:
+            if stamp < last:
+                stamp = last
+            last = stamp
+            seg = replace(seg, confirmed_at=stamp)
+        out.append(seg)
+    return out
 
 
 def validate_segments(segments: Sequence[Segment]) -> list[str]:

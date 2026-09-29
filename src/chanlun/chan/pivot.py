@@ -64,6 +64,9 @@ class Pivot:
     zd: float
     gg: float
     dd: float
+    # 下面两个下标一律相对于**传给 find_pivots 的那个线段列表**，不是
+    # 「确认线段子列表」。前导段（窗口左端被截断的未确认段）会让两种口径
+    # 相差 1，这个坑已经踩过一次，故在类型上写死一种。
     start_idx: int          # 参与本中枢的第一段（线段下标）
     end_idx: int            # 参与本中枢的最后一段
     start_ts: str
@@ -90,8 +93,20 @@ def find_pivots(segments: Sequence[Segment], level: str) -> list[Pivot]:
 
     只使用 `CONFIRMED` 线段；`TENTATIVE` 线段被完全忽略（既不参与构造，
     也不参与延伸），因此调用方可以安全地把「含未确认尾段」的线段序列传进来。
+
+    返回的 `start_idx`/`end_idx` 是**入参列表**的下标（未确认段被跳过后，
+    下标可能不连续，这是刻意的：调用方拿 `segments[p.end_idx + 1]` 就能直接
+    取到封闭该中枢的「离开段」）。
     """
-    confirmed = [s for s in segments if s.status is Status.CONFIRMED]
+    positions = [i for i, s in enumerate(segments)
+                 if s.status is Status.CONFIRMED]
+    confirmed = [segments[i] for i in positions]
+    # 离开段 = 下一个「确认」线段；它可能不在入参列表里紧邻的位置（中间隔着
+    # 未确认段），所以确认时间必须按 confirmed 列表取。
+    leave_of: list[Segment | None] = [
+        confirmed[k + 1] if k + 1 < len(confirmed) else None
+        for k in range(len(confirmed))
+    ]
     n = len(confirmed)
     pivots: list[Pivot] = []
 
@@ -110,7 +125,7 @@ def find_pivots(segments: Sequence[Segment], level: str) -> list[Pivot]:
             j += 1
 
         group = confirmed[i:j]
-        end_idx = j - 1
+        leave = leave_of[j - 1]
         pivots.append(
             Pivot(
                 idx=len(pivots),
@@ -118,23 +133,26 @@ def find_pivots(segments: Sequence[Segment], level: str) -> list[Pivot]:
                 zd=zd,
                 gg=max(s.high for s in group),
                 dd=min(s.low for s in group),
-                start_idx=i,
-                end_idx=end_idx,
+                start_idx=positions[i],
+                end_idx=positions[j - 1],
                 start_ts=group[0].start.start.ts,
                 end_ts=group[-1].end.end.ts,
                 level=level,
                 # 右端用尽可用线段 → 右侧还可能延伸，未定。
-                status=(
-                    Status.TENTATIVE
-                    if end_idx == n - 1
-                    else Status.CONFIRMED
+                status=Status.TENTATIVE if leave is None else Status.CONFIRMED,
+                # 中枢被「离开段」封闭，而离开段本身也要到被破坏时才锁定，
+                # 所以中枢的确认时间就是离开段的确认时间 —— 早于此都还在
+                # 延伸，属于未来函数。
+                confirmed_at=(
+                    None if leave is None
+                    else (leave.confirmed_at or leave.end.end.ts)
                 ),
                 src_start=group[0].src_start,
                 src_end=group[-1].src_end,
             )
         )
-        # 离开段（下标 j）是下一个中枢的候选起点；若它与紧随的两段构成不了
-        # 重叠，循环里的 i += 1 会继续右移，等价于「离开后回抽」的再寻找。
+        # 离开段（confirmed 下标 j）是下一个中枢的候选起点；若它与紧随的两段
+        # 构成不了重叠，循环里的 i += 1 会继续右移，等价于「离开后回抽」的再寻找。
         i = j
 
     return pivots
