@@ -106,6 +106,16 @@ class Segment:
     confirmed_at: str | None = None
     policy: str = "lesson_67_78"
 
+    # 线段两端在**原始 bar** 上的位置。原始 bar 索引跨快照稳定，是状态机
+    # 生成稳定 ID 的锚点（`idx`/`start_stroke_idx` 会随重算漂移，不能用）。
+    @property
+    def src_start(self) -> int:
+        return self.start.src_start
+
+    @property
+    def src_end(self) -> int:
+        return self.end.src_end
+
 
 def to_jsonable(obj: Any) -> Any:
     """把 dataclass / Enum 结构转成可 JSON 序列化的原生对象。"""
