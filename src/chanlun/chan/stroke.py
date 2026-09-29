@@ -51,7 +51,13 @@ def select_pivotal_fractals(
 def build_strokes(
     fractals: Sequence[Fractal], min_gap: int = MIN_GAP
 ) -> list[Stroke]:
-    """由分型序列构造笔。最后一笔为 TENTATIVE。"""
+    """由分型序列构造笔。最后一笔为 TENTATIVE。
+
+    `confirmed_at` 取**下一笔终点分型的时间**：第 i 笔的终点要等反向的那一笔
+    走出来（下一个分型成立）才被锁定，所以在第 i 笔自己的终点时刻还不知道
+    它已经结束。直接取 `self.end.ts` 是隐蔽的未来函数，会让回测用上当时
+    尚未发生的信息。最后一笔没有后继，故为 None。
+    """
     seq = select_pivotal_fractals(fractals, min_gap=min_gap)
 
     strokes: list[Stroke] = []
@@ -70,6 +76,7 @@ def build_strokes(
                 src_start=a.src_idx,
                 src_end=b.src_idx,
                 status=Status.TENTATIVE if is_last else Status.CONFIRMED,
+                confirmed_at=(None if is_last else seq[i + 2].ts),
             )
         )
     return strokes

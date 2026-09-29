@@ -69,14 +69,9 @@ class Stroke:
     src_start: int
     src_end: int
     status: Status = Status.CONFIRMED
-
-    @property
-    def confirmed_at(self) -> str | None:
-        """笔被确认的时间：由其后继反向分型所在原始 bar 的时间给出。
-
-        对最后一笔（TENTATIVE）返回 None。
-        """
-        return None if self.status is Status.TENTATIVE else self.end.ts
+    # 确认时间。**必须**由状态机/构造函数显式给出，不能由 end.ts 推导：
+    # 一笔要等反向的那一笔走出来才被锁定，取 end.ts 是隐蔽的未来函数。
+    confirmed_at: str | None = None
 
 
 @dataclass(frozen=True)

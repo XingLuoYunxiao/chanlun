@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from chanlun.chan.segment import build_segments, validate_segments
+from chanlun.chan.stroke import build_strokes
 from chanlun.chan.types import Fractal, FractalKind, Status, Stroke
 
 FIXTURE = Path(__file__).parent / "fixtures" / "real_strokes.json"
@@ -141,3 +142,37 @@ def test_leading_tentative_may_share_direction_with_first_confirmed():
 def test_real_fixture_bar_count_is_complete(code):
     """fixture 必须来自完整区间数据；半量数据会得出错误的划分基准。"""
     assert DATA[code]["bars"] >= 1200
+
+
+# ------------------------------------------------ 无未来函数（真实 ISO 时间戳）
+def _rebuilt_strokes(code: str) -> list[Stroke]:
+    """由 fixture 的分型端点序列重建笔，验证管线幂等且确认时间合法。"""
+    fracs = [_fractal(DATA[code]["strokes"][0]["start"])] + [
+        _fractal(s["end"]) for s in DATA[code]["strokes"]
+    ]
+    return build_strokes(fracs)
+
+
+@pytest.mark.parametrize("code", CODES)
+def test_real_stroke_rebuild_is_idempotent(code):
+    """对已是端点的分型序列再跑一次笔构造，结果必须完全一致。"""
+    rebuilt = _rebuilt_strokes(code)
+    assert len(rebuilt) == len(DATA[code]["strokes"])
+
+
+@pytest.mark.parametrize("code", CODES)
+def test_real_stroke_confirmed_at_is_never_look_ahead(code):
+    """确认时间不早于自身终点，且随时间单调不减。
+
+    这是「回测不得使用未来信息」的第一道闸门：真实数据是 ISO 时间戳，
+    字典序即时间序，故可直接比较。
+    """
+    rebuilt = _rebuilt_strokes(code)
+    seen = ""
+    for st in rebuilt:
+        assert st.end.ts >= st.start.ts
+        if st.confirmed_at is not None:
+            assert st.confirmed_at >= st.end.ts, f"笔{st.idx} 确认早于自身终点"
+            assert st.confirmed_at >= seen, f"笔{st.idx} 确认时间回退"
+            seen = st.confirmed_at
+    assert rebuilt[-1].confirmed_at is None

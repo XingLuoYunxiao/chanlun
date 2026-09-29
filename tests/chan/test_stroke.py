@@ -133,11 +133,18 @@ def test_idx_is_dense_and_ascending():
     assert [x.idx for x in build_strokes(fracs)] == [0, 1, 2]
 
 
-def test_confirmed_at_none_for_tentative_else_end_ts():
+def test_confirmed_at_waits_for_the_next_stroke():
+    """一笔要等反向的那一笔走出来才被锁定。
+
+    若取 `confirmed_at = self.end.ts`（旧实现），回测会在第 i 笔刚走完时
+    就认为它已确认，而实际上当时还无法排除它继续延伸 —— 这是隐蔽的未来函数。
+    时间先后的量纲比较放在真实数据测试里（合成 ts 是 "d6"/"d10"，字典序 != 时间序）。
+    """
     fracs = [top(2, 10), bottom(6, 5), top(10, 12)]
     s = build_strokes(fracs)
-    assert s[0].confirmed_at == "d6"
-    assert s[-1].confirmed_at is None
+    assert s[0].confirmed_at == s[1].end.ts   # 由下一笔的终点决定
+    assert s[0].confirmed_at != s[0].end.ts   # 不是自身终点时间
+    assert s[-1].confirmed_at is None         # 最后一笔仍是候选
 
 
 # ---------------- 确定性 ----------------
