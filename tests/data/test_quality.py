@@ -31,6 +31,7 @@ def _frame(start: str = "2024-01-02", n: int = 5, close: float = 10.0) -> pd.Dat
 
 # ---------------- 真实网络 ----------------
 
+@pytest.mark.live
 def test_latest_adjusted_equals_unadjusted():
     r = check_latest_equals_actual("sh.600000")
     assert r.ok, r.detail
@@ -38,6 +39,7 @@ def test_latest_adjusted_equals_unadjusted():
     assert r.max_rel_err < 0.005
 
 
+@pytest.mark.live
 def test_cross_source_within_tolerance():
     """真实网络：baostock 前复权 vs 外部源（东财，不可达时腾讯 qfq），误差 < 0.5%。
 
@@ -207,6 +209,7 @@ def test_run_all_samples_reproducibly(tmp_path, monkeypatch):
     assert set(first) <= {r["bs_code"] for r in pool}
 
 
+@pytest.mark.live
 def test_cross_source_long_old_window_exposes_vendor_drift():
     """刻画性测试：长窗口 / 远期窗口下，跨源比对测出的是厂商复权口径差异。
 

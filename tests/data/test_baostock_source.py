@@ -50,6 +50,7 @@ def test_period_to_frequency():
         period_to_frequency("7")
 
 
+@pytest.mark.live
 def test_fetch_day_has_expected_columns_and_order():
     df = fetch_bars("sh.600000", "day", "2024-01-01", "2024-03-01")
     assert list(df.columns) == COLUMNS
@@ -59,12 +60,14 @@ def test_fetch_day_has_expected_columns_and_order():
     assert " " not in df["ts"].iloc[0]
 
 
+@pytest.mark.live
 def test_fetch_day_reaches_ipo():
     df = fetch_bars("sh.600000", "day", "1990-01-01", "2026-09-29")
     assert len(df) > 6000
     assert df["ts"].iloc[0] <= "1999-11-11"
 
 
+@pytest.mark.live
 def test_fetch_30min_has_space_in_ts_and_sufficient_depth():
     df = fetch_bars("sh.600000", "30", "2020-01-01", "2020-02-29")
     assert len(df) >= 100  # 东财同期只有 256 根/16 天，此断言确保走 baostock
@@ -72,11 +75,13 @@ def test_fetch_30min_has_space_in_ts_and_sufficient_depth():
     assert df["ts"].iloc[0].endswith(":00") or df["ts"].iloc[0].endswith(":30")
 
 
+@pytest.mark.live
 def test_fetch_5min_depth():
     df = fetch_bars("sh.600000", "5", "2024-01-02", "2024-01-31")
     assert len(df) >= 200  # 约 48 根/天 × 约 20 天
 
 
+@pytest.mark.live
 def test_adjust_flag_changes_values_but_not_length():
     raw = fetch_bars("sh.600000", "day", "2024-01-01", "2024-06-30", adjust="3")
     adj = fetch_bars("sh.600000", "day", "2024-01-01", "2024-06-30", adjust="2")
@@ -85,6 +90,7 @@ def test_adjust_flag_changes_values_but_not_length():
     assert not raw["close"].equals(adj["close"])
 
 
+@pytest.mark.live
 def test_empty_range_returns_empty_frame_not_error():
     df = fetch_bars("sh.600000", "day", "1990-01-01", "1990-01-05")
     assert len(df) == 0

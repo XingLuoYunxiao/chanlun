@@ -22,3 +22,9 @@ dev = ["pytest"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 filterwarnings = ["ignore::DeprecationWarning"]
+# 默认不跑联网用例：它们依赖 baostock / 东财 / 腾讯，一轮要 8 分钟以上，
+# 而「跑得快」是能天天跑、能天天信的前提。要跑真实网络用 `pytest -m live`。
+addopts = "-m 'not live'"
+markers = [
+    "live: 需要真实网络（baostock / 东财 / 腾讯），默认跳过；显式 `pytest -m live` 运行",
+]

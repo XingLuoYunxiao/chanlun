@@ -21,6 +21,7 @@ def conn(tmp_path):
     c.close()
 
 
+@pytest.mark.live
 def test_universe_includes_main_boards(conn):
     secs = build_universe(enrich=False, conn=conn, refresh=True)
     codes = {s.code for s in secs}
@@ -32,6 +33,7 @@ def test_universe_includes_main_boards(conn):
     assert all(s.code == s.bs_code.split(".", 1)[1] for s in secs)
 
 
+@pytest.mark.live
 def test_universe_persisted_to_meta(conn):
     secs = build_universe(enrich=False, conn=conn, refresh=True)
     rows = meta.get_universe(conn)
@@ -40,6 +42,7 @@ def test_universe_persisted_to_meta(conn):
     assert {r["market"] for r in rows} <= {"sh", "sz", "bj"}
 
 
+@pytest.mark.live
 def test_universe_excludes_indices_and_funds(conn):
     secs = build_universe(enrich=False, conn=conn, refresh=True)
     bs_codes = {s.bs_code for s in secs}
@@ -48,15 +51,67 @@ def test_universe_excludes_indices_and_funds(conn):
     assert "sh.510300" not in bs_codes  # 沪深300ETF（基金）
 
 
-def test_universe_cache_avoids_network(conn, monkeypatch):
-    build_universe(enrich=False, conn=conn, refresh=True)
+def _fake_rows(n: int) -> list[list[str]]:
+    """造出 n 条能通过 `is_a_stock` 的假行（sh.6xxxxx / sz.00xxxx 交替）。"""
+    out: list[list[str]] = []
+    for i in range(n):
+        if i % 2 == 0:
+            out.append([f"sh.60{i // 2:04d}", "1", "样本"])
+        else:
+            out.append([f"sz.00{i // 2:04d}", "1", "样本"])
+    return out
 
-    def _boom(day):  # pragma: no cover - 命中缓存时不应被调用
-        raise AssertionError("refresh=False 且有缓存时不应再查 baostock")
+
+def test_universe_cache_avoids_network(conn, monkeypatch):
+    """缓存充足时 `refresh=False` 一个字节都不联网。
+
+    这条用例原本先做一次**真实** `refresh=True`（2015 年至今每年末各一次全市场
+    快照，实测 88 秒）来铺缓存，等于拿网络用例去测纯缓存逻辑：又慢，断网时还会
+    假红。改成假数据源后验证的还是同一件事——第一次查过、第二次不再查。
+    """
+    calls: list[dt.date] = []
+
+    def fake_all_stock(day: dt.date) -> list[list[str]]:
+        calls.append(day)
+        return _fake_rows(universe.MIN_CACHE_ROWS + 200)
+
+    monkeypatch.setattr(universe, "_query_all_stock", fake_all_stock)
+    first = build_universe(enrich=False, conn=conn, refresh=True)
+    # refresh=True 会按 2015 年至今每年末各取一次快照（取并集才能捞回退市股），
+    # 所以这里只断言「查过」，缓存不变性由第二次调用来证明。
+    n = len(calls)
+    assert n > 0, "refresh=True 应当查过 baostock"
+    assert len(first) == universe.MIN_CACHE_ROWS + 200
+
+    def _boom(day: dt.date) -> list[list[str]]:
+        raise AssertionError("refresh=False 且缓存充足时不应再查 baostock")
 
     monkeypatch.setattr(universe, "_query_all_stock", _boom)
     secs = build_universe(enrich=False, conn=conn)
-    assert len(secs) > 5000
+    assert {s.bs_code for s in secs} == {s.bs_code for s in first}
+    assert len(calls) == n, "第二次调用不应该再访问网络"
+
+
+def test_universe_thin_cache_still_refreshes_from_network(conn, monkeypatch):
+    """缓存行数不足 `MIN_CACHE_ROWS` 时必须回退联网。
+
+    残缺的品种表比没有更危险：选股会静默地只在几百只票里选。所以「缓存命中」
+    的判据是行数下限，而不是「表非空」——这条用例把该回退路径钉住。
+    """
+    calls: list[dt.date] = []
+
+    def fake_all_stock(day: dt.date) -> list[list[str]]:
+        calls.append(day)
+        return [["sh.600000", "1", "浦发银行"]]
+
+    monkeypatch.setattr(universe, "_query_all_stock", fake_all_stock)
+    build_universe(enrich=False, conn=conn, refresh=True)
+    assert len(meta.get_universe(conn)) < universe.MIN_CACHE_ROWS
+    n = len(calls)
+
+    secs = build_universe(enrich=False, conn=conn)  # refresh=False
+    assert len(calls) > n, "缓存不足下限时应当回退到联网刷新"
+    assert {s.bs_code for s in secs} == {"sh.600000"}
 
 
 def test_universe_keeps_delisted_and_filters_by_type(conn, monkeypatch):
