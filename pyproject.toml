@@ -1,0 +1,24 @@
+[project]
+name = "chanlun"
+version = "0.1.0"
+description = "自主可控的缠论股票分析系统：baostock 数据层 + 纯函数增量结构引擎 + point-in-time 回测 + 扫描 + Web 看盘"
+requires-python = ">=3.11"
+dependencies = [
+    "baostock",
+    "pandas",
+    "pyarrow",
+    "duckdb",
+    "fastapi",
+    "uvicorn[standard]",
+    "requests",
+    "pytdx",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = ["ignore::DeprecationWarning"]
