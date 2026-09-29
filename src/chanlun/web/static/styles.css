@@ -1,0 +1,375 @@
+/* 缠论盘后结构复盘台
+ *
+ * 配色不是"深色主题"套模板，而是把这门理论自己的两种状态（确认 / 未确认）
+ * 和 A 股红涨绿跌的读数习惯落到同一套墨色上：
+ *   墨底 + 宣纸白正文 —— 盘后长时间看数字不刺眼；
+ *   朱砂（涨/买）· 青竹（跌/卖）—— 沿用国内行情惯例，红涨绿跌，不做西式反转；
+ *   靛青（中枢）—— 中枢按定义是重叠/盘整，既不是涨也不是跌，给它一个第三色，
+ *                    这样图上"区间"和"方向"不会互相抢注意力；
+ *   淡墨（未确认）—— 虚线 + 半透明，和"已确认"在任何色觉条件下都能分开（明度差也够）。
+ */
+
+:root {
+  --ink:        #0f1216;
+  --panel:      #161b21;
+  --panel-2:    #1c232b;
+  --line:       #2a323c;
+  --line-soft:  #222932;
+  --rice:       #e8e2d5;
+  --rice-dim:   #9a9285;
+  --mohui:      #6b6459;
+  --cinnabar:   #e0524a;
+  --bamboo:     #4a9e7f;
+  --indigo:     #7c9cc4;
+  --amber:      #d9a24a;
+
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --cjk: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+
+  --r: 3px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--ink);
+  color: var(--rice);
+  font-family: var(--cjk);
+  font-size: 14px;
+  font-weight: 300;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  display: grid;
+  grid-template-rows: auto auto minmax(360px, 1fr) auto;
+  min-height: 100vh;
+}
+
+button, input { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--indigo); outline-offset: 2px; }
+
+/* ---------------- 顶栏 ---------------- */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 12px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand { display: flex; align-items: baseline; gap: 10px; }
+.brand-main {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+}
+.brand-sub {
+  font-size: 11px;
+  color: var(--rice-dim);
+  letter-spacing: 0.3em;
+}
+
+.query { display: flex; align-items: flex-end; gap: 14px; flex: 1; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field-label {
+  font-size: 10px;
+  color: var(--mohui);
+  letter-spacing: 0.24em;
+}
+.field input {
+  width: 132px;
+  padding: 7px 10px;
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  font-family: var(--mono);
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+}
+.field-narrow input { width: 78px; font-size: 13px; }
+.field input::placeholder { color: var(--mohui); }
+
+.periods { display: flex; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.period {
+  padding: 8px 14px;
+  background: var(--ink);
+  border: 0;
+  border-right: 1px solid var(--line);
+  color: var(--rice-dim);
+  cursor: pointer;
+  letter-spacing: 0.1em;
+}
+.period:last-child { border-right: 0; }
+.period.is-on { background: var(--panel-2); color: var(--rice); box-shadow: inset 0 -2px 0 var(--indigo); }
+.period:hover { color: var(--rice); }
+
+.go {
+  padding: 8px 20px;
+  background: var(--panel-2);
+  border: 1px solid var(--indigo);
+  border-radius: var(--r);
+  cursor: pointer;
+  letter-spacing: 0.16em;
+}
+.go:hover { background: #232c37; }
+
+.stamp {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--rice-dim);
+  text-align: right;
+  white-space: pre-line;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------- 免责声明 ---------------- */
+.disclaimer {
+  margin: 0;
+  padding: 8px 20px;
+  background: #14181d;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 12px;
+  color: var(--rice-dim);
+  letter-spacing: 0.02em;
+}
+.disclaimer strong { color: var(--amber); font-weight: 500; }
+.disclaimer em { color: var(--rice); font-style: normal; border-bottom: 1px dashed var(--mohui); }
+
+/* ---------------- 工作区 ---------------- */
+.work {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) 336px;
+  min-height: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+/* 竖排图层开关：缠论是中文的学问，图层名当成书脊上的索引签，
+   竖排让左边这条 46px 的窄边只承担"开关"一件事，不与图表抢横向空间。 */
+.rail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 0;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+}
+.rail-tab {
+  flex: 0 0 auto;
+  padding: 12px 0;
+  background: transparent;
+  border: 0;
+  border-left: 2px solid transparent;
+  color: var(--mohui);
+  cursor: pointer;
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  letter-spacing: 0.18em;
+  font-size: 12px;
+}
+.rail-tab.is-on { color: var(--rice); border-left-color: var(--indigo); background: var(--panel-2); }
+.rail-tab:hover { color: var(--rice); }
+
+.stage { position: relative; min-width: 0; min-height: 0; display: flex; }
+.chart { flex: 1; min-height: 420px; }
+
+.notice {
+  position: absolute;
+  inset: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 28px 32px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--r);
+}
+.notice h3 { margin: 0; font-size: 15px; font-weight: 500; letter-spacing: 0.06em; }
+.notice p { margin: 0; color: var(--rice-dim); max-width: 62ch; line-height: 1.7; }
+.notice code {
+  display: inline-block;
+  padding: 6px 10px;
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--rice);
+  user-select: all;
+}
+
+/* ---------------- 结构清单 ---------------- */
+.ledger {
+  min-width: 0;
+  overflow-y: auto;
+  padding: 12px 14px 20px;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+}
+.ledger-empty, .watch-empty { color: var(--mohui); font-size: 12px; line-height: 1.8; }
+
+.ledger-block { margin-bottom: 18px; }
+.ledger-block > h3 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--rice-dim);
+  letter-spacing: 0.28em;
+}
+.ledger-block > h3 .n {
+  font-family: var(--mono);
+  color: var(--rice);
+  margin-left: 6px;
+  letter-spacing: 0;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 6px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: left;
+  cursor: pointer;
+}
+.row:hover { background: var(--panel-2); }
+.row-idx { font-family: var(--mono); font-size: 11px; color: var(--mohui); }
+.row-main { min-width: 0; }
+.row-title { display: flex; align-items: baseline; gap: 6px; }
+.row-title .dir { font-size: 12px; }
+.row-meta {
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--rice-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dir-up { color: var(--cinnabar); }
+.dir-down { color: var(--bamboo); }
+
+.chip {
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--rice-dim);
+  white-space: nowrap;
+}
+.chip.on { color: var(--rice); border-color: var(--mohui); }
+.chip.tentative { color: var(--amber); border-color: #4a3c22; border-style: dashed; }
+.chip.confirmed { color: var(--indigo); border-color: #2c3a4a; }
+.conf-time { font-family: var(--mono); font-size: 10px; color: var(--mohui); }
+
+/* ---------------- 自选池 ---------------- */
+.watchstrip { padding: 12px 20px 18px; background: var(--panel); }
+.watchstrip-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.watchstrip-head h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--rice-dim);
+  letter-spacing: 0.28em;
+}
+.watch-add { display: flex; gap: 8px; }
+.watch-add input {
+  width: 150px;
+  padding: 6px 9px;
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  font-family: var(--mono);
+}
+.watch-add button {
+  padding: 6px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  cursor: pointer;
+}
+.watch-add button:hover { border-color: var(--indigo); }
+
+.watch-cards {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.watch-card {
+  flex: 0 0 232px;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--mohui);
+  border-radius: var(--r);
+  cursor: pointer;
+  text-align: left;
+}
+.watch-card:hover { border-color: var(--indigo); }
+.watch-card.is-missing { border-left-color: var(--amber); cursor: default; }
+.watch-card.has-signal { border-left-color: var(--cinnabar); }
+.watch-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.watch-code { font-family: var(--mono); font-size: 14px; letter-spacing: 0.06em; }
+.watch-name { font-size: 12px; color: var(--rice-dim); }
+.watch-line {
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--rice-dim);
+  font-variant-numeric: tabular-nums;
+}
+.watch-rm {
+  background: transparent;
+  border: 0;
+  color: var(--mohui);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.watch-rm:hover { color: var(--cinnabar); }
+.watch-tag {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 1px 6px;
+  border: 1px solid #4a3c22;
+  border-radius: 999px;
+  font-size: 10px;
+  color: var(--amber);
+}
+
+/* ---------------- 窄屏 ---------------- */
+@media (max-width: 1100px) {
+  .work { grid-template-columns: 46px minmax(0, 1fr); }
+  .ledger { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); max-height: 320px; }
+  .watch-card { flex-basis: 200px; }
+}
+
+@media (max-width: 760px) {
+  .topbar { flex-wrap: wrap; gap: 14px; }
+  .query { flex-wrap: wrap; }
+  .stamp { width: 100%; text-align: left; }
+  .work { grid-template-columns: 1fr; }
+  .rail { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  .rail-tab { writing-mode: horizontal-tb; border-left: 0; border-bottom: 2px solid transparent; padding: 10px 14px; }
+  .rail-tab.is-on { border-left-color: transparent; border-bottom-color: var(--indigo); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

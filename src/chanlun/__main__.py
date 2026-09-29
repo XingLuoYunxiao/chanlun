@@ -3,12 +3,15 @@
 用法：
     python -m chanlun universe [--enrich]
     python -m chanlun sync --period day [--codes 600000,000001] [--full] [--workers 4]
+    python -m chanlun serve [--host 127.0.0.1] [--port 8888]
 
 约定：
 - 日志同时写入 `logs/chanlun.log` 与 stdout。
 - `sync` 单只失败不中断，错误写入 `meta.sync_state.error`；
   仅当**全部**失败时以非 0 退出码结束。
 - 增量为默认：从 `store.last_ts` 的下一个交易日起拉取；`--full` 从 1990-01-01 全量重拉。
+- `serve` 默认端口 8888（配置文件可改默认值）；端口被占用时**报错退出**，
+  不会自动换端口 —— 换了端口书签、自选池和外部脚本会一起失效。
 """
 
 from __future__ import annotations
@@ -44,6 +47,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_universe(args, cfg)
     if args.command == "sync":
         return _cmd_sync(args, cfg)
+    if args.command == "serve":
+        return _cmd_serve(args, cfg)
     _build_parser().print_help()
     return 2
 
@@ -81,6 +86,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--workers", type=int, default=4,
         help="预留的并发度；baostock 单会话 socket 协议下当前串行执行",
     )
+
+    p_serve = sub.add_parser("serve", help="启动盘后看盘页（FastAPI + ECharts）")
+    p_serve.add_argument("--host", default=None, help="监听地址，缺省取配置（127.0.0.1）")
+    p_serve.add_argument("--port", type=int, default=None, help="端口，缺省取配置（8888）")
     return parser
 
 
@@ -94,6 +103,18 @@ def _cmd_universe(args, cfg: Config) -> int:
     else:
         # enrich=False 时未查 query_stock_basic，不能谎报「退市 0 只」
         print(f"品种表: {len(secs)} 只（enrich=False 未补全退市标记，--enrich 可精确统计）")
+    return 0
+
+
+def _cmd_serve(args, cfg: Config) -> int:
+    # 延迟导入：只跑 `sync` 的机器不必为了 CLI 去 import fastapi/uvicorn/echarts 静态目录
+    from .web.app import PortInUseError, serve
+
+    try:
+        serve(cfg, host=args.host, port=args.port)
+    except PortInUseError as exc:
+        print(f"启动失败：{exc}", file=sys.stderr)
+        return 3
     return 0
 
 

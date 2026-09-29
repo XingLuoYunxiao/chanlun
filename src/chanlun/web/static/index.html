@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>缠论 · 盘后结构复盘台</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-main">缠论</span>
+    <span class="brand-sub">盘后结构复盘台</span>
+  </div>
+
+  <form class="query" id="query" autocomplete="off">
+    <label class="field">
+      <span class="field-label">代码</span>
+      <input id="code" name="code" type="text" inputmode="numeric" placeholder="600000" value="600000"
+             aria-label="股票代码">
+    </label>
+    <div class="periods" role="tablist" aria-label="级别">
+      <button type="button" class="period is-on" role="tab" aria-selected="true" data-period="day">日线</button>
+      <button type="button" class="period" role="tab" aria-selected="false" data-period="30">30分</button>
+      <button type="button" class="period" role="tab" aria-selected="false" data-period="5">5分</button>
+    </div>
+    <label class="field field-narrow">
+      <span class="field-label">根数</span>
+      <input id="limit" name="limit" type="number" min="60" max="20000" step="20" value="1200" aria-label="显示K线根数">
+    </label>
+    <button type="submit" class="go">看结构</button>
+  </form>
+
+  <div class="stamp" id="stamp" aria-live="polite">尚未加载</div>
+</header>
+
+<p class="disclaimer" role="note">
+  <strong>仅结构信号提示，不构成投资建议</strong>；结构为收盘后确认，非盘中实时。
+  图上虚线 / 半透明的笔画与中枢是<em>尚未确认</em>的：它可能被下一根K线改写。
+</p>
+
+<div class="work">
+  <nav class="rail" aria-label="图层开关">
+    <button type="button" class="rail-tab is-on" data-layer="strokes"  aria-pressed="true"><span>笔</span></button>
+    <button type="button" class="rail-tab is-on" data-layer="segments" aria-pressed="true"><span>线段</span></button>
+    <button type="button" class="rail-tab is-on" data-layer="pivots"   aria-pressed="true"><span>中枢</span></button>
+    <button type="button" class="rail-tab is-on" data-layer="signals"  aria-pressed="true"><span>买卖点</span></button>
+    <button type="button" class="rail-tab is-on" data-layer="margin"   aria-pressed="true" title="确认刻度：结构在哪一根K线上才可被看见"><span>确认刻度</span></button>
+  </nav>
+
+  <main class="stage">
+    <div id="chart" class="chart" role="img" aria-label="K线、成交量和 MACD，叠加笔、线段、中枢与买卖点"></div>
+    <div id="notice" class="notice" hidden></div>
+  </main>
+
+  <aside class="ledger" id="ledger">
+    <div class="ledger-empty">输入代码后，这里列出该级别的线段、中枢与买卖点，以及每个结构的确认时间。</div>
+  </aside>
+</div>
+
+<footer class="watchstrip">
+  <div class="watchstrip-head">
+    <h2>自选池结构跟踪</h2>
+    <div class="watch-add">
+      <input id="watch-code" type="text" placeholder="加自选：代码" aria-label="加自选的代码">
+      <button type="button" id="watch-add">加入</button>
+    </div>
+  </div>
+  <div class="watch-cards" id="watch-cards">
+    <div class="watch-empty">自选池是空的。把常看的票加进来，每次打开页面都能看到它们的线段方向、中枢区间和买卖点。</div>
+  </div>
+</footer>
+
+<script src="/static/vendor/echarts.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
