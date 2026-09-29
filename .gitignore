@@ -1,0 +1,7 @@
+# 数据缓存与运行产物（不入库）
+# 注意 /data/ 必须锚定到仓库子目录根：tests/data/ 是源码测试目录，必须入库。
+/data/
+/logs/
+.pytest_cache/
+__pycache__/
+*.egg-info/
