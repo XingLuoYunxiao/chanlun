@@ -77,6 +77,14 @@ CREATE TABLE IF NOT EXISTS watchlist (
     added_at TEXT,
     note     TEXT
 );
+
+CREATE TABLE IF NOT EXISTS symbol_alias (
+    old_code   TEXT PRIMARY KEY,
+    new_code   TEXT NOT NULL,
+    market     TEXT,
+    evidence   TEXT,
+    created_at TEXT
+);
 """
 
 
@@ -257,3 +265,29 @@ def remove_watch(conn: sqlite3.Connection, code: str) -> None:
 
 def get_watchlist(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return list(conn.execute("SELECT * FROM watchlist ORDER BY added_at"))
+
+
+# ---------------- 代码改号（北交所 43/83/87 → 920 段） ----------------
+def save_alias(
+    conn: sqlite3.Connection, old_code: str, new_code: str, market: str = "", evidence: str = ""
+) -> None:
+    conn.execute(
+        """INSERT INTO symbol_alias (old_code, new_code, market, evidence, created_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(old_code) DO UPDATE SET
+             new_code=excluded.new_code, market=excluded.market,
+             evidence=excluded.evidence, created_at=excluded.created_at""",
+        (old_code, new_code, market, evidence, now()),
+    )
+    conn.commit()
+
+
+def get_alias(conn: sqlite3.Connection, old_code: str) -> str | None:
+    row = conn.execute(
+        "SELECT new_code FROM symbol_alias WHERE old_code=?", (old_code,)
+    ).fetchone()
+    return row["new_code"] if row else None
+
+
+def all_aliases(conn: sqlite3.Connection) -> dict[str, str]:
+    return {r["old_code"]: r["new_code"] for r in conn.execute("SELECT * FROM symbol_alias")}

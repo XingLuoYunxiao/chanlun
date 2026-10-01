@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import struct
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 
+from . import meta, store
 from .types import normalize
 
 RECORD = 32
@@ -129,3 +131,183 @@ def extract_package(
             out.write_bytes(z.read(name))
             written += 1
     return written
+
+
+# ---------------- 整包导入 ----------------
+STOCK_RULES = {"sh": ("60", "68"), "sz": ("00", "30"), "bj": ("43", "83", "87", "89", "92")}
+INDEX_RULES = {"sh": ("00",), "sz": ("39",)}
+FUND_RULES = {"sh": ("11", "50", "51", "56", "58"), "sz": ("12", "15", "16", "18", "20")}
+BOARD_RULES = {"sh": ("88",), "bj": ("81", "82")}  # 通达信自定义板块/指数，语义未核实
+MIN_OVERLAP = 20
+ALIAS_TOL = 0.005
+
+
+@dataclass(frozen=True)
+class Symbol:
+    market: str
+    code: str
+    key: str
+    period: str
+    path: Path
+    kind: str
+
+
+@dataclass(frozen=True)
+class ImportStats:
+    ok: int = 0
+    failed: int = 0
+    rows: int = 0
+    skipped_empty: int = 0
+    skipped_alias: int = 0
+    aliased: tuple[tuple[str, str], ...] = ()
+    newest_by_market: tuple[tuple[str, str], ...] = ()
+    errors: tuple[tuple[str, str], ...] = ()
+
+
+def classify(market: str, code: str) -> str:
+    if is_index(market, code):
+        return "index"
+    head = code[:2]
+    if head in BOARD_RULES.get(market, ()):
+        return "board"
+    if head in STOCK_RULES.get(market, ()):
+        return "stock"
+    if head in FUND_RULES.get(market, ()):
+        return "fund"
+    return "other"
+
+
+def scan_dir(
+    src: str | Path,
+    period: str = "day",
+    markets: tuple[str, ...] = ("sh", "sz", "bj"),
+    kinds: tuple[str, ...] = ("stock", "index"),
+    codes: tuple[str, ...] | None = None,
+) -> list[Symbol]:
+    """列出待导入的品种；默认只要个股与指数。"""
+    src = Path(src)
+    want = set(codes) if codes else None
+    found: list[Symbol] = []
+    for market in markets:
+        folder = src / market / FOLDERS[period]
+        for path in sorted(folder.glob(f"*{PERIOD_SUFFIXES[period]}")):
+            try:
+                mkt, code, _ = split_vipdoc_path(f"{market}/{folder.name}/{path.name}")
+            except TdxFormatError:
+                continue
+            kind = classify(mkt, code)
+            key = store_key(mkt, code)
+            if kind not in kinds or (want and code not in want and key not in want):
+                continue
+            found.append(Symbol(mkt, code, key, period, path, kind))
+    return found
+
+
+def detect_bj_aliases(src: str | Path, period: str = "day") -> dict[str, str]:
+    """北交所改号：老码 → ``920`` + 老码后三位，只在价格证据成立时认。
+
+    判据：重叠交易日 ≥ ``MIN_OVERLAP`` 天，且重叠日收盘价最大差 < ``ALIAS_TOL`` 元。
+    证据不足的（``81/82`` 段等）不认，宁可留两份，也不把两只不同标的并成一只。
+    """
+    folder = Path(src) / "bj" / FOLDERS[period]
+    if not folder.exists():
+        return {}
+    old: dict[str, pd.DataFrame] = {}
+    new: dict[str, pd.DataFrame] = {}
+    for path in folder.glob(f"*{PERIOD_SUFFIXES[period]}"):
+        code = path.stem[len("bj") :]
+        (new if code.startswith("920") else old)[code] = parse_file(path)
+    aliases: dict[str, str] = {}
+    for code, df in old.items():
+        other = new.get(f"920{code[-3:]}")
+        if other is None or len(df) == 0 or len(other) == 0:
+            continue
+        merged = df[["ts", "close"]].merge(
+            other[["ts", "close"]], on="ts", suffixes=("_o", "_n")
+        )
+        if len(merged) < MIN_OVERLAP:
+            continue
+        if float((merged["close_o"] - merged["close_n"]).abs().max()) < ALIAS_TOL:
+            aliases[code] = f"920{code[-3:]}"
+    return aliases
+
+
+def import_dir(
+    src: str | Path,
+    conn,
+    period: str = "day",
+    markets: tuple[str, ...] = ("sh", "sz", "bj"),
+    kinds: tuple[str, ...] = ("stock", "index"),
+    codes: tuple[str, ...] | None = None,
+    dry_run: bool = False,
+) -> ImportStats:
+    """把解开的 vipdoc 目录写进本地库；口径是**不复权 raw**（传入即写，不覆盖已有一期数据）。"""
+    syms = scan_dir(src, period, markets, kinds, codes)
+    aliases = detect_bj_aliases(src, period) if "bj" in markets and not codes else {}
+    live = {s.code for s in syms}
+    ok = failed = rows = skipped_empty = skipped_alias = 0
+    newest: dict[str, str] = {}
+    errors: list[tuple[str, str]] = []
+    merged_pairs: list[tuple[str, str]] = []
+    for sym in syms:
+        target = aliases.get(sym.code)
+        if target in live:  # 老码并到 920 新码（新码是当前代码）
+            skipped_alias += 1
+            merged_pairs.append((sym.code, target))
+            if conn is not None and not dry_run:
+                meta.save_alias(
+                    conn, sym.code, target, sym.market, f"重叠收盘价一致（{MIN_OVERLAP}+ 日）"
+                )
+            continue
+        try:
+            df = parse_file(sym.path)
+        except Exception as exc:  # 单只坏文件不拖垮整包
+            failed += 1
+            errors.append((sym.key, f"{type(exc).__name__}: {exc}"))
+            if conn is not None and not dry_run:
+                meta.set_sync(conn, sym.key, period, None, None, 0, "raw", error=str(exc))
+            continue
+        if len(df) == 0:  # 空文件既不是成功也不是失败：不写库、不记账
+            skipped_empty += 1
+            continue
+        if not dry_run:
+            store.write(sym.key, period, df)
+            meta.set_sync(
+                conn, sym.key, period, df.iloc[0]["ts"], df.iloc[-1]["ts"], len(df), "raw"
+            )
+        ok += 1
+        rows += len(df)
+        end = df.iloc[-1]["ts"]
+        if end > newest.get(sym.market, ""):
+            newest[sym.market] = end
+    return ImportStats(
+        ok,
+        failed,
+        rows,
+        skipped_empty,
+        skipped_alias,
+        tuple(sorted(merged_pairs)),
+        tuple(sorted(newest.items())),
+        tuple(errors),
+    )
+
+
+def fetch_package(dest_dir: str | Path, url: str = DAY_URL) -> Path:
+    """下载官方整包；本地已有且大小与服务器一致就跳过。
+
+    551 MB 的包每次重下是纯浪费，用 ``Content-Length`` 做「大小一致即认为同一版本」的判断；
+    下载先落 ``.part`` 再改名，中途断线不会留下一个看起来完整的坏包。
+    """
+    import urllib.request
+
+    dest = Path(dest_dir) / url.rsplit("/", 1)[-1]
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    req = urllib.request.Request(url, method="HEAD")
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        remote = int(resp.headers.get("Content-Length") or 0)
+    if dest.exists() and remote and dest.stat().st_size == remote:
+        return dest
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    urllib.request.urlretrieve(url, tmp)
+    tmp.replace(dest)
+    return dest

@@ -6,6 +6,7 @@
     python -m chanlun daily [--dry-run] [--periods day,30,5] [--codes ...]
     python -m chanlun scan [--period day] [--codes ...]
     python -m chanlun backtest [--period day] [--codes ...]
+    python -m chanlun tdx [--download] [--src DIR] [--period day] [--dry-run]
     python -m chanlun serve [--host 127.0.0.1] [--port 8888]
 
 约定：
@@ -41,7 +42,7 @@ from tqdm import tqdm
 
 from .calendar import get_calendar
 from .chan.macd import macd
-from .config import Config, load_config
+from .config import PROJECT_ROOT, Config, load_config
 from .data import meta, quality, store
 from .data.baostock_source import fetch_bars, strip_bs_code, to_bs_code
 from .data.universe import build_universe
@@ -81,6 +82,8 @@ def main(argv: list[str] | None = None) -> int:
         from .backtest import cli as backtest_cli
 
         return int(backtest_cli.run_command(args, cfg))
+    if args.command == "tdx":
+        return _cmd_tdx(args, cfg)
     if args.command == "serve":
         return _cmd_serve(args, cfg)
     _build_parser().print_help()
@@ -143,6 +146,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     _add_daily_parser(sub)
+    _add_tdx_parser(sub)
 
     # Task 14/15 的子命令由各自模块提供参数定义，父分发器只负责挂上去：
     # 参数长在谁身上，谁的 CLI 测试就覆盖得到，不会出现「父命令与子命令两套参数」。
@@ -158,6 +162,11 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_parser() -> argparse.ArgumentParser:
+    """公开别名：外部脚本与测试靠它拿参数定义（`_build_parser` 是历史私有名）。"""
+    return _build_parser()
+
+
 def _add_daily_parser(sub) -> argparse.ArgumentParser:
     p = sub.add_parser("daily", help="收盘后一键流水线（同步→校验→快照→扫描→跟踪→推送）")
     p.add_argument(
@@ -169,6 +178,10 @@ def _add_daily_parser(sub) -> argparse.ArgumentParser:
         help="本次同步并参与结构计算的周期，缺省取配置（day,30,5）；分钟数据陈旧时自动降级",
     )
     p.add_argument("--codes", default=None, help="逗号分隔代码，缺省为品种表全市场")
+    p.add_argument(
+        "--source", choices=("baostock", "tdx"), default=None,
+        help="日线数据源，缺省取配置（baostock）；tdx 走通达信整包",
+    )
     p.add_argument(
         "--since", type=_parse_date, default=None, metavar="YYYY-MM-DD",
         help="本地无数据的票从这个日期开始拉（默认 1990-01-01）；已有数据仍为增量",
@@ -189,6 +202,26 @@ def _add_daily_parser(sub) -> argparse.ArgumentParser:
 
 
 # ---------------- 子命令 ----------------
+def _add_tdx_parser(sub) -> argparse.ArgumentParser:
+    """通达信整包导入。`--period` 故意不用 argparse 的 choices：
+    分钟周期要在 `_cmd_tdx` 里给出「官方没有公开分钟整包」的解释，而不是一句 usage。"""
+    p = sub.add_parser("tdx", help="导入通达信 vipdoc 整包（官方只公开日线）")
+    p.add_argument("--download", action="store_true", help="先下载官方整包（约 551 MB）再解压")
+    p.add_argument(
+        "--src", default=str(PROJECT_ROOT / "data" / "tdx_raw"),
+        help="vipdoc 目录（也是下载与解压的目的地）",
+    )
+    p.add_argument("--period", default="day", help="周期；官方只有日线整包")
+    p.add_argument("--markets", default="sh,sz,bj", help="逗号分隔市场")
+    p.add_argument(
+        "--kinds", default="stock,index",
+        help="逗号分隔品种类型：stock/index/board/fund（默认只导个股与指数）",
+    )
+    p.add_argument("--codes", default=None, help="逗号分隔代码，缺省为目录内全部")
+    p.add_argument("--dry-run", action="store_true", help="只统计不落库")
+    return p
+
+
 def _cmd_universe(args, cfg: Config) -> int:
     enrich = bool(args.enrich)
     secs = build_universe(refresh=True, enrich=enrich)
@@ -329,7 +362,76 @@ class DailyReport:
     notes: list[str] = field(default_factory=list)
 
 
+TDX_STALE_DAYS = 10
+MARKET_NAMES = {"sh": "沪", "sz": "深", "bj": "北"}
+
+
+def _csv(text: str | None) -> tuple[str, ...]:
+    if not text:
+        return ()
+    return tuple(t.strip() for t in str(text).split(",") if t.strip())
+
+
+def _cmd_tdx(args, cfg: Config) -> int:
+    """把 vipdoc 整包导进本地库（口径 raw）。北交所改号合并与逐市场最新日期都要看得见。"""
+    from .data import tdx
+
+    if args.period != "day":
+        print(
+            f"通达信：官方只公开日线整包（hsjday.zip），没有公开的分钟整包，"
+            f"因此 --period {args.period} 无法导入；分钟数据请走 baostock。",
+            file=sys.stderr,
+        )
+        return 2
+
+    src = Path(args.src)
+    if args.download:
+        zip_path = tdx.fetch_package(src)
+        print(f"整包已就位：{zip_path}")
+        print(f"已解压 {tdx.extract_package(zip_path, src)} 个文件到 {src}")
+
+    markets = _csv(args.markets)
+    kinds = _csv(args.kinds)
+    codes = _csv(args.codes) or None
+    conn = None if args.dry_run else meta.init()
+    try:
+        stats = tdx.import_dir(src, conn, args.period, markets, kinds, codes, args.dry_run)
+    finally:
+        if conn is not None:
+            conn.close()
+
+    print(
+        f"通达信导入({args.period}): 成功 {stats.ok} 失败 {stats.failed} "
+        f"空文件 {stats.skipped_empty} 改号合并 {stats.skipped_alias} "
+        f"共 {stats.rows} 行（口径 raw）"
+    )
+    newest = dict(stats.newest_by_market)
+    top = max(newest.values(), default="")
+    for market in markets:
+        name = MARKET_NAMES.get(market, market)
+        end = newest.get(market)
+        if not end:
+            print(f"  最新 {name} 无数据")
+            continue
+        stale = ""
+        if top:
+            gap = (dt.date.fromisoformat(top) - dt.date.fromisoformat(end)).days
+            if gap > TDX_STALE_DAYS:
+                stale = f"（陈旧）落后最新 {gap} 天"
+        print(f"  最新 {name} {end}{stale}")
+    if stats.aliased:
+        print("  改号合并：" + "、".join(f"{o}→{n}" for o, n in stats.aliased))
+    for code, err in stats.errors:
+        print(f"  失败 {code}: {err}", file=sys.stderr)
+    return 0
+
+
 def _cmd_daily(args, cfg: Config) -> int:
+    source = getattr(args, "source", None) or getattr(cfg.data, "source", "baostock")
+    if source == "tdx":
+        # 参数先落地、行为在 Task 24 接通；未接通时报错，绝不静默按 baostock 跑
+        print("daily --source tdx 尚未接通（Task 24 实施），当前只支持 baostock", file=sys.stderr)
+        return 2
     conn = meta.init(cfg.data.meta_db)
     try:
         rep = _run_daily(args, cfg, conn)
