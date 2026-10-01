@@ -17,6 +17,7 @@ from pathlib import Path
 import pandas as pd
 
 from ..config import load_config
+from . import markets
 from .types import COLUMNS, normalize, truncate
 
 log = logging.getLogger(__name__)
@@ -33,20 +34,27 @@ def data_root() -> Path:
     return root
 
 
+def bare_code(code: str) -> str:
+    """去掉市场前缀：`sh.600000` → `600000`。文件名只用它，市场由父目录表达。
+
+    带前缀的代码（指数 `sh.000300`）**必须**落到不带前缀的文件名，否则
+    `data/day/sh/sh.000300.parquet` 这种「目录里再写一遍市场」的文件既丑又会让
+    `sh.000300` 与将来可能出现的 `sz.000300` 在同一个目录里无法共存。
+    """
+    text = str(code).strip().lower()
+    return text.split(".", 1)[1] if "." in text else text
+
+
 def market_of(code: str) -> str:
+    """带前缀时前缀说了算；裸码查号段表（判定不了按深市，见 `markets`）。"""
     c = str(code).strip().lower()
     if "." in c:
         return c.split(".", 1)[0]
-    head = c[0]
-    if head in ("6", "5", "9"):
-        return "sh"
-    if head in ("4", "8"):
-        return "bj"
-    return "sz"
+    return markets.market_of(c)
 
 
 def path_for(code: str, period: str) -> Path:
-    return data_root() / str(period) / market_of(code) / f"{code}.parquet"
+    return data_root() / str(period) / market_of(code) / f"{bare_code(code)}.parquet"
 
 
 def exists(code: str, period: str) -> bool:

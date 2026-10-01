@@ -66,13 +66,19 @@ def test_split_vipdoc_path_rejects_garbage(bad):
         tdx.split_vipdoc_path(bad)
 
 
-def test_store_key_qualifies_only_indices():
+def test_store_key_qualifies_only_when_bare_code_would_point_elsewhere():
+    """前缀只为「不撞车」而存在，不是为「它是指数」而存在。
+
+    `sh.000001`（上证指数）必须带前缀：裸码 `000001` 按约定是深市（平安银行）。
+    `sz.399001`（深证成指）不带：`39` 号段深市独有，裸码不撞车。
+    """
     assert tdx.store_key("sh", "000300") == "sh.000300"
     assert tdx.store_key("sh", "000001") == "sh.000001"
-    assert tdx.store_key("sz", "399001") == "sz.399001"
+    assert tdx.store_key("sz", "399001") == "399001"
     assert tdx.store_key("sh", "600000") == "600000"
     assert tdx.store_key("sz", "000001") == "000001"
     assert tdx.store_key("bj", "430017") == "430017"
+    assert tdx.store_key("bj", "920017") == "920017"  # 改号后仍在北交所目录
 
 
 def test_extract_package_normalizes_backslash_paths(tmp_path):

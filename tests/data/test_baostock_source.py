@@ -42,6 +42,15 @@ def test_to_bs_code_allows_ambiguous_index_and_bond_numbers():
     assert to_bs_code("sz.123456") == "sz.123456"
 
 
+def test_to_bs_code_accepts_renumbered_bj_and_shanghai_board():
+    """北交所改号 920xxx 与沪市板块 88xxxx 都是真实存在的号段，不得误杀。"""
+    assert to_bs_code("920017") == "bj.920017"
+    assert to_bs_code("bj.920017") == "bj.920017"
+    assert to_bs_code("sh.880001") == "sh.880001"
+    with pytest.raises(ValueError, match="应为 bj.920017"):
+        to_bs_code("sh.920017")
+
+
 def test_period_to_frequency():
     assert period_to_frequency("day") == "d"
     assert period_to_frequency("30") == "30"

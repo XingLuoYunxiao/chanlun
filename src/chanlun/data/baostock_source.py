@@ -16,6 +16,7 @@ import time as _time
 import baostock as bs
 import pandas as pd
 
+from . import markets
 from .types import DataSourceError, empty_frame, normalize
 
 log = logging.getLogger(__name__)
@@ -51,14 +52,13 @@ def logout() -> None:
             _LOGGED_IN = False
 
 
-# 首位数字 -> 交易所。None 表示沪深两市都存在同号段（如 sh.000001 上证指数
-# 与 sz.000001 平安银行、sh.113xxx 与 sz.123xxx 可转债），无法据首位数判定。
-_MARKET_BY_HEAD: dict[str, str | None] = {
-    "6": "sh", "9": "sh", "5": "sh",
-    "2": "sz", "3": "sz",
-    "4": "bj", "8": "bj",
-    "0": None, "1": None, "7": None,
-}
+# 号段表只有一处实现（`markets.py`）。这里保留名字是为了兼容既有引用。
+_MARKET_BY_HEAD = markets.HEAD1
+
+
+def _expected_market(num: str) -> str | None:
+    """该数字串**唯一**指向的交易所；两个市场都有同号段时返回 None（不猜）。"""
+    return markets.market_of_bare(num)
 
 
 def to_bs_code(code: str) -> str:
@@ -73,7 +73,7 @@ def to_bs_code(code: str) -> str:
         market, _, num = c.partition(".")
         if not num:
             raise ValueError(f"代码缺少数值部分: {code!r}")
-        expected = _MARKET_BY_HEAD.get(num[0])
+        expected = _expected_market(num)
         if expected is not None and market != expected:
             raise ValueError(
                 f"交易所前缀与代码不符: {code!r}，{num} 应为 {expected}.{num}"
@@ -81,13 +81,11 @@ def to_bs_code(code: str) -> str:
         return c
     if not c:
         raise ValueError("空代码")
-    head = c[0]
-    if head in ("6", "5", "9"):
-        return f"sh.{c}"
-    if head in ("0", "1", "2", "3"):
-        return f"sz.{c}"
-    if head in ("4", "8"):
-        return f"bj.{c}"
+    expected = _expected_market(c)
+    if expected is not None:
+        return f"{expected}.{c}"
+    if markets.is_ambiguous(c):  # 0/1 开头：两市都有同号段，约定按深市
+        return f"{markets.BARE_DEFAULT}.{c}"
     raise ValueError(f"无法判断交易所: {code}（请显式给出前缀，如 sh.000001）")
 
 

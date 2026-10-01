@@ -17,6 +17,7 @@ import pytest
 
 from chanlun.optimizer.agent import Optimizer, Probe
 from chanlun.optimizer.journal import (
+    ADOPTED,
     CIRCUIT_BREAK,
     INCONCLUSIVE,
     PROPOSED,
@@ -28,6 +29,7 @@ from chanlun.optimizer.journal import (
     write_entry,
 )
 from chanlun.optimizer.theory import (
+    parse_header,
     ALGO_PREFIXES,
     TheoryEntry,
     load_theory,
@@ -269,9 +271,23 @@ def test_real_patches_all_pass_validation(theory):
         assert verdict.ok, f"{path.name}: {verdict.reasons}"
 
 
+def _is_adopted(patch_text: str) -> bool:
+    """补丁头里 `# status: adopted` = 提案已被主干采纳。
+
+    采纳的定义就是「补丁已经变成主干的一部分」，所以它当然 apply 不上去；
+    再拿「能不能 apply」当自检，会在采纳当天把正常流程报成故障。
+    """
+    return parse_header(patch_text).get("status", "").strip().lower() == ADOPTED
+
+
 def test_real_patches_apply_and_revert_cleanly(tmp_path: Path):
-    """每个提案补丁都必须能在主干副本上 apply → 反 apply，且内容逐字复原。"""
-    patches = sorted(PATCH_DIR.glob("*.patch"))
+    """每个**待评审**提案补丁都必须能在主干副本上 apply → 反 apply，且内容逐字复原。
+
+    已采纳（`# status: adopted`）的提案不在其列：它的判据已经搬进常驻回归测试，
+    见 `test_adopted_patches_are_regression_tested_in_trunk`。
+    """
+    patches = [p for p in sorted(PATCH_DIR.glob("*.patch"))
+               if not _is_adopted(p.read_text(encoding="utf-8"))]
     assert patches
     for path in patches:
         touched = touched_paths(path.read_text(encoding="utf-8"))
@@ -311,7 +327,7 @@ def test_real_journal_entries_have_every_required_field():
     for entry in entries:
         payload = entry.to_dict()
         assert JOURNAL_FIELDS <= set(payload), f"round {entry.round} 缺字段"
-        assert entry.status in {PROPOSED, REJECTED, INCONCLUSIVE, CIRCUIT_BREAK}
+        assert entry.status in {PROPOSED, REJECTED, INCONCLUSIVE, CIRCUIT_BREAK, ADOPTED}
         assert entry.kind in {"theory", "engineering"}
         assert entry.evidence.strip(), f"round {entry.round} 缺实测证据"
         if entry.kind == "theory" and entry.patch_file:
@@ -559,3 +575,23 @@ def test_theory_entry_serializes_to_json(theory):
     payload = json.loads(json.dumps(entry.to_dict(), ensure_ascii=False))
     assert payload["id"] == "L27-DIVERGENCE-UNIT"
     assert payload["quote"]
+
+
+def test_adopted_patches_are_regression_tested_in_trunk():
+    """已采纳的提案，判据必须落在主干测试里 —— 否则「采纳」只是删掉了一个补丁。
+
+    round-010-G5b 的原始判据是 `store.read('sh.600030')` 能读到数据（0 → 38 行）。
+    主干采纳后这条判据升级为：带前缀的代码必须解析到**正确市场目录下的裸文件名**，
+    且指数键不得与同号段的个股抢同一个文件。这里直接在真仓上验这两点。
+    """
+    import sys
+
+    sys.path.insert(0, str(CHANLUN / "src"))
+    from chanlun.data import store
+
+    adopted = [p for p in sorted(PATCH_DIR.glob("*.patch"))
+               if _is_adopted(p.read_text(encoding="utf-8"))]
+    assert adopted, "至少应有一个已采纳提案（round-010-G5b）"
+    assert store.path_for("sh.600030", "day").as_posix().endswith("day/sh/600030.parquet")
+    assert store.bare_code("sh.600030") == "600030"
+    assert store.path_for("sh.000300", "day") != store.path_for("sz.000300", "day")

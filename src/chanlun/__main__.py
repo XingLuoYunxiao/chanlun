@@ -43,7 +43,7 @@ from tqdm import tqdm
 from .calendar import get_calendar
 from .chan.macd import macd
 from .config import PROJECT_ROOT, Config, load_config
-from .data import meta, quality, store
+from .data import markets, meta, quality, store
 from .data.baostock_source import fetch_bars, strip_bs_code, to_bs_code
 from .data.universe import build_universe
 from .notify import build_notifier, notify_scan, notify_track
@@ -299,7 +299,7 @@ def _sync_period(conn: sqlite3.Connection, cfg: Config, period: str, *, codes,
         code = str(raw)
         try:
             # 解析放在 try 内：无法识别的代码按单只失败处理，不中断整批
-            code = strip_bs_code(to_bs_code(raw))
+            code = markets.store_key(to_bs_code(raw))
             start = _start_for(code, period, full, cal, end, since)
             if start is None:
                 skipped += 1

@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from . import markets as _markets
 from . import meta, store
 from .types import normalize
 
@@ -98,11 +99,16 @@ def is_index(market: str, code: str) -> bool:
 
 
 def store_key(market: str, code: str) -> str:
-    """个股用裸 6 位（与一期一致）；指数带市场前缀。
+    """落库键：交给 :mod:`chanlun.data.markets` 的统一规则。
 
-    ``sh000001``（上证指数）与 ``sz000001``（平安银行）裸码都是 ``000001``，不区分就会互相覆盖。
+    只有「裸码会指向另一个市场」时才保留前缀：``sh000001``（上证指数）必须留
+    ``sh.``，否则与 ``sz000001``（平安银行）抢同一个文件；``sz399001``（深证成指）
+    的 ``39`` 号段深市独有，裸码不撞车，前缀是冗余的。
+
+    注意 ``is_index`` 是**品种**分类（谁是指数），与「键要不要带前缀」是两件事，
+    所以这里不再复用它 —— 之前两者混用，导致 ``sz.399001`` 多背了一个没用的前缀。
     """
-    return f"{market}.{code}" if is_index(market, code) else code
+    return _markets.store_key(f"{market}.{code}")
 
 
 def list_package(zip_path: str | Path) -> list[str]:

@@ -20,8 +20,12 @@ PROPOSED = "proposed"
 REJECTED = "rejected"
 INCONCLUSIVE = "inconclusive"
 CIRCUIT_BREAK = "circuit_break"
+#: 提案已被主干采纳（人工合入）。采纳后补丁**不再**能 apply 到主干——这正是
+#: 采纳的定义——所以它必须和 proposed 区分开，否则「提案还能 apply」这条自检
+#: 会在采纳当天变红，把一个正常流程报成故障。
+ADOPTED = "adopted"
 
-VALID_STATUS: tuple[str, ...] = (PROPOSED, REJECTED, INCONCLUSIVE, CIRCUIT_BREAK)
+VALID_STATUS: tuple[str, ...] = (PROPOSED, REJECTED, INCONCLUSIVE, CIRCUIT_BREAK, ADOPTED)
 VALID_KIND: tuple[str, ...] = ("theory", "engineering")
 
 #: 一轮记录必须齐备的字段。缺一个就是不完整的一轮。
@@ -115,6 +119,10 @@ def is_effective(entry: JournalEntry) -> bool:
     同样是「没有有效产出」，会照常累计到熔断计数里。这样「原地打转」
     跑不掉。
     """
+    if entry.status == ADOPTED:
+        # 已合入主干是**最强**的有效产出：它不再是待评审提案，但绝不能算「原地打转」，
+        # 否则连续提案被采纳反而会累计 barren 计数、触发熔断。
+        return True
     if entry.status != PROPOSED:
         return False
     return dict(entry.before) != dict(entry.after)

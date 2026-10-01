@@ -147,7 +147,7 @@ def main() -> int:
         write_entry(opt.journal_dir, entry)
         recorded.append(entry)
         flag = {"proposed": "提案", "rejected": "拒绝", "inconclusive": "无结论",
-                "circuit_break": "熔断"}[entry.status]
+                "circuit_break": "熔断", "adopted": "已采纳"}[entry.status]
         print(f"round {round_no:03d}  {probe.rid:4} {entry.kind:11} {flag}  "
               f"signals {entry.before.get('signals', '-')} → {entry.after.get('signals', '-')}")
         if opt.state.should_break:

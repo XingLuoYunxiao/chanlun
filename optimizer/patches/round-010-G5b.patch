@@ -1,4 +1,10 @@
 # kind: engineering
+# status: adopted
+
+# 2026-10-01 由 Task 23 合入主干，且实现比本提案更强：除了去掉市场前缀，还修好了
+# 市场路由（920xxx → 北交所目录）与「指数键必须带前缀」（sh.000300 不再和 sz.000300 抢文件）。
+# 已采纳的提案不再要求能 apply 到主干，其判据改由常驻回归承担：
+# tests/data/test_store.py、tests/data/test_markets.py、tests/backtest/test_benchmark_lookup.py。
 # finding: 带市场前缀的代码会让 store.path_for 拼出一个不存在的文件名，read 静默返回空表：store.read('sh.600000') 得 0 行，而 store.read('600000') 得 38 行。行情源、质量报告的 code 一律带前缀（'sh.600000'），本地 parquet 一律用裸代码，两套写法混用时「代码写法不对」会被伪装成「这只票没有数据」。
 # evidence: cd chanlun && PYTHONPATH=src ../.venv-chanlun/bin/python -c "from chanlun.data import store; print({c: len(store.read(c,'day',start='2024-01-01',end='2024-03-01')) for c in ('sh.600000','600000','sz.000001','000001')})"
 #    # 主干：{'sh.600000': 0, '600000': 38, 'sz.000001': 0, '000001': 38}；path_for('sh.600000')=data/day/sh/sh.600000.parquet（不存在）

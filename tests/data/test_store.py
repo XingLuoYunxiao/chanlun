@@ -95,6 +95,22 @@ def test_market_of_handles_prefixed_code():
     assert store.market_of("600000") == "sh"
 
 
+def test_path_for_strips_market_prefix():
+    assert store.path_for("sh.000300", "day").as_posix().endswith("day/sh/000300.parquet")
+    assert store.path_for("sh.600000", "day").as_posix().endswith("day/sh/600000.parquet")
+
+
+def test_renumbered_bj_code_lands_in_bj_directory():
+    """920xxx 若不特判会按 9 开头落进 sh/，北交所票就混进沪市目录。"""
+    assert store.path_for("920017", "day").as_posix().endswith("day/bj/920017.parquet")
+    assert store.market_of("920017") == "bj"
+
+
+def test_bare_code_helper():
+    assert store.bare_code("sh.000300") == "000300"
+    assert store.bare_code("600000") == "600000"
+
+
 def test_write_is_atomic_so_a_concurrent_read_never_sees_a_half_file(tmp_path, monkeypatch):
     """同步（分钟～小时级）与看盘页读盘是并发的，写盘期间读盘只能读到「完整的旧内容」。
 
