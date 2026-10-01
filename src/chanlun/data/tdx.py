@@ -247,7 +247,14 @@ def import_dir(
     codes: tuple[str, ...] | None = None,
     dry_run: bool = False,
 ) -> ImportStats:
-    """把解开的 vipdoc 目录写进本地库；口径是**不复权 raw**（传入即写，不覆盖已有一期数据）。"""
+    """把解开的 vipdoc 目录写进本地库；口径是**不复权 raw**。
+
+    **会整份覆盖**同名 `(code, period)` 文件（`store.write` 是原子替换，不是追加）。
+    因此这是「换源」而不是「补充数据源」：`day` 周期原来那份 baostock 前复权会被换成
+    不复权，`sync_state.adjust` 从 `"2"` 变 `raw`。缠论结构本身对两种口径都能算，
+    但**跨口径拼接**（旧前复权 + 新不复权）会在除权日长出假跳空，所以同一 `(code, period)`
+    只能有一个写入方 —— 见 spec §3.2。
+    """
     syms = scan_dir(src, period, markets, kinds, codes)
     aliases = detect_bj_aliases(src, period) if "bj" in markets and not codes else {}
     live = {s.code for s in syms}

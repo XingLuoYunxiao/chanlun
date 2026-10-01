@@ -13,3 +13,6 @@ port = 8888
 
 [data]
 root = "data"
+# 日线数据源：baostock（前复权，逐只，全市场约 2 小时）或 tdx（通达信整包，不复权，约 1 分钟）。
+# 切到 tdx 会改变落库口径，且此后无法再由库内数据反推除权因子 —— 先跑 factors 再切。
+source = "baostock"

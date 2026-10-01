@@ -23,6 +23,10 @@ class WebConfig:
 @dataclass(frozen=True)
 class DataConfig:
     root: Path = PROJECT_ROOT / "data"
+    # 日线数据源。默认 baostock（前复权）；"tdx" 走通达信整包（**不复权**）。
+    # 两者写的是同一个 (code, "day") 文件、口径不同，因此是**互斥切换**而非叠加：
+    # 换源之后 sync_state.adjust 会从 "2" 变成 "raw"，页面据此标注，回测仍强制前复权。
+    source: str = "baostock"
 
     @property
     def meta_db(self) -> Path:

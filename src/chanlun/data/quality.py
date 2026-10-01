@@ -322,6 +322,23 @@ def _cross_source_rows(code: str, start: str, end: str) -> tuple[str, list[tuple
     raise ExternalDataError("；".join(problems))
 
 
+def _kind_breakdown(results: list[CheckResult]) -> dict[str, dict[str, int]]:
+    """按哨兵种类分组统计。
+
+    `summary` 只给总数时，「抽样 40 条，失败 0 条」这句话分不清
+    `cross_source`（要去外部源取数）和 `latest_equals_actual`（本地前复权
+    自洽）各查了多少条。外部源整年不可达、跨源校验实际一条没跑成，
+    报表依然显示满分通过 —— 数量本身没有说谎，是口径被合并掉了。
+    """
+    out: dict[str, dict[str, int]] = {}
+    for r in results:
+        bucket = out.setdefault(r.kind, {"total": 0, "failed": 0})
+        bucket["total"] += 1
+        if not r.ok:
+            bucket["failed"] += 1
+    return dict(sorted(out.items()))
+
+
 def _write_report(path: Path, results: list[CheckResult]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -331,6 +348,7 @@ def _write_report(path: Path, results: list[CheckResult]) -> None:
             "total": len(results),
             "ok": sum(1 for r in results if r.ok),
             "failed": sum(1 for r in results if not r.ok),
+            "kinds": _kind_breakdown(results),
         },
         "results": [asdict(r) for r in results],
     }

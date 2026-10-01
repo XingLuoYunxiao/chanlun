@@ -188,6 +188,14 @@ def _add_daily_parser(sub) -> argparse.ArgumentParser:
         help="日线数据源，缺省取配置（baostock）；tdx 走通达信整包",
     )
     p.add_argument(
+        "--tdx-src", default=None, metavar="DIR",
+        help="通达信 vipdoc 目录，缺省 data/tdx_raw；仅在 --source tdx 时用",
+    )
+    p.add_argument(
+        "--no-download", action="store_true",
+        help="不重新下载整包（551 MB），直接用 --tdx-src 下已解开的目录",
+    )
+    p.add_argument(
         "--since", type=_parse_date, default=None, metavar="YYYY-MM-DD",
         help="本地无数据的票从这个日期开始拉（默认 1990-01-01）；已有数据仍为增量",
     )
@@ -297,11 +305,82 @@ class SyncOutcome:
     skipped: int = 0
     total: int = 0
     first_error: str = ""
+    #: 各市场最新一根 K 线的日期，形如 `(("sh", "2026-09-30"), ...)`。
+    #: 整包导入必须分市场报，不能报一个笼统的"最新日期"：北交所实测落后沪深一整年
+    #: （2025-09-30 vs 2026-09-30），一个平均数会把这个事实抹掉。
+    newest: tuple[tuple[str, str], ...] = ()
 
     def summary(self) -> str:
         text = (f"{self.period}: 成功 {self.ok} 失败 {self.failed} 跳过 {self.skipped}"
                 f"（共 {self.total} 只）")
+        if self.newest:
+            text += "；最新 " + " ".join(f"{m} {d}" for m, d in self.newest)
         return f"{text}；首个错误：{self.first_error}" if self.first_error else text
+
+
+def _daily_source(args, cfg: Config) -> str:
+    """本次日线用哪个源：命令行优先于配置，配置缺省 baostock。"""
+    return str(getattr(args, "source", None) or getattr(cfg.data, "source", "baostock"))
+
+
+def _tdx_root(args, cfg: Config) -> Path:
+    raw = getattr(args, "tdx_src", None)
+    return Path(raw) if raw else cfg.data.root / "tdx_raw"
+
+
+def _period_source(period: str, source: str) -> str:
+    """周期落到哪个源。分钟周期永远 baostock —— 通达信没有公开的分钟整包。
+
+    这个判断单独拎出来，是因为它是「切源」这件事的全部语义：只有 `day` 会换口径。
+    """
+    return source if period == "day" else "baostock"
+
+
+def _sync_day_tdx(conn: sqlite3.Connection, *, tdx_root, codes=None, dry_run: bool = False,
+                  download: bool = True, markets: tuple[str, ...] = ("sh", "sz", "bj"),
+                  kinds: tuple[str, ...] = ("stock", "index")) -> SyncOutcome:
+    """日线走通达信整包：下载 → 解压 → 导入，口径是**不复权 raw**。
+
+    与逐只 baostock 的差别不只是快（551 MB 一次拉完 vs 5471 次请求）：整包写的是
+    **不复权**价，同一个 `(code, day)` 文件因此换了口径，`sync_state.adjust` 记成 `raw`，
+    页面据此标注。`codes` 为空即全导 —— 一期品种表只有 baostock 的 5471 只，
+    拿它当过滤器会把通达信里多出来的指数挡在门外，而整包的钱已经花了。
+    """
+    from .data import tdx
+
+    root = Path(tdx_root)
+    if download:
+        zip_path = tdx.fetch_package(root)
+        tdx.extract_package(zip_path, root)
+    if not root.exists():
+        return SyncOutcome(period="day", first_error=f"通达信目录不存在：{root}")
+    stats = tdx.import_dir(root, conn, "day", markets, kinds, codes or None, dry_run)
+    first_error = f"{stats.errors[0][0]}: {stats.errors[0][1]}" if stats.errors else ""
+    return SyncOutcome(
+        period="day",
+        ok=stats.ok,
+        failed=stats.failed,
+        skipped=stats.skipped_empty + stats.skipped_alias,
+        total=stats.ok + stats.failed + stats.skipped_empty + stats.skipped_alias,
+        first_error=first_error,
+        newest=tuple(sorted((str(m), str(d)) for m, d in stats.newest_by_market)),
+    )
+
+
+def _switch_note(conn: sqlite3.Connection, source: str) -> str:
+    """切源时把**不可逆**的那一半说出来：除权因子以后没法再由库内数据反推。
+
+    反推需要同一只票同时有前复权与不复权两份数据。日线一旦改由整包写，前复权那份
+    就被覆盖了；届时唯一权威来源是 baostock `query_adjust_factor`（尚未实现）。
+    """
+    if source != "tdx":
+        return ""
+    qfq = [r for r in meta.all_sync(conn)
+           if str(r["period"]) == "day" and str(r["adjust"] or "") == "2"]
+    if not qfq:
+        return ""
+    return (f"口径切换：日线 {len(qfq)} 只原为 baostock 前复权，本次起改为通达信不复权；"
+            f"库内前复权副本被覆盖后，除权因子无法再反推（需 baostock query_adjust_factor）")
 
 
 def _sync_period(conn: sqlite3.Connection, cfg: Config, period: str, *, codes,
@@ -371,12 +450,14 @@ class DailyReport:
     run_day: str
     trading_day: bool = True
     dry_run: bool = False
+    source: str = "baostock"
     periods: tuple[str, ...] = ()
     active_periods: tuple[str, ...] = ()
     sync: tuple[SyncOutcome, ...] = ()
     quality_total: int = 0
     quality_failed: int = 0
     quality_error: str = ""
+    quality_kinds: dict[str, dict[str, int]] = field(default_factory=dict)
     snapshots: int = 0
     snapshot_failed: int = 0
     scan: ScanReport | None = None
@@ -499,11 +580,6 @@ def _cmd_factors(args, cfg: Config) -> int:
 
 
 def _cmd_daily(args, cfg: Config) -> int:
-    source = getattr(args, "source", None) or getattr(cfg.data, "source", "baostock")
-    if source == "tdx":
-        # 参数先落地、行为在 Task 24 接通；未接通时报错，绝不静默按 baostock 跑
-        print("daily --source tdx 尚未接通（Task 24 实施），当前只支持 baostock", file=sys.stderr)
-        return 2
     conn = meta.init(cfg.data.meta_db)
     try:
         rep = _run_daily(args, cfg, conn)
@@ -528,20 +604,34 @@ def _run_daily(args, cfg: Config, conn: sqlite3.Connection) -> DailyReport:
         return rep
 
     codes = _resolve_codes(args)
+    source = _daily_source(args, cfg)
+    rep.source = source
+    note = _switch_note(conn, source)
+    if note:
+        rep.notes.append(note)
     if dry:
         log.info("dry-run：跳过同步、落库与推送，只做只读计算")
     else:
-        rep.sync = tuple(
-            _sync_period(conn, cfg, period, codes=codes, full=False, since=args.since,
-                         workers=args.workers)
-            for period in rep.periods
-        )
+        outcomes: list[SyncOutcome] = []
+        for period in rep.periods:
+            if _period_source(period, source) == "tdx":
+                outcomes.append(_sync_day_tdx(
+                    conn, tdx_root=_tdx_root(args, cfg), codes=codes, dry_run=False,
+                    download=not getattr(args, "no_download", False),
+                ))
+            else:
+                outcomes.append(_sync_period(
+                    conn, cfg, period, codes=codes, full=False, since=args.since,
+                    workers=args.workers,
+                ))
+        rep.sync = tuple(outcomes)
 
     # 先决定「哪些周期敢用」，再算结构：陈旧周期一律不进结构计算
     rep.active_periods, rep.degrade = _usable_periods(conn, rep.periods)
 
     if not dry:
-        rep.quality_total, rep.quality_failed, rep.quality_error = _run_quality()
+        (rep.quality_total, rep.quality_failed, rep.quality_error,
+         rep.quality_kinds) = _run_quality()
 
     rep.snapshots, rep.snapshot_failed = _snapshot_all(
         conn, codes, rep.active_periods, save=not dry)
@@ -587,7 +677,7 @@ def _daily_notifier(args, cfg: Config):
     return build_notifier(kind, path=path), (str(path) if kind == "file" else kind)
 
 
-def _run_quality() -> tuple[int, int, str]:
+def _run_quality() -> tuple[int, int, str, dict[str, dict[str, int]]]:
     """跨源哨兵校验：抽 20 只票比对外部行情源（`quality.run_all` 的默认口径）。
 
     它要联网，所以失败一律降级成一行说明，绝不让「外部网站不可达」毁掉当天的结构计算。
@@ -596,11 +686,17 @@ def _run_quality() -> tuple[int, int, str]:
         results = quality.run_all()
     except Exception as exc:  # noqa: BLE001 - 校验失败不阻断流水线
         log.warning("质量校验失败：%s: %s", type(exc).__name__, exc)
-        return 0, 0, f"{type(exc).__name__}: {exc}"
+        return 0, 0, f"{type(exc).__name__}: {exc}", {}
     failed = sum(1 for r in results if not getattr(r, "ok", True))
     if failed:
         log.warning("质量校验：%d 条失败（详见 data/quality_report.json）", failed)
-    return len(results), failed, ""
+    kinds: dict[str, dict[str, int]] = {}
+    for r in results:
+        bucket = kinds.setdefault(getattr(r, "kind", "unknown"), {"total": 0, "failed": 0})
+        bucket["total"] += 1
+        if not getattr(r, "ok", True):
+            bucket["failed"] += 1
+    return len(results), failed, "", dict(sorted(kinds.items()))
 
 
 def _median_end(rows: Sequence[Any]) -> dt.date | None:
@@ -695,6 +791,18 @@ def _snapshot_all(conn: sqlite3.Connection, codes: Sequence[str],
     return saved, failed
 
 
+def _format_source(rep: DailyReport) -> str:
+    """摘要里这行是运维唯一的线索：切了源还写「baostock 前复权」就是撒谎。"""
+    if rep.source != "tdx":
+        return ("数据源：baostock 前复权（本地 Parquet）；"
+                "校验用外部源：东财 fqt=1（不可达时回退腾讯 qfq）")
+    line = ("数据源：日线=通达信整包（不复权 raw）；"
+            "校验用外部源：东财 fqt=1（不可达时回退腾讯 qfq）")
+    if any(p != "day" for p in rep.periods):
+        line += "；分钟=baostock 前复权"
+    return line
+
+
 def _format_daily(rep: DailyReport) -> str:
     lines = [f"=================== 每日流水线 {rep.run_day} ==================="]
     if not rep.trading_day:
@@ -704,7 +812,7 @@ def _format_daily(rep: DailyReport) -> str:
         lines.append("dry-run：不联网同步、不落库、不推送（只读彩排）")
     lines.append(f"周期：{','.join(rep.periods) or '（无）'}；"
                  f"参与结构计算：{','.join(rep.active_periods) or '（无）'}")
-    lines.append("数据源：baostock 前复权（本地 Parquet）")
+    lines.append(_format_source(rep))
     if rep.dry_run:
         lines.append("同步：dry-run 跳过")
         lines.append("校验：dry-run 跳过（不联网）")
@@ -713,7 +821,13 @@ def _format_daily(rep: DailyReport) -> str:
         if rep.quality_error:
             lines.append(f"校验：失败（{rep.quality_error}），不影响后续步骤")
         else:
-            lines.append(f"校验：抽样 {rep.quality_total} 条，失败 {rep.quality_failed} 条")
+            line = f"校验：抽样 {rep.quality_total} 条，失败 {rep.quality_failed} 条"
+            if rep.quality_kinds:
+                line += "（" + "；".join(
+                    f"{k} {v['total']} 条失败 {v['failed']}"
+                    for k, v in rep.quality_kinds.items()
+                ) + "）"
+            lines.append(line)
     lines.append(
         f"结构快照：可入库 {rep.snapshots} 份（dry-run 未落库，失败 {rep.snapshot_failed} 只）"
         if rep.dry_run else

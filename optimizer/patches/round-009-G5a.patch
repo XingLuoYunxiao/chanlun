@@ -1,4 +1,8 @@
 # kind: engineering
+# status: adopted
+# adopted_note: 主干 Task 24 已实现其全部判据 —— `_format_source()` 不再硬编码数据源行，
+#   `quality._kind_breakdown()` 落进 quality_report.json 的 summary.kinds，
+#   `_format_daily` 的校验行按种类展开；常驻判据见 tests/test_daily_pipeline.py。
 # finding: quality_report.json 的 summary 只有 {total, ok, failed}，daily 汇总只印「抽样 40 条，失败 0 条」，于是「跨源校验（要联网取外部源）」和「前复权自洽校验（本地就能算）」被合并成一个数字。外部源整年不可达、跨源校验实际一条没跑成，报表依然显示满分通过，而 __main__.py 里「数据源：baostock 前复权」是一行硬编码字符串，跟实际取过哪些源无关。
 # evidence: cd chanlun && PYTHONPATH=src ../.venv-chanlun/bin/python -m chanlun.optimizer.cli --audit >/dev/null   # 与下面同一份真实报告 data/quality_report.json
 #    # 主干：summary={"total": 40, "ok": 40, "failed": 0}；汇总行=['数据源：baostock 前复权（本地 Parquet）', '校验：抽样 40 条，失败 0 条']

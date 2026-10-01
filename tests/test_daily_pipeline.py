@@ -216,3 +216,48 @@ def test_fresh_minute_data_is_not_degraded(env, monkeypatch, capsys):
         assert meta.get_structure_snapshot(conn, "600000", "30") is not None
     finally:
         conn.close()
+
+
+# ------------------------------------------- 8. 校验摘要必须说清「查的是什么」
+
+def test_summary_breaks_the_check_down_by_kind(env, monkeypatch):
+    """「抽样 40 条，失败 0 条」把两种哨兵合成一个数字，等于没说清查了什么。
+
+    原始提案 round-009-G5a：`cross_source` 要去外部源取数，外部源整年不可达、
+    跨源校验一条没跑成，报表依然满分通过 —— 数量没撒谎，是口径被合并掉了。
+    主干采纳后这条判据常驻于此。
+    """
+    from chanlun.data.quality import CheckResult
+
+    results = [
+        CheckResult(code="600000", kind="cross_source", ok=True, detail=""),
+        CheckResult(code="600001", kind="cross_source", ok=False, detail="东财不可达"),
+        CheckResult(code="600002", kind="latest_equals_actual", ok=True, detail=""),
+    ]
+    monkeypatch.setattr(cli.quality, "run_all", lambda *a, **k: results)
+    # 同步段必须挡掉真网络：`env` 只换了数据根，`fetch_bars` 还是真的会登 baostock
+    monkeypatch.setattr(cli, "fetch_bars", _fake_fetch({}, []))
+    _seed(env)
+    args = cli.build_parser().parse_args(["daily", "--periods", "day", "--notify", "null"])
+    text = cli._format_daily(cli._run_daily(args, env, _conn(env)))
+    assert "cross_source 2 条失败 1" in text, text
+    assert "latest_equals_actual 1 条失败 0" in text, text
+    # 数据源那一行不能是跟实际取过哪些源无关的硬编码
+    assert "校验用外部源：东财 fqt=1" in text, text
+
+
+def test_quality_report_carries_the_kind_breakdown(tmp_path):
+    """同一份口径也要落进 quality_report.json，页面/脚本读得到。"""
+    import json
+
+    from chanlun.data import quality
+    from chanlun.data.quality import CheckResult
+
+    path = tmp_path / "quality_report.json"
+    quality._write_report(path, [
+        CheckResult(code="600000", kind="cross_source", ok=True, detail=""),
+        CheckResult(code="600001", kind="cross_source", ok=False, detail="x"),
+    ])
+    summary = json.loads(path.read_text(encoding="utf-8"))["summary"]
+    assert summary["kinds"] == {"cross_source": {"total": 2, "failed": 1}}
+    assert (summary["total"], summary["failed"]) == (2, 1)
