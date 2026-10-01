@@ -31,6 +31,12 @@
 
 * { box-sizing: border-box; }
 
+/* hidden 属性只是 UA 样式表里的 display:none，任何作者写的 display 都会盖过它。
+   .notice 写了 display:flex，于是那个空盒子一直显示，用面板色把整张图糊住——
+   图上只剩下左边一条 3px 的琥珀色边（border-left），看起来像"有个东西压在上面"。
+   这一条让 hidden 说了算，别再靠"记得给每个元素补一句 display:none"。 */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   height: 100%;

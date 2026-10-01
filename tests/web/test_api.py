@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import dataclasses
+import re
 import socket
 from pathlib import Path
 
@@ -195,3 +196,18 @@ def test_watchlist_roundtrip(client):
     assert card["pivots"] and len(card["pivots"]) == len(chart["pivots"])
     assert client.delete("/api/watchlist?code=600000").status_code == 200
     assert client.get("/api/watchlist").json()["items"] == []
+
+
+def test_hidden_attribute_must_actually_hide():
+    """`hidden` 只是 UA 样式表里的一条 `display:none`，作者写的 display 会盖过它。
+
+    实测过一次：`.notice` 写了 `display:flex`，那个空盒子就一直显示，用不透明的面板色
+    糊住整张图，只在四周留 24px 的缝（左边那条 3px 琥珀色竖线就是它的 border-left），
+    看起来就像"有个东西压在上面"。当时 canvas 导出、像素探针全都是正常的 —— 覆盖层是
+    DOM 元素，不在画布里，只有整页截图才看得见。这条守住让 hidden 说了算的兜底规则。
+    """
+    css = (ROOT / "src" / "chanlun" / "web" / "static" / "styles.css").read_text(encoding="utf-8")
+    rule = re.search(r"\[hidden\]\s*\{([^}]*)\}", css)
+    assert rule is not None, "styles.css 必须有 [hidden] 兜底规则，否则 hidden 元素会被作者 display 顶掉"
+    body = re.sub(r"\s*:\s*", ": ", re.sub(r"\s+", " ", rule.group(1)))
+    assert "display: none" in body, f"[hidden] 规则必须是 display:none，现在是：{body.strip()}"
