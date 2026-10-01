@@ -17,6 +17,7 @@ import pytest
 
 from chanlun.chan.pivot import (
     LEVEL_UP,
+    MAX_SEGMENTS,
     find_pivots,
     next_level,
     validate_pivots,
@@ -99,6 +100,25 @@ def test_pivot_extends_while_overlapping():
     segs = _zigzag([(10, 20), (12, 22), (11, 18), (13, 17), (0, 5)])
     p = find_pivots(segs, "day")[0]
     assert p.end_idx == 3       # 第 4 段仍与 [12,18] 重叠 → 延伸
+
+
+def test_pivot_extension_is_capped_at_eight_segments_by_lesson_33():
+    """第 33 课《走势的多义性》：本级别中枢最多 8 段。
+
+    原文把两个数分得很清楚：「中枢的延伸不能超过 5 段，也就是一旦出现 6 段的
+    延伸，加上形成中枢本身那三段，就构成更大级别的中枢了」——**形成中枢的 3 段
+    与延伸段是分开计数的**，所以本级别上限 = 3 + 5 = 8 段。凑满 9 段时它已经是
+    上一级别的中枢，不能再当同一个中枢继续吸段（否则两个中枢会被吸成一个，
+    盘整走势被压掉）。
+
+    12 段连续重叠 → 第 1 个中枢吃满 8 段就封口，剩下的从头再成枢。
+    """
+    segs = _zigzag([(10.0, 20.0)] * 12)
+    pivots = find_pivots(segs, "day")
+    assert [p.segment_count for p in pivots] == [8, 4]
+    assert (pivots[0].start_idx, pivots[0].end_idx) == (0, 7)
+    assert (pivots[1].start_idx, pivots[1].end_idx) == (8, 11)
+    assert MAX_SEGMENTS == 8       # 3（本身）+ 5（延伸上限）
 
 
 def test_zg_zd_are_fixed_by_the_first_three_segments():
@@ -315,6 +335,7 @@ def _one_pivot(**kw):
         {"gg": 17.0},          # zg > gg
         {"zd": 18.0, "zg": 12.0},   # 区间颠倒
         {"end_idx": 0},        # 段数不足 3
+        {"end_idx": 20},       # 段数超过上限（第 33 课：本级别最多 8 段）
         {"start_ts": "d99"},   # 时间颠倒
         {"src_start": 500},    # 原始 bar 颠倒
     ],

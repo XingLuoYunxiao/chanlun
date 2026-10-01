@@ -68,6 +68,14 @@ def _is_adopted(path: Path) -> bool:
     return parse_header(path.read_text(encoding="utf-8")).get("status", "").strip().lower() == ADOPTED
 
 
+def _is_retired(path: Path) -> bool:
+    """补丁头 `# status: retired` = 提案的**前提**已被实测证伪（与常驻测试同一判据）。"""
+    from chanlun.optimizer.journal import RETIRED
+    from chanlun.optimizer.theory import parse_header
+
+    return parse_header(path.read_text(encoding="utf-8")).get("status", "").strip().lower() == RETIRED
+
+
 #: 这个用例会把 ``optimizer/patches/*.patch`` 逐份 apply 到自己的临时副本上。
 #: 本工具**是在主干里**打补丁再跑测试的，于是它会拿到一份已经被打过的文件、
 #: 再打一次必然失败 —— 那是测量方法自己撞自己，不是补丁的毛病。量的时候摘掉它，
@@ -122,13 +130,22 @@ def main() -> int:
         # 已采纳的补丁不在这里复核：它已经是主干的一部分，`git apply` 会打印
         # 「跳过补丁」并返回 0 —— 那是一个**假绿**（什么都没改，测试当然全过）。
         # 它的判据归常驻回归管，见 tests/optimizer/test_optimizer.py。
-        # `# status: retired`（前提已被实测证伪）**不跳过**：那种补丁仍然能
-        # apply、仍然真的改字节，所以它没有「假绿」问题；它的测试结果照实记录
-        # （它是被证伪的提案，不是主干的一部分，判据不在常驻回归里）。
+        # `# status: retired`（前提已被实测证伪）同样跳过，但**理由不同**：
+        # 证伪的补丁只作证据留档，主干往前走之后它自然对不上（round-004-G2a 的
+        # 9 段上限被 round-012-G11b 的 8 段取代，同一个延伸循环已经不是原来那几
+        # 行了）。这里曾经写着「retired 不跳过，因为它仍然能 apply、没有假绿问题」
+        # —— 那个前提在 G11b 采纳当天就失效了，而失效的后果是整个工具 `return 1`
+        # 停摆。要求一份**前提已被证伪**的补丁「仍能 apply」，等于要求主干停在
+        # 证伪当时；那不是证据，是枷锁。它的证据价值在补丁头与 journal 里。
         if _is_adopted(path):
             results["patches"][path.name] = {"skipped": "adopted"}
             print(f"{path.name}: 已采纳 → 跳过（判据在常驻回归里，"
                   f"apply 会被 git 静默跳过，不算通过）")
+            continue
+        if _is_retired(path):
+            results["patches"][path.name] = {"skipped": "retired"}
+            print(f"{path.name}: 已证伪 → 跳过（只作证据留档，"
+                  f"前提不成立，主干已往前走）")
             continue
         before_digests = digests(touched)
         applied = git("apply", *REPO_PREFIX, "-p1", str(path))

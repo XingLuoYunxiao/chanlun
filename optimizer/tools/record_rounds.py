@@ -34,7 +34,13 @@ from chanlun.optimizer.agent import (  # noqa: E402
     Optimizer,
     default_probes,
 )
-from chanlun.optimizer.journal import ADOPTED, REJECTED, read_all, write_entry  # noqa: E402
+from chanlun.optimizer.journal import (  # noqa: E402
+    ADOPTED,
+    REJECTED,
+    RETIRED,
+    read_all,
+    write_entry,
+)
 from chanlun.optimizer.theory import parse_header  # noqa: E402
 
 CLI = "python -m chanlun.optimizer.cli --root . --audit"
@@ -139,12 +145,20 @@ def tests_for(entry, results: dict) -> dict:
     key = patch_key(entry, results)
     got = results["patches"].get(key) if key else None
     if got and "skipped" in got:
+        # 两种「跳过」的结论完全相反，说明文字不能共用一句：adopted 是「补丁
+        # 进了主干」，retired 是「补丁的前提不成立」。这里曾经无条件写「已采纳」，
+        # 于是 G2a 被证伪之后，它的 journal 会把证伪读成采纳。
+        if got["skipped"] == RETIRED:
+            summary = ("已证伪：本提案的前提被实测证伪，补丁只作证据留档；"
+                       "主干已往前走，本工具不再 apply 它")
+        else:
+            summary = ("已采纳：补丁已是主干的一部分，本工具不再重复 apply"
+                       "（git 会静默跳过），判据在常驻回归里")
         return {
             "before": base["summary"],
             "after": base["summary"],
             "cmd": base["cmd"],
-            "summary": ("已采纳：补丁已是主干的一部分，本工具不再重复 apply"
-                        "（git 会静默跳过），判据在常驻回归里"),
+            "summary": summary,
         }
     if got:
         failed = list(got.get("failed_tests", []))

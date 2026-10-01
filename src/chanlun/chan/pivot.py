@@ -20,6 +20,9 @@
 3. **右端用尽可用线段 → `TENTATIVE`**。此时还不知道有没有下一段继续延伸，
    右侧未定，故不能当已成立的中枢使用。反之，若右端已被一个不重叠的**离开段**
    封闭，则中枢 `CONFIRMED`。
+4. **延伸有段数上限 `MAX_SEGMENTS = 8`**（第 33 课：延伸不超过 5 段，加上形成
+   中枢本身那三段）。到顶就封口，剩余段重新参与成枢 —— 否则 9 段以上的重叠会把
+   两个中枢吸成一个，盘整走势被压掉，`b1`/`b2` 长期出不来。
 
 延伸 / 新生 / 扩展
 ------------------
@@ -48,6 +51,13 @@ LEVEL_UP: dict[str, str] = {
 }
 
 MIN_SEGMENTS = 3
+# 第 33 课《走势的多义性》原文：「一般来说，中枢的延伸不能超过5段，也就是一旦
+# 出现6段的延伸，加上形成中枢本身那三段，就构成更大级别的中枢了。」——形成中枢
+# 的 3 段与延伸段是分开计数的，所以**本级别**中枢的上限是 3+5=8 段；凑满 9 段
+# 时它已经是上一级别的中枢，不能再当同一个中枢继续延伸。
+# （第 29 课的 9 是「升级后的最小内容量」，不是本级别上限；round-004-G2a 取 9 是
+#   把这两个数当成了同一个数。）
+MAX_SEGMENTS = 8
 
 
 def next_level(level: str) -> str:
@@ -127,9 +137,13 @@ def find_pivots(segments: Sequence[Segment], level: str) -> list[Pivot]:
             i += 1
             continue
 
-        # 延伸：后续段只要仍与 [zd, zg] 重叠就并入（且不改变 zd/zg）
+        # 延伸：后续段只要仍与 [zd, zg] 重叠就并入（且不改变 zd/zg）。
+        # 段数上限见 MAX_SEGMENTS（第 33 课）：超过 8 段就不该再算「同一个中枢
+        # 在延伸」，而要留给下一轮成枢 —— 否则 9 段以上的重叠会把两个中枢吸成
+        # 一个，盘整走势被压掉。
         j = i + MIN_SEGMENTS
-        while j < n and _overlaps(confirmed[j], zd, zg):
+        while (j < n and j - i < MAX_SEGMENTS
+               and _overlaps(confirmed[j], zd, zg)):
             j += 1
 
         group = confirmed[i:j]
@@ -231,6 +245,11 @@ def validate_pivots(pivots: Sequence[Pivot]) -> list[str]:
             problems.append(f"pivot {i}: 线段下标颠倒")
         if p.segment_count < MIN_SEGMENTS:
             problems.append(f"pivot {i}: 只有 {p.segment_count} 段，少于三段")
+        if p.segment_count > MAX_SEGMENTS:
+            problems.append(
+                f"pivot {i}: 有 {p.segment_count} 段，超过本级别上限 {MAX_SEGMENTS} 段"
+                "（第 33 课：延伸不超过 5 段，加上形成中枢本身那三段）"
+            )
         if p.start_ts > p.end_ts:
             problems.append(f"pivot {i}: 时间区间颠倒")
         if p.src_end < p.src_start:

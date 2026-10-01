@@ -22,6 +22,7 @@ from chanlun.optimizer.journal import (
     INCONCLUSIVE,
     PROPOSED,
     REJECTED,
+    RETIRED,
     CircuitBreaker,
     JournalEntry,
     is_effective,
@@ -297,14 +298,30 @@ def _is_adopted(patch_text: str) -> bool:
     return parse_header(patch_text).get("status", "").strip().lower() == ADOPTED
 
 
+def _is_retired(patch_text: str) -> bool:
+    """补丁头里 `# status: retired` = 提案的**前提**已被证伪。
+
+    证伪与采纳的区别：采纳是补丁进了主干，证伪是补丁的判据本身不成立。两者
+    都从「待评审」里退出，但证伪的补丁**继续留在盘上**当证据 —— 它的前提、
+    证伪理由、以及证伪当时的 before/after 都在补丁头里，
+    `test_real_retired_probe_is_recorded_as_rejected` 负责钉住这一点。
+    证伪的补丁同样不该再要求「能 apply」：它的前提既然不成立，主干往前走之后
+    它自然会对不上（round-004-G2a 就是这样 —— 它的 9 段上限被 round-012-G11b
+    的 8 段取代，同一个延伸循环已经不是原来那几行了）。
+    """
+    return parse_header(patch_text).get("status", "").strip().lower() == RETIRED
+
+
 def test_real_patches_apply_and_revert_cleanly(tmp_path: Path):
     """每个**待评审**提案补丁都必须能在主干副本上 apply → 反 apply，且内容逐字复原。
 
-    已采纳（`# status: adopted`）的提案不在其列：它的判据已经搬进常驻回归测试，
-    见 `test_adopted_patches_are_regression_tested_in_trunk`。
+    已采纳（`# status: adopted`）与已证伪（`# status: retired`）的提案不在其列：
+    前者的判据已经搬进常驻回归测试，见 `test_adopted_patches_are_regression_tested_in_trunk`；
+    后者只作证据留档，见 `test_real_retired_probe_is_recorded_as_rejected`。
     """
     patches = [p for p in sorted(PATCH_DIR.glob("*.patch"))
-               if not _is_adopted(p.read_text(encoding="utf-8"))]
+               if not (_is_adopted(p.read_text(encoding="utf-8"))
+                       or _is_retired(p.read_text(encoding="utf-8")))]
     assert patches
     for path in patches:
         touched = touched_paths(path.read_text(encoding="utf-8"))

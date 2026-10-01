@@ -1,4 +1,12 @@
 # kind: theory
+# status: adopted
+# adopted_at: 2026-10-01
+# adopted_note: 判据已进主干：`pivot.py::MAX_SEGMENTS = 8` 收口延伸循环，
+#   `validate_pivots` 多一条「段数超过上限」不变量。常驻判据见
+#   tests/chan/test_pivot.py::test_pivot_extension_is_capped_at_eight_segments_by_lesson_33
+#   （12 段连续重叠 → [8, 4]）与 test_validate_pivots_catches_each_invariant 的
+#   `{"end_idx": 20}` 用例；真实数据上 `--audit` 的机制块 pivot_max_segments
+#   14→8、pivot_over_9 8→0，与下面的 finding 逐项一致。
 # theory: L33-PIVOT-EXTENSION-LIMIT
 # quote: 例如，5分钟级别的中枢不断延伸，出现9段以上的1分钟次级别走势。站在30分钟级别的中枢角度，3个5分钟级别的走势重合就形成了，而9段以上的1分钟次级别走势，每3段构成一个5分钟的中枢，这样也就可以解释成这是一个30分钟的中枢。这种情况，只要对中枢延伸的数量进行限制，就可以消除多义性，一般来说，中枢的延伸不能超过5段，也就是一旦出现6段的延伸，加上形成中枢本身那三段，就构成更大级别的中枢了。
 # source: 缠中说禅《教你炒股票108课》第33课《走势的多义性》
