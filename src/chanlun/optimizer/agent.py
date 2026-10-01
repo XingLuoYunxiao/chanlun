@@ -662,7 +662,7 @@ PROBE_SPECS: tuple[tuple[str, str, str, str | None], ...] = (
         "把反向的离开段极值也算进波动区间；第 20 课定义的是只遍历 Z 走势段。"
         "偶数段中枢才看得出差别：40 个确认中枢里 9 个不同，最坏 601088 P1 "
         "GG 42.80 → 26.21、002594 P1 GG 136.84 → 115.79。全指标零变化（signals 43 → 43）",
-        "L20-TREND-NO-OVERLAP",
+        "L20-PIVOT-DEFINITION",
     ),
     (
         "G11d",

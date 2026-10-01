@@ -1,0 +1,32 @@
+# kind: theory
+# theory: L20-PIVOT-DEFINITION
+# quote: 为方便起见，以后都把这些与中枢方向一致的次级别走势类型称为Z走势段，按中枢中的时间顺序，分别记为Zn等，而相应的高、低点分别记为gn、dn，定义四个指标,GG=max(gn),G=min(gn),D=max(dn),DD=min(dn)，n遍历中枢中所有Zn。
+# note: 判据是第20课「n 遍历中枢中所有Zn」那一句（GG/DD 只覆盖 Z 走势段），与趋势不重叠（L20-TREND-NO-OVERLAP）不是同一条；本条只改 GG/DD 的遍历范围，不改中枢区间 [ZD,ZG]，也不改趋势判据。
+# source: 缠中说禅《教你炒股票108课》第20课《缠中说禅走势中枢级别扩张及第三类买卖点》
+# finding: GG/DD 遍历的是中枢组里的全部线段，第20课的定义是 n 只遍历 Z 走势段（与中枢方向一致的次级别走势类型）。偶数段中枢以一段反向的离开段收尾，那一段的极值被多算进波动区间，把 [DD,GG] 撑宽；网页「中枢」行直接把 GG/DD 印给用户看。
+# evidence: cd chanlun && PYTHONPATH=src ../.venv-chanlun/bin/python optimizer/tools/measure_g11_dd_gg_scope.py  # 40 个确认中枢里 9 个 DD/GG 与 Z 段口径不同（全部是偶数段中枢）：002594 P1 GG 136.84->115.79, 601088 P1 GG 42.80->26.21, 600030 P0 DD 16.03->16.89；validate_pivots 问题数 0->0；--audit 全部指标零变化（signals 43->43），因为决策路径不使用 DD/GG
+diff --git a/src/chanlun/chan/pivot.py b/src/chanlun/chan/pivot.py
+--- a/src/chanlun/chan/pivot.py
++++ b/src/chanlun/chan/pivot.py
+@@ -133,15 +133,19 @@
+             j += 1
+ 
+         group = confirmed[i:j]
+         back = back_of[j - 1]
++        # 第 20 课定义 GG/DD 时，n 只遍历中枢里的 **Z 走势段** —— 「与中枢方向
++        # 一致的次级别走势类型」：`GG=max(gn)`、`DD=min(dn)`。遍历 group 里**全部**
++        # 线段会把中枢尾部那段反向的离开段的极值也算进来，把波动区间撑宽。
++        zs = [s for s in group if s.direction == group[0].direction]
+         pivots.append(
+             Pivot(
+                 idx=len(pivots),
+                 zg=zg,
+                 zd=zd,
+-                gg=max(s.high for s in group),
+-                dd=min(s.low for s in group),
++                gg=max(s.high for s in zs),
++                dd=min(s.low for s in zs),
+                 start_idx=positions[i],
+                 end_idx=positions[j - 1],
+                 start_ts=group[0].start.start.ts,
+                 end_ts=group[-1].end.end.ts,
