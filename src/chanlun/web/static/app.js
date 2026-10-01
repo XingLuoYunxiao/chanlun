@@ -115,9 +115,16 @@
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok) {
       // 404 = 这个周期本地真没有数据。命令行提示是给终端用户的，看盘的人需要能点的东西。
-      const action = resp.status === 404
+      // 但**不是每个 404 都能补**：指数没有分钟线（`syncable: false`），给一个必然
+      // 400 的按钮比不给更糟 —— 用户点了、等了、被拒，才知道这条路是死的。
+      // 能不能补由后端判（`markets.is_index` + 分钟周期），前端不自己猜号段。
+      const canSync = resp.status === 404 && body.syncable !== false;
+      const action = canSync
         ? { label: "同步这个周期", run: syncThisPeriod }
         : null;
+      // 左栏高亮也要跟着走：404 时图表区不换，但"我正在看哪一只"已经变了。
+      // 不挪的话输入框写着 399006、左栏还高亮着 sh.000001，高亮就成了一句假话。
+      renderWatch();
       return showNotice(
         httpTitle(resp.status), body.detail || "接口返回了无法解析的内容。", null, action);
     }
@@ -972,13 +979,16 @@
       loadWatch();
     });
     row.append(mv, rm);
-    if (!it.missing) {
-      const open = () => { setCode(it.code); load(); };
-      row.addEventListener("click", open);
-      row.addEventListener("keydown", (ev) => {
-        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); }
-      });
-    }
+    // 换票的绑定**不看 `missing`**：`missing` 说的是「当前这个周期本地没数据」，
+    // 而点击要回答的是「我要看这只票」。自选池全是 7 个大盘指数，切到 30分/5分 时
+    // 每一行都 missing（指数没有分钟线），一旦把点击绑在 !missing 上，整栏就点不动了
+    // —— 用户看到的就是"点自选股没反应、不跳 K 线"。点过去之后再按那个周期的真实
+    // 情况提示（能补就给同步按钮，补不了就说清为什么）。
+    const open = () => { setCode(it.code); load(); };
+    row.addEventListener("click", open);
+    row.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); }
+    });
     return row;
   }
 

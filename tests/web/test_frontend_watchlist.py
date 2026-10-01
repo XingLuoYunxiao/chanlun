@@ -33,6 +33,27 @@ def _css() -> str:
     return (STATIC / "styles.css").read_text(encoding="utf-8")
 
 
+def _fn_body(js: str, header: str) -> str:
+    """抠出一个函数的函数体（按花括号配平）。找不到就报错。"""
+    start = js.index(header)
+    i = js.index("{", start)
+    depth = 0
+    for j in range(i, len(js)):
+        if js[j] == "{":
+            depth += 1
+        elif js[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return js[i : j + 1]
+    raise AssertionError(f"函数没配平: {header}")
+
+
+def _guarded_block(body: str, header: str) -> str:
+    """抠出 `header` 那个 if 后面的块（按花括号配平）。"""
+    at = body.index(header)
+    return _fn_body(body[at:], header)
+
+
 # ---------------- 左侧常驻自选股栏 ----------------
 def test_watchlist_is_a_left_rail_before_the_chart():
     html = _html()
@@ -244,3 +265,34 @@ def test_watch_rows_have_up_and_down_buttons():
 def test_watch_foot_no_longer_claims_only_day_bars_are_local():
     html = _html()
     assert "默认是七个大盘指数" in html
+
+def test_a_row_without_data_is_still_clickable():
+    """「这个周期没数据」只该影响那一行显示的价格，**不该把点击一起关掉**。
+
+    自选池现在全是 7 个大盘指数，而 baostock 对指数不返回分钟线 —— 所以一切到
+    30分/5分，整栏每一行都是「未同步」。如果换票的绑定写在 `if (!it.missing)` 里面，
+    这时整栏就点不动了：用户点了自选股，页面纹丝不动，看起来像"看不了自选股"。
+    （实测：`?period=30` 下点第 3 行，输入框仍是 sh.000001，图表不变。）
+    """
+    body = _fn_body(_js(), "function finishWatchRow(")
+    assert "setCode(it.code)" in body, "自选行点一下必须能换票"
+    if "if (!it.missing)" in body:
+        guarded = _guarded_block(body, "if (!it.missing)")
+        assert "setCode" not in guarded, "换票的绑定不能被 !missing 关掉"
+
+
+def test_a_row_without_data_still_looks_clickable():
+    """视觉上也不能把"没数据"画成"不能点"：光标要是手型。"""
+    css = _css()
+    at = css.index(".watch-row.is-missing")
+    rule = css[at : css.index("}", at)]
+    assert "cursor: default" not in rule, "没数据的行仍然可以点开看"
+
+
+def test_a_failed_load_still_moves_the_rail_highlight():
+    """404（这个周期没数据）也要更新自选栏高亮 —— 否则点完票，输入框已经是新票，
+    左栏却还高亮着上一只，「图上是哪一只」就成了假的。"""
+    load = _fn_body(_js(), "async function load(")
+    bad = load[load.index("if (!resp.ok)") : load.index("state.data = body")]
+    assert "renderWatch()" in bad, "404 分支也要把左栏高亮挪过去"
+

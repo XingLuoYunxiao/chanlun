@@ -205,3 +205,46 @@ def test_sync_reports_an_empty_source_as_skipped(client, monkeypatch):
     body = _wait(client, "600759", "30")
     assert body["state"] == "skipped"
     assert body["rows"] == 0
+
+
+# ---------------- 404 时要如实说「这个周期到底能不能补」 ----------------
+def test_structure_404_says_an_index_minute_period_can_never_be_synced(client, cfg):
+    """指数 + 分钟：404 里必须带 `syncable=false` 和原因。
+
+    自选池现在全是指数，切到 30分/5分 必然 404。这时如果只回一句「请先同步」，
+    页面就会给出一个**注定失败**的「同步这个周期」按钮 —— 点下去 400，白等一次往返，
+    而且等于骗用户"能补"。
+    """
+    resp = client.get("/api/structure", params={"code": INDEX, "period": "30"})
+    assert resp.status_code == 404, resp.text
+    body = resp.json()
+    assert body["syncable"] is False
+    assert "指数" in body["sync_hint"]
+    # 不许再让用户去跑一条注定空跑的命令
+    assert "请先同步" not in body["detail"]
+
+
+def test_structure_404_still_offers_a_sync_for_a_stock_without_minute_data(client, cfg):
+    """股票没分钟数据是**能补**的（实测 600000 30分 拉回 13088 根）—— 这时要给按钮。"""
+    resp = client.get("/api/structure", params={"code": "600759", "period": "30"})
+    assert resp.status_code == 404, resp.text
+    body = resp.json()
+    assert body["syncable"] is True
+    assert body["sync_hint"] == ""
+    assert "请先同步" in body["detail"]
+
+
+def test_structure_404_on_an_index_daily_still_offers_a_sync(client, cfg):
+    """日线是指数**能拿**的（走 baostock 或本地通达信整包），不能连这个也拒了。"""
+    body = client.get("/api/structure", params={"code": INDEX, "period": "day"}).json()
+    assert body["syncable"] is True
+    assert body["sync_hint"] == ""
+
+
+def test_the_404_hint_and_the_sync_rejection_are_the_same_sentence(client, cfg):
+    """两处口径必须同源：否则页面说「可以补」，点下去接口说「补不了」。"""
+    hint = client.get("/api/structure", params={"code": INDEX, "period": "30"}).json()["sync_hint"]
+    post = client.post("/api/sync", json={"code": INDEX, "period": "30"})
+    assert post.status_code == 400, post.text
+    assert hint in post.json()["detail"]
+

@@ -441,7 +441,9 @@ button, input { font: inherit; color: inherit; }
 .watch-row.is-current { background: var(--panel-2); border-left-color: var(--indigo); }
 .watch-row.has-signal { border-left-color: var(--cinnabar); }
 .watch-row.is-current.has-signal { border-left-color: var(--cinnabar); }
-.watch-row.is-missing { border-left-color: var(--amber); cursor: default; }
+/* 琥珀左条 = 这个周期本地没数据。**光标仍是手型**：没数据不等于不能点 ——
+   点开才知道是「指数没有分钟线」还是「这只票该同步了」。 */
+.watch-row.is-missing { border-left-color: var(--amber); }
 .watch-row-top, .watch-row-mid {
   display: flex;
   align-items: baseline;

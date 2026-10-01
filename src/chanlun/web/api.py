@@ -27,6 +27,7 @@ from typing import Any
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 
 from ..chan.engine import ChanEngine, Snapshot
 from ..chan.macd import macd as compute_macd
@@ -267,7 +268,11 @@ def _read_bars(code: str, period: str, limit: int | None = None, *,
     shown = requested or period
     base = periods_mod.base_period(period)
     if not store.exists(code, base):
-        if base != shown:
+        # 「补不了」的周期不许说「请先同步」：那是一条注定空跑的命令（指数没有分钟线）。
+        blocker = sync_blocker(code, period)
+        if blocker:
+            detail = f"{code} 的 {shown} 周期没有本地数据，而且补不了：{blocker}"
+        elif base != shown:
             detail = (
                 f"{code} 的 {periods_mod.label(shown)}由{periods_mod.label(base)}聚合，"
                 f"但本地没有{periods_mod.label(base)}数据。"
@@ -548,15 +553,27 @@ def bars(request: Request, code: str, period: str = "day",
     }
 
 
-@router.get("/api/structure")
+@router.get("/api/structure", response_model=None)
 def structure(request: Request, code: str, period: str = "day",
               limit: int = Query(DEFAULT_LIMIT, ge=10, le=20000), merged: bool = False,
-              adjust: str = "qfq", ma: str | None = None) -> dict[str, Any]:
+              adjust: str = "qfq", ma: str | None = None) -> dict[str, Any] | JSONResponse:
     cfg = _cfg(request)
     key = normalize_code(code)
     mode = normalize_adjust_or_400(adjust)
     periods = parse_ma(ma)
-    view = snapshot_of(key, period, limit, adjust=mode, meta_db=cfg.data.meta_db)
+    try:
+        view = snapshot_of(key, period, limit, adjust=mode, meta_db=cfg.data.meta_db)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        # 404 顺带回答「这个周期到底能不能补」：页面靠它决定给不给「同步这个周期」
+        # 按钮。让后端判、而不是前端去猜号段，规则只有一处（`sync_blocker`）。
+        blocker = sync_blocker(key, period)
+        return JSONResponse(
+            status_code=404,
+            content={"detail": exc.detail, "syncable": blocker is None,
+                     "sync_hint": blocker or ""},
+        )
     body = structure_payload(view, include_merged=merged)
     conn = meta.init(cfg.data.meta_db)
     try:
@@ -762,6 +779,31 @@ def _sync_target_period(raw: Any) -> str:
     return periods_mod.base_period(period)
 
 
+def sync_blocker(code: str, period: str) -> str | None:
+    """这个周期**根本补不了**的原因；能补就返回 `None`。
+
+    **唯一的口径来源**：`POST /api/sync` 拒绝时说的话、以及 404 页面上「要不要给同步
+    按钮」的判断，都从这里出。两处各写一套的话，页面会说"能补"、接口说"补不了"。
+
+    `period` 可以是用户请求的周期（`week` 也行）：先按 `base_period` 落到落库周期 ——
+    周/月是本地由日线聚合的，指数照样有。
+    """
+    if periods_mod.base_period(period) == "day":
+        return None  # 日线（含由日线聚合的周/月）指数也拿得到
+    try:
+        bs = to_bs_code(code)
+    except ValueError:  # 认不出的代码：不在这里判，交给 normalize_code 报参数错
+        return None
+    if markets.is_index(bs):
+        # 实测 baostock 对 sh.000001/sh.000300/sh.000688 的分钟线一律返回 0 行
+        # （重登重试后仍是 0），本地通达信整包也只有 lday、没有分钟线。
+        return (
+            f"{code} 是指数，baostock 不提供指数的分钟线，同步这个周期只会空跑。"
+            "指数看日线/周线/月线即可（周月线由本地日线聚合）。"
+        )
+    return None
+
+
 def _task_view(key: tuple[str, str], rec: dict[str, Any]) -> dict[str, Any]:
     elapsed = rec.get("elapsed")
     if elapsed is None:
@@ -829,16 +871,11 @@ async def sync_start(request: Request) -> dict[str, Any]:
     requested = str(body.get("period", "day"))
     period = _sync_target_period(requested)
 
-    if period != "day" and markets.is_index(to_bs_code(code)):
-        # 拒绝要发生在取数之前：实测 baostock 对 sh.000001/sh.000300/sh.000688 的
-        # 分钟线一律返回 0 行（重登重试后仍是 0），等 30 秒再看「没有数据」是浪费。
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"{code} 是指数，baostock 不提供指数的分钟线，同步这个周期只会空跑。"
-                "指数看日线/周线/月线即可（周月线由本地日线聚合）。"
-            ),
-        )
+    # 拒绝要发生在取数之前：等 30 秒再看「没有数据」是浪费。原因文本与 404 页面上
+    # 「要不要给同步按钮」共用一个来源（`sync_blocker`）。
+    blocker = sync_blocker(code, period)
+    if blocker is not None:
+        raise HTTPException(status_code=400, detail=blocker)
 
     key = (code, period)
     now = dt.datetime.now().astimezone().isoformat(timespec="seconds")

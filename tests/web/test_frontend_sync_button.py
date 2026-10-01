@@ -106,3 +106,17 @@ def test_a_successful_sync_redraws_the_chart():
     body = _fn_body(_js(), "function finishSync(")
     assert "load()" in body, "数据到位了必须重画，不能停在提示上"
     assert "status.rows" in body, "同步完要说清楚拿回来多少根"
+
+
+def test_a_404_that_can_never_be_synced_does_not_offer_the_button():
+    """后端说 `syncable=false`（指数 + 分钟）时，**不许**给「同步这个周期」。
+
+    自选池全是指数，切到 30分/5分 每一行都会 404。给一个必然 400 的按钮，
+    比不给按钮更糟：用户点了、等了、被拒，才知道这条路是死的。
+    """
+    load = _fn_body(_js(), "async function load(")
+    assert "syncable" in load, "按钮的有无要听后端的判断，不能前端自己猜指数"
+    at = load.index("syncable")
+    around = load[max(0, at - 200) : at + 120]
+    assert "404" in around, "这条判断挂在 404 分支上"
+
