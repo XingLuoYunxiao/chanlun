@@ -541,3 +541,127 @@ apply 进主干再跑全套测试：**4 个用例失败** —— `tests/chan/tes
 - 24x7 回访是 `python -c <脚本文本>` 跑量具（没有 `__file__`，cwd 是影子根），所以两个
   G11 量具的 `ROOT = Path(__file__).resolve().parents[2]` 改成 `try/except NameError`
   回退 `Path.cwd()`；人手动跑仍走 `__file__` 那条。
+
+---
+
+# 附二：裁决与落地（2026-10-01 18:5x）
+
+附一记的是「取证报告 → 入账」；本节记的是**人裁决之后**的三件事：G11b 的 8 落地、
+G2a 因此作废、以及 G11e 的采纳。三件都已进主干（`40a05d3`、`335b3e9`、`3aad8e7`），
+本节给出落地后重跑量具的读数。
+
+## 1. 中枢延伸上限：取 8（采纳 G11b）
+
+第 11 轮把「8 还是 9」摆到人面前（G11b 的 8 与第 4 轮 G2a 的 9 直接冲突）。裁决：
+**「采纳 8（推荐）」**。理由是原文归属：直接给**本级别**中枢设上限的是第 33 课那句
+（延伸 ≤ 5，延伸到 6 段即 6+3=9 已构成更大级别中枢），而第 29 课的 9 说的是
+**升级后**那个更大级别中枢的最小内容量 —— 两句话都在，但管「本级别收口」的是前一句。
+
+落地形态（`src/chanlun/chan/pivot.py`）：
+
+```python
+MAX_SEGMENTS = 8                      # 第 33 课：延伸不超过 5 段，加形成中枢的 3 段
+j = i + MIN_SEGMENTS
+while (j < n and j - i < MAX_SEGMENTS
+       and _overlaps(confirmed[j], zd, zg)):
+    j += 1
+```
+
+**落地后**在主干上重跑审计（不挂补丁）：
+
+```bash
+cd chanlun && PYTHONPATH=src ../.venv-chanlun/bin/python -m chanlun.optimizer.cli --root . --audit
+```
+
+| 指标 | 改前（第 11 轮报告） | 落地后（主干实测） |
+| --- | --- | --- |
+| `pivot_max_segments` | 14 | **8** |
+| `pivot_over_9` | 8 | **0** |
+| `pivot_segment_total` | 300 | 297 |
+| `pivots` | 56 | 61 |
+| `trends_consolidation` | 6 | 11 |
+| `signals` | 43 | 44 |
+| `b1` / `b2` | 0 / 0 | **2 / 2** |
+| `b3` / `s3` | 26 / 16 | 24 / 15 |
+| `trends_up` / `trends_down` | 10 / 7 | 10 / 7 |
+| `signal_problems` | 0 | 0 |
+
+`pivot_max_segments 8` + `pivot_over_9 0` 说明上限真的生效了（不是只加了个没人读的常量）；
+`b1 2 / b2 2` 是项目**第一次**跑出第一/第二类买点 —— 14 段的巨型中枢被切到 8 段之后，
+才出现段数足够短、`_first_kind` 能配对的趋势组。
+
+**风险 2 的处置**：报告担心的「`pivots` 的 `idx` 全体位移 ⇒ 已入库的 `confirmed_at`
+大面积失配」在本项目的现实里不成立 —— `confirmed_at` 是**当下算出来的**（引擎每次
+全量/增量重算），没有一份独立的历史记录会被位移打歪。真正受影响的是页面上的编号，
+那是显示层，本来就跟着划分走。
+
+## 2. G2a 作废（不是「删掉」，是留档）
+
+`optimizer/patches/round-004-G2a.patch` 的补丁头改成：
+
+```
+# kind: theory
+# status: retired
+# note: [前提被第 11 轮 G11b 证伪，2026-10-01] 原 finding 取「9 段」作本级别上限，…
+#       已按 cap 8 落地（见 round-012-G11b.patch 的 adopted_note），本提案作废。
+```
+
+**retired ≠ adopted**，两者在 journal 里也不是一回事：`retired` 的 journal 状态是
+`REJECTED`（提案的**前提**被实测证伪，只作证据留档），`adopted` 才是「已经是主干的一部分」。
+所以 `round-004.json` 现在写的是 REJECTED，而不是「已采纳」。
+改补丁**文件名**会挪动轮次号（轮次 = `PROBE_SPECS` 里的序号），所以只改头部。
+
+## 3. 工具：证伪的补丁也要跳过复核
+
+`run_patch_tests.py` 原来只跳过 `# status: adopted`。G2a 作废之后暴露出一个洞：
+**一条前提已被证伪的补丁仍然能 apply 上去**（它改的那几行还在），于是它会被当成
+「一个待评审的候选」重新跑一遍全套测试 —— 而它量的是一个已经作废的口径。
+
+现在两条跳过理由分开打印，不混成一句：
+
+```
+round-001-G1a.patch: 已采纳 → 跳过（判据在常驻回归里，apply 会被 git 静默跳过，不算通过）
+round-003-G1c.patch: 已证伪 → 跳过（只作证据留档，前提不成立，主干已往前走）
+```
+
+判据在 `run_patch_tests.py::_is_retired`，`record_rounds.py` 里也补了对应分支。
+`tests/optimizer/test_optimizer.py` 加了用例钉住「retired 被跳过且理由不同」。
+
+## 4. G11e 采纳
+
+`round-015-G11e.patch`（自选股行里**未确认**的买卖点补「（未确认）」）在附一的表里
+是 `inconclusive`（页面文案，审计看不见）。它后来被采纳：Task 29 重写 `watchRow` 时
+那段 hunk 落在同一行上，已进主干，于是补丁头补上 `# status: adopted` /
+`# adopted_at: 2026-10-01`。
+
+顺带把这条**并入** Task 29 的改动一起交付（`3aad8e7`），因此它的 hunk 现在与主干
+不再逐字一致 —— 再 apply 会失败，但按 adopted 的规矩它本来就不该再 apply。
+
+## 5. 落地后重跑一遍全部补丁（本轮新增的一列证据）
+
+```bash
+cd chanlun && ../.venv-chanlun/bin/python optimizer/tools/run_patch_tests.py
+```
+
+| 补丁 | 结果 | 说明 |
+| --- | --- | --- |
+| `round-001-G1a` / `002-G1b` / `009-G5a` / `010-G5b` | 已采纳 → 跳过 | 判据在常驻回归里 |
+| `round-003-G1c` / `004-G2a` | 已证伪 → 跳过 | 只作证据留档 |
+| `round-005-G2b-candidate` | 1 failed, 752 passed | 会改判据，仍待裁决 |
+| `round-006-G3a` | 2 failed, 751 passed | 会改判据，仍待裁决 |
+| `round-011-G11a` | 10 failed, 743 passed | 趋势判据，仍待裁决 |
+| `round-013-G11c` | 4 failed, 749 passed | `GG/DD` 口径，仍待裁决 |
+| `round-012-G11b` / `014-G11d` / `015-G11e` | 已采纳 → 跳过 | 已在主干 |
+| 反 apply | 触及文件逐字复原=True | 没有一个待评审补丁是「空改」 |
+
+主干基线（同一次运行打印）：**754 passed / 12 deselected**（`3aad8e7` 之前）；
+Task 29 的复权顺序钉加进来之后是 **755 passed / 12 deselected**。
+`patch_test_results.json` 已按本次运行重写。
+
+## 6. 冻结口径的 sha 变了，原因是 `meta.db`
+
+审计的 `basis.sha256` 从第 11 轮的 `044d4d17bfdc7e69` 变成 `3b8cc6ca507d1038`，
+`copied/expected` 仍是 **24/24**、`missing` 为空。这不是数据缺了：冻结快照里除了
+24 只票的日线 parquet，还冻了 `quality_report.json` 与 **`meta.db`**，
+而 Task 29 恰好改了 `meta.db`（自选池换成七个指数、`watchlist` 加 `sort_order`、
+指数的 `sync_state`）。24 只票的行情字节没动，动的是「代码清单的来源」。

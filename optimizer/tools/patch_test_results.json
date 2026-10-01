@@ -1,7 +1,7 @@
 {
  "baseline": {
   "returncode": 0,
-  "summary": "698 passed, 12 deselected, 1 warning in 14.12s",
+  "summary": "754 passed, 12 deselected, 1 warning in 17.41s",
   "failed_tests": [],
   "cmd": "pytest -q",
   "ignored": []
@@ -21,7 +21,7 @@
   },
   "round-005-G2b-candidate.patch": {
    "returncode": 1,
-   "summary": "1 failed, 696 passed, 13 deselected, 1 warning in 14.48s",
+   "summary": "1 failed, 752 passed, 13 deselected, 1 warning in 17.11s",
    "failed_tests": [
     "tests/chan/test_trend.py::test_two_separate_trends"
    ],
@@ -40,7 +40,7 @@
   },
   "round-006-G3a.patch": {
    "returncode": 1,
-   "summary": "2 failed, 695 passed, 13 deselected, 1 warning in 14.67s",
+   "summary": "2 failed, 751 passed, 13 deselected, 1 warning in 17.53s",
    "failed_tests": [
     "tests/chan/test_signal.py::test_tentative_trigger_segment_yields_tentative_signal",
     "tests/scan/test_scanner.py::test_scan_real_engine_finds_pivot_and_signal_on_crafted_path"
@@ -66,7 +66,7 @@
   },
   "round-011-G11a.patch": {
    "returncode": 1,
-   "summary": "10 failed, 687 passed, 13 deselected, 1 warning in 14.43s",
+   "summary": "10 failed, 743 passed, 13 deselected, 1 warning in 17.49s",
    "failed_tests": [
     "tests/chan/test_signal.py::test_first_buy_point_requires_shrinking_macd_area",
     "tests/chan/test_signal.py::test_first_sell_point_requires_new_high_and_shrinking_area",
@@ -97,7 +97,7 @@
   },
   "round-013-G11c.patch": {
    "returncode": 1,
-   "summary": "4 failed, 693 passed, 13 deselected, 1 warning in 14.36s",
+   "summary": "4 failed, 749 passed, 13 deselected, 1 warning in 17.84s",
    "failed_tests": [
     "tests/chan/test_pivot.py::test_gg_dd_are_the_full_range",
     "tests/chan/test_pivot.py::test_tentative_tail_does_not_join_an_existing_pivot",
@@ -121,21 +121,7 @@
    "skipped": "adopted"
   },
   "round-015-G11e.patch": {
-   "returncode": 0,
-   "summary": "697 passed, 13 deselected, 1 warning in 15.42s",
-   "failed_tests": [],
-   "cmd": "pytest -q --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
-   "ignored": [],
-   "touched": [
-    "src/chanlun/web/static/app.js"
-   ],
-   "changed_while_applied": [
-    "src/chanlun/web/static/app.js"
-   ],
-   "restored_after_revert": true,
-   "touched_sha256": {
-    "src/chanlun/web/static/app.js": "183c2ee32857c0d3d0822374d2a9b56ac70c936cec910def5f4d436e65ea924e"
-   }
+   "skipped": "adopted"
   }
  },
  "restored": true,

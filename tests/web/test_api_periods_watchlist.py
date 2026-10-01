@@ -125,6 +125,40 @@ def test_week_bars_have_weekly_highs_and_lows(client):
     assert week[0]["low"] == pytest.approx(min(b["low"] for b in in_week))
 
 
+def test_week_bars_are_adjusted_day_by_day_before_aggregation(client, cfg):
+    """**先复权后聚合**：除权落在周中间时，周K的开盘价必须是**周一**那天的复权价。
+
+    反着做（先把日线聚成周线、再整根乘最后一个交易日的因子）等于拿周五的因子去乘
+    周一的原始开盘价。这不是理论风险：下面这段样本里周三翻倍，两种顺序的开盘价
+    差一倍（10.0 vs 20.0），最低价同理（9.5 vs 19.0）。
+    """
+    days = pd.DataFrame(
+        {
+            "ts": ["2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06"],
+            "open": [10.0, 10.2, 20.4, 20.6, 20.8],
+            "high": [10.5, 10.6, 21.0, 21.2, 21.4],
+            "low": [9.5, 9.8, 20.0, 20.2, 20.4],
+            "close": [10.2, 10.4, 20.6, 20.8, 21.0],
+            "volume": [100.0] * 5,
+            "amount": [1000.0] * 5,
+        }
+    )
+    store.upsert("600000", "day", days)
+    conn = meta.init(cfg.data.meta_db)
+    try:
+        meta.set_sync(conn, "600000", "day", "2026-03-02", "2026-03-06", 5, "3")
+        meta.save_adjust_factors(conn, "600000", [("2026-03-02", 1.0), ("2026-03-04", 2.0)])
+    finally:
+        conn.close()
+
+    week = client.get("/api/structure?code=600000&period=week&adjust=qfq&limit=20000").json()
+    bar = [b for b in week["bars"] if b["ts"] == "2026-03-06"][0]
+    assert bar["open"] == pytest.approx(10.0), "周K开盘=周一复权开盘，不是整根乘周五的因子"
+    assert bar["low"] == pytest.approx(9.5), "最低价来自周一，不能被周五的因子放大"
+    assert bar["high"] == pytest.approx(42.8), "最高价来自周五（21.4 × 2.0）"
+    assert bar["close"] == pytest.approx(42.0), "收盘=周五收盘 × 周五因子"
+
+
 def test_partial_last_bar_is_flagged_honestly(client):
     """样本日线到 2024-12-31（周二）：那一周还没走完，但 12 月是走完的。"""
     week = client.get("/api/structure?code=600000&period=week&limit=20000").json()
