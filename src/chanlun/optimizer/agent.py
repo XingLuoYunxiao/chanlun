@@ -633,6 +633,55 @@ PROBE_SPECS: tuple[tuple[str, str, str, str | None], ...] = (
         "把「代码写法不对」伪装成「这只票没有数据」（0 → 38 行）",
         None,
     ),
+    # ---- 第 11 轮（2026-10-01）：从「买卖点数量」转到「走势类型与中枢自身的定义」----
+    (
+        "G11a",
+        "theory",
+        "trend.py::_direction 只用中枢区间 [ZD,ZG] 的单调判趋势，缺第 20 课定理二的"
+        "「波动区间 [DD,GG] 不许重叠」：19 对相邻确认中枢的 [DD,GG] 19/19 全重叠"
+        "（按原文全是「形成高级别的走势中枢」），主干却 19/19 判成趋势；改成定理二口径后"
+        "trends_up/down 10/7 → 0/0、盘整 6 → 40。且 find_pivots 用 i=j 跳到第一个"
+        "[ZD,ZG] 不重叠的线段，使定理二口径在主干里结构性不可达 —— 要落地得接受一次"
+        "全量重切中枢（pivots 与 object_id 全部重排），需人决定",
+        "L20-TREND-NO-OVERLAP,L17-TREND-DEF",
+    ),
+    (
+        "G11b",
+        "theory",
+        "find_pivots 的延伸循环没有任何段数上限，实测一个中枢能吸到 14 段"
+        "（pivot_max_segments 14、pivot_over_9 8）。第 33 课把收口数字写死：延伸不超过 5 段，"
+        "一旦 6 段「加上形成中枢本身那三段」就是更大级别的中枢 → 本级别上限 8 段。"
+        "加上限后 pivot_max_segments 14 → 8、pivot_over_9 8 → 0、pivots 56 → 61、"
+        "signals 43 → 44，b1/b2 首次不为 0（0 → 2 / 0 → 2）",
+        "L33-PIVOT-EXTENSION-LIMIT",
+    ),
+    (
+        "G11c",
+        "theory",
+        "pivot.py 的 gg=max(high) / dd=min(low) 遍历中枢组里的**全部**线段，"
+        "把反向的离开段极值也算进波动区间；第 20 课定义的是只遍历 Z 走势段。"
+        "偶数段中枢才看得出差别：40 个确认中枢里 9 个不同，最坏 601088 P1 "
+        "GG 42.80 → 26.21、002594 P1 GG 136.84 → 115.79。全指标零变化（signals 43 → 43）",
+        "L20-TREND-NO-OVERLAP",
+    ),
+    (
+        "G11d",
+        "engineering",
+        "optimizer/theory.py::ALGO_PREFIXES 把整个 src/chanlun/web/ 当算法路径，"
+        "连 web/static/app.js 这种纯展示层也算，于是改一句 UI 文案都必须先伪造一条 "
+        "theory 条目（写侧 make_patch.py 允许、读侧 validate_patch 拒绝，两侧不对称）。"
+        "拆成 web/api.py + web/app.py 后，同一份 app.js 补丁 validate_patch "
+        "ok=False（3 条 reasons）→ ok=True kind=engineering，全指标零变化",
+        None,
+    ),
+    (
+        "G11e",
+        "engineering",
+        "自选股行把**未确认**的买卖点印得和已确认的一模一样（app.js 只印 kind+ts，"
+        "漏了 last.status），而同一份数据在中栏 ledger 里是有「未确认」chip 的："
+        "000002 唯一的信号 s3 2026-09-23 status=tentative 在自选行上没有任何标记",
+        None,
+    ),
 )
 
 
@@ -644,6 +693,11 @@ PROBE_SCRIPTS: dict[str, str] = {
     "G4b": "tools/measure_segments.py",
     "G5a": "tools/measure_quality_source.py",
     "G5b": "tools/measure_store_codes.py",
+    # G11a/G11c 要看的不是缠论流水线的总账，而是「同一份行情、同一把尺子」下两种口径的
+    # 逐对差别；两个脚本都是只读的（G11a 用 monkey-patch 在内存里换 _direction）。
+    # G11b/G11e 的数字就是流水线总账本身，用默认的 AUDIT_SCRIPT。
+    "G11a": "tools/measure_g11_trend_overlap.py",
+    "G11c": "tools/measure_g11_dd_gg_scope.py",
 }
 
 

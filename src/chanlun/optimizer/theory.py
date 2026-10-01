@@ -19,8 +19,12 @@ from typing import Iterable, Mapping
 ALGO_PREFIXES: tuple[str, ...] = (
     "src/chanlun/chan/",
     "src/chanlun/scan/",
-    "src/chanlun/web/",
     "src/chanlun/backtest/",
+    # `web/static/` 是纯展示层（HTML/CSS/JS）：改一句文案或给未确认的买卖点补一个
+    # 标记，不该被要求先伪造一条 theory 条目。服务端的 `web/api.py`、`web/app.py`
+    # 仍然算算法路径 —— 它们决定 level / 复权 / 确认口径怎么暴露给用户。
+    "src/chanlun/web/api.py",
+    "src/chanlun/web/app.py",
 )
 
 KIND_THEORY = "theory"

@@ -31,6 +31,7 @@ from chanlun.optimizer.journal import (
 from chanlun.optimizer.theory import (
     parse_header,
     ALGO_PREFIXES,
+    is_algo_path,
     TheoryEntry,
     load_theory,
     search,
@@ -198,12 +199,28 @@ def test_every_algo_prefix_needs_theory(theory, path):
 
 
 def test_algo_prefixes_cover_the_contract(theory):
+    """算法路径 = 会改「算出来是什么」的代码；展示层不算。
+
+    判据（G11d，已采纳）：``web/static/`` 是 HTML/CSS/JS，改一句文案、给未确认的
+    买卖点补一个标记，都不该被要求先伪造一条 theory 条目 —— 否则验收端会逼着
+    提案人写假原文。反过来，``web/api.py`` / ``web/app.py`` 决定 level、复权、
+    确认口径怎么暴露给用户，仍然是算法路径。
+    """
     assert set(ALGO_PREFIXES) >= {
         "src/chanlun/chan/",
         "src/chanlun/scan/",
         "src/chanlun/backtest/",
-        "src/chanlun/web/",
+        "src/chanlun/web/api.py",
+        "src/chanlun/web/app.py",
     }
+    # 服务端的 web 模块算算法路径（口径从这儿出去）
+    assert is_algo_path("src/chanlun/web/api.py")
+    assert is_algo_path("src/chanlun/web/app.py")
+    # 纯展示层不算：这四条一旦变红，说明又有人把整个 web/ 目录当成算法路径了
+    assert not is_algo_path("src/chanlun/web/static/app.js")
+    assert not is_algo_path("src/chanlun/web/static/styles.css")
+    assert not is_algo_path("src/chanlun/web/static/index.html")
+    assert not is_algo_path("src/chanlun/web/__init__.py")
 
 
 # =============================================================== 2. 理论库

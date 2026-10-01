@@ -1,0 +1,25 @@
+# kind: engineering
+# status: adopted
+# adopted_at: 2026-10-01
+# adopted_note: 已进主干：ALGO_PREFIXES 拆成 `web/api.py` + `web/app.py`。判据落在常驻回归 tests/optimizer/test_optimizer.py::test_algo_prefixes_cover_the_contract（服务端 web 模块仍算算法路径、web/static/ 不算）。本补丁的 hunk 已在主干里，再 apply 必然失败 —— 保留原文只为留下提案记录。
+# finding: optimizer/theory.py::ALGO_PREFIXES 把整个 src/chanlun/web/ 当算法路径，连 web/static/app.js 这种纯展示层也算，于是任何 UI 修正都必须先伪造一条 theory 条目，否则 validate_patch 直接拒绝。展示层与算法层应当分开。
+# evidence: cd chanlun && PYTHONPATH=src ../.venv-chanlun/bin/python -m chanlun.optimizer.cli --root . --audit --patch optimizer/patches/round-014-G11d.patch  # 全指标零变化（signals 43->43, pivots 56->56）；真正要看的证据是 validate_patch 的判决翻转：改前对 optimizer/patches/round-015-G11e.patch（web/static/app.js）判 ok=False（3 条 reasons），改后判 ok=True
+diff --git a/src/chanlun/optimizer/theory.py b/src/chanlun/optimizer/theory.py
+--- a/src/chanlun/optimizer/theory.py
++++ b/src/chanlun/optimizer/theory.py
+@@ -18,10 +18,14 @@
+ #: 主干算法目录。改了这里面的任何东西，都必须走「理论类」通道。
+ ALGO_PREFIXES: tuple[str, ...] = (
+     "src/chanlun/chan/",
+     "src/chanlun/scan/",
+-    "src/chanlun/web/",
+     "src/chanlun/backtest/",
++    # `web/static/` 是纯展示层（HTML/CSS/JS）：改一句文案或给未确认的买卖点补一个
++    # 标记，不该被要求先伪造一条 theory 条目。服务端的 `web/api.py`、`web/app.py`
++    # 仍然算算法路径 —— 它们决定 level / 复权 / 确认口径怎么暴露给用户。
++    "src/chanlun/web/api.py",
++    "src/chanlun/web/app.py",
+ )
+ 
+ KIND_THEORY = "theory"
+ KIND_ENGINEERING = "engineering"
