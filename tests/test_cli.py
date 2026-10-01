@@ -212,3 +212,42 @@ def test_sync_malformed_code_does_not_abort(env, monkeypatch):
     assert rows["abc"]["error"] is not None
     assert "abc" in rows["abc"]["error"]
     assert (env.data.root / "day" / "sh" / "600000.parquet").exists()
+
+
+def test_sync_since_applies_to_symbols_without_local_data(env, monkeypatch):
+    """首次全市场同步：本地没数据的票从 --since 开始，别为 5471 只票各拉 35 年。"""
+    seen: dict[str, str] = {}
+
+    def fake_fetch(code, period, start, end, adjust="2"):
+        seen["start"] = str(start)[:10]
+        return _df(2, "2021-01-04")
+
+    monkeypatch.setattr(cli, "fetch_bars", fake_fetch)
+    rc = cli.main(["sync", "--period", "day", "--codes", "000001", "--since", "2021-01-01"])
+    assert rc == 0
+    assert seen["start"] == "2021-01-01"
+
+
+def test_sync_since_never_punches_a_hole_in_existing_history(env, monkeypatch):
+    """已有数据的票仍然纯增量：数据停在 2024-01-04、--since 2025-01-01 时，
+
+    起点必须是 2024-01-05（接着拉），不能是 2025-01-01 —— 否则文件里会留下
+    2024-01-05～2024-12-31 的空洞，缠论结构会跨着洞算，比少几年历史危险得多。
+    """
+    store.upsert("600000", "day", _df(3, "2024-01-02"))  # 末行 2024-01-04
+    seen: dict[str, str] = {}
+
+    def fake_fetch(code, period, start, end, adjust="2"):
+        seen["start"] = str(start)[:10]
+        return _df(1, "2024-01-05")
+
+    monkeypatch.setattr(cli, "fetch_bars", fake_fetch)
+    rc = cli.main(["sync", "--period", "day", "--codes", "600000", "--since", "2025-01-01"])
+    assert rc == 0
+    assert seen["start"] == "2024-01-05"
+
+
+def test_sync_rejects_bad_since_format(env):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["sync", "--period", "day", "--codes", "600000", "--since", "2021/01/01"])
+    assert exc.value.code == 2

@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  缠论每日流水线：macOS launchd 版（本机是 macOS，没有 systemd）
+
+  安装：
+    cp chanlun/deploy/com.chanlun.daily.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.chanlun.daily.plist
+    # 老系统用：launchctl load -w ~/Library/LaunchAgents/com.chanlun.daily.plist
+
+  验证 / 手动触发 / 卸载：
+    launchctl print gui/$(id -u)/com.chanlun.daily | head -20   # 看状态与下次触发
+    launchctl kickstart -p gui/$(id -u)/com.chanlun.daily       # 立刻跑一次
+    launchctl bootout gui/$(id -u)/com.chanlun.daily            # 卸载
+
+  时间口径：launchd 用**本机时区**解释 StartCalendarInterval。本机
+  /etc/localtime → Asia/Shanghai（CST +0800），所以 17:30 就是国内的 17:30；
+  如果哪天把机器时区换成别的，必须回来改这里的 Hour/Minute，launchd 不会替你换算。
+
+  休眠补跑：StartCalendarInterval 错过的触发点，在机器唤醒后补跑一次
+  （等价于 systemd 的 Persistent=true）——漏一天就少一天的结构快照，不能接受。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.chanlun.daily</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/zzz/workspace/.venv-chanlun/bin/python</string>
+    <string>-m</string>
+    <string>chanlun</string>
+    <string>daily</string>
+    <!--
+      只跑日线。实测 baostock 约 1.5 秒/只（单会话 socket 协议，串行），
+      5471 只一轮 ≈ 2.3 小时：日线一轮能在收盘后跑完，再叠加 30 分钟和 5 分钟
+      就是 7 小时，会跟第二天开盘撞上。分钟数据由手动
+      `sync --period 30 --codes ...` 提供（或二期接盘中增量源），
+      那时把这条改成 daily --periods day,30,5 即可 —— 流水线本身支持多周期，
+      并且会在分钟数据陈旧时自动降级为仅日线。
+    -->
+    <string>--periods</string>
+    <string>day</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/zzz/workspace/chanlun</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key>
+    <string>src</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+
+  <!-- 工作日（launchd 里 1=周一 … 5=周五；0 和 7 都是周日）17:30 -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer></dict>
+  </array>
+
+  <!-- 只按日历触发，加载时不要立刻跑一遍：手动跑一次整轮流水线代价不小 -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/zzz/workspace/chanlun/logs/daily.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/zzz/workspace/chanlun/logs/daily.log</string>
+</dict>
+</plist>

@@ -1,0 +1,19 @@
+# 触发时间：工作日 17:30（Asia/Shanghai）
+#
+# A 股 15:00 收盘，baostock 的日线数据约 15:30–16:30 落定，17:30 留足余量；
+# 再晚会让使用者打开看盘页时看不到当天结构，再早会拿到半截数据。
+#
+# Persistent=true：机器当时关机/休眠而错过的这一次，开机后补跑一次
+# （只补最近一次，不会把历史全部补一遍）。这是「收盘后跑一次」这个设计
+# 前提的一部分——漏一天就等于那天的结构快照永久缺失。
+[Unit]
+Description=每个交易日 17:30（Asia/Shanghai）触发缠论每日流水线
+
+[Timer]
+OnCalendar=Mon..Fri 17:30:00
+Timezone=Asia/Shanghai
+Persistent=true
+Unit=chanlun-daily.service
+
+[Install]
+WantedBy=timers.target

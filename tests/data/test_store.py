@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -91,3 +93,37 @@ def test_normalize_dedups_and_sorts():
 def test_market_of_handles_prefixed_code():
     assert store.market_of("sh.600000") == "sh"
     assert store.market_of("600000") == "sh"
+
+
+def test_write_is_atomic_so_a_concurrent_read_never_sees_a_half_file(tmp_path, monkeypatch):
+    """同步（分钟～小时级）与看盘页读盘是并发的，写盘期间读盘只能读到「完整的旧内容」。
+
+    真实事故形态：`write` 直接覆写目标文件，读盘方读到写了一半的 parquet，pyarrow 抛
+    `Parquet magic bytes not found` —— 页面直接 500，而这跟缠论逻辑一点关系都没有。
+
+    这里不去赛跑（赛跑可能跑不出来），而是**强制**制造那个时刻：拦截 `to_parquet`，
+    落盘后立刻把该文件截断一半（等价于「写到一半」），在这个状态下调一次 `store.read`。
+    """
+    store.write("600000", "day", _df(30))  # 旧内容 30 行
+    seen: dict[str, object] = {}
+    real_to_parquet = pd.DataFrame.to_parquet
+
+    def interrupted_write(self, path, *args, **kwargs):
+        real_to_parquet(self, path, *args, **kwargs)
+        target = Path(path)
+        raw = target.read_bytes()
+        target.write_bytes(raw[: len(raw) // 2])  # 砍一半 = 写盘写到一半的样子
+        try:
+            seen["rows"] = len(store.read("600000", "day"))
+        except Exception as exc:  # noqa: BLE001
+            seen["error"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            target.write_bytes(raw)
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", interrupted_write)
+    store.write("600000", "day", _df(40))
+
+    assert "error" not in seen, f"读盘方读到了写了一半的文件：{seen['error']}"
+    assert seen["rows"] == 30, "读盘方应读到完整的旧内容（30 行）"
+    assert len(store.read("600000", "day")) == 40, "写完必须是完整的新内容"
+    assert not list((tmp_path / "data").rglob("*.tmp")), "不允许留下临时文件"

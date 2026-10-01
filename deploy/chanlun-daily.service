@@ -1,0 +1,34 @@
+# 缠论每日流水线：systemd oneshot 单元
+#
+# 安装（Linux）：
+#   1. 把 __PROJECT_DIR__ 换成 chanlun/ 的绝对路径，__PYTHON__ 换成装了依赖的解释器
+#      sed -e "s#__PROJECT_DIR__#$PWD#g" -e "s#__PYTHON__#$(command -v python3)#g" \
+#          chanlun-daily.service > /tmp/chanlun-daily.service
+#   2. sudo cp chanlun-daily.service chanlun-daily.timer /etc/systemd/system/
+#   3. sudo systemctl daemon-reload && sudo systemctl enable --now chanlun-daily.timer
+#   4. systemctl list-timers chanlun-daily.timer     # 确认下次触发时间
+#   5. journalctl -u chanlun-daily.service -n 50     # 或看 logs/daily.log
+#
+# 为什么是 oneshot + timer 而不是常驻服务：流水线是「跑完就退出」的批处理，
+# 什么时候跑由 timer 决定；失败会落在 `systemctl --failed` 里看得见，
+# 不靠进程自己重启把错误吞掉。
+[Unit]
+Description=缠论每日流水线（同步 → 校验 → 结构快照 → 全市场扫描 → 自选池 → 推送）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__PROJECT_DIR__
+Environment=PYTHONPATH=src
+Environment=PYTHONUNBUFFERED=1
+# 全市场日线首次同步要拉几千只票，按实测约 1.0–4.3 秒/只（baostock 负载波动，
+# 中位约 1.7 秒），全市场一轮 2–6 小时；同步是幂等增量，超时被杀不会写坏数据，
+# 下次接着补，所以给足超时而不是压时间。
+TimeoutStartSec=21600
+# 只跑日线：一轮全市场日线约 2.3 小时，再叠加 30/5 分钟就是 7 小时会撞上开盘。
+# 分钟数据由手动 `sync --period 30 --codes ...` 或二期盘中增量源提供；
+# 要改成多周期就把这里换成 daily --periods day,30,5（流水线支持，且分钟陈旧会自动降级）。
+ExecStart=__PYTHON__ -m chanlun daily --periods day
+StandardOutput=append:__PROJECT_DIR__/logs/daily.log
+StandardError=append:__PROJECT_DIR__/logs/daily.log
