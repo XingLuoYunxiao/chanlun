@@ -288,7 +288,17 @@ def test_scan_without_codes_requires_universe(env):
 
 # ---------------------------------------------------------------- 真引擎 / 多进程
 
-def test_scan_real_engine_finds_pivot_on_crafted_path(env):
+def test_scan_real_engine_finds_pivot_and_signal_on_crafted_path(env):
+    """真引擎端到端：这条人工路径既能划出中枢，也能给出第三类卖点。
+
+    这里曾经断言 ``report.hits == ()``，并在注释里把 0 命中记成「Task 17 报告的
+    引擎缺陷 G1/G2，如实报告而非放宽条件」。那不是如实，是把缺陷钉进了判据：
+    ``_third_kind`` 当时拿 ``segs[end_idx + 1]`` 当离开段，而真实线段首尾相连，
+    那一段必然是反向回抽段，于是「离开段方向向上且低点 > ZG」恒不成立。判据按
+    第 20 课改成**位置**口径（离开段 = 中枢组最后一段 ``segs[end_idx]``，回试段
+    = 紧随其后的 ``segs[end_idx + 1]``）之后，同一条路径照旧能出信号。
+    详见 optimizer/theory/L20-THIRD-POINT-POSITION.md。
+    """
     bars = bars_from_path(PIVOT_PATH, day_step=2)
     env.write("600000", "day", bars)
     env.sync("600000", "day", bars)
@@ -296,8 +306,9 @@ def test_scan_real_engine_finds_pivot_on_crafted_path(env):
     assert report.errors == ()   # ScanReport 是 frozen dataclass，行集合按 tuple 约定
     assert report.skipped == ()  # ScanReport 是 frozen dataclass，行集合按 tuple 约定
     assert report.structure["pivots"] >= 1
-    # 合成路径能算出中枢，但真实引擎给不出买卖点（Task 17 报告的引擎缺陷 G1/G2）
-    assert report.hits == ()  # 真实数据上 0 命中，如实报告而非放宽条件
+    assert [h.signal_kind for h in report.hits] == ["s3"]
+    assert report.hits[0].price == 7.445
+    assert report.hits[0].ts == "2025-05-29 15:00:00"
 
 
 def test_scan_runs_in_real_process_pool(env):

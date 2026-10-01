@@ -1,4 +1,13 @@
 # kind: theory
+# status: adopted
+# adopted_note: 主干已采纳其口径（用户批准，2026-10-01）——`_third_kind` 的离开段/回试段改取
+#   `segs[p.end_idx]` / `segs[p.end_idx + 1]`，`_entering_and_leaving` 同步改，
+#   `find_signals` 不再预先滤掉 INVALIDATED 段（下标必须与入参列表对齐）。
+#   常驻判据见 tests/chan/test_signal.py（test_third_buy_point_after_leaving_pivot、
+#   test_third_sell_point_is_symmetric、
+#   test_leaving_segment_is_the_pivot_last_segment_not_the_next_one、
+#   test_third_point_reads_segments_by_input_index、test_real_data_must_produce_signals）
+#   与 tests/scan/test_scanner.py::test_scan_real_engine_finds_pivot_and_signal_on_crafted_path。
 # theory: L20-THIRD-POINT-POSITION
 # quote: 一个次级别走势类型向上离开缠中说禅走势中枢，然后以一个次级别走势类型回试，其低点不跌破ZG，则构成第三类买点；一个次级别走势类型向下离开缠中说禅走势中枢，然后以一个次级别走势类型回抽，其高点不升破ZD，则构成第三类卖点。
 # source: 缠中说禅《教你炒股票108课》第20课《缠中说禅走势中枢级别扩张及第三类买卖点》

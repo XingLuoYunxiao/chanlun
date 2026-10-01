@@ -7,7 +7,8 @@
   与「盘整背驰」分开，本实现只做**趋势背驰**（至少两个中枢依次下降）。
 - **第二类买点**：第一类买点之后，次级别回抽**不破**第一类买点的低点。
 - **第三类买点**：向上**离开中枢**后，次级别回抽**不回到中枢区间**（低点 > ZG）。
-  卖点全部对称。
+  卖点全部对称。「离开」是**位置**：把价格带出区间的那一段是中枢组的最后一段
+  `segs[p.end_idx]`，回抽是紧随其后的 `segs[p.end_idx + 1]`（第 20 课）。
 
 可靠性约定
 ----------
@@ -87,6 +88,15 @@ def _area(macd_df: pd.DataFrame | None, seg: Segment) -> float | None:
         return None
 
 
+def _dead(seg: Segment) -> bool:
+    """已作废的线段不参与信号。
+
+    下标必须按**入参列表**对齐（`Pivot.end_idx` 是入参列表的下标），所以这里
+    不能在过滤后的列表上取段，只能在取到之后判废。
+    """
+    return seg.status is Status.INVALIDATED
+
+
 def _seal(sig: Signal, seg: Segment) -> Signal:
     """触发段确认了，信号才算确认；否则标 TENTATIVE。"""
     if seg.status is Status.CONFIRMED and seg.confirmed_at is not None:
@@ -114,8 +124,12 @@ def find_signals(
     level: str = "day",
     macd_df: pd.DataFrame | None = None,
 ) -> list[Signal]:
-    """按结构 + 力度找出全部三类买卖点，按时间排序后统一编号。"""
-    segs = [s for s in segments if s.status is not Status.INVALIDATED]
+    """按结构 + 力度找出全部三类买卖点，按时间排序后统一编号。
+
+    `segments` 必须与传给 `find_pivots` 的是**同一个列表**：`Pivot.end_idx`
+    是那个列表的下标，少一段都会让离开段/回试段整体错位。
+    """
+    segs = list(segments)
     if macd_df is None and bars is not None and len(bars) > 0:
         macd_df = macd(bars["close"])
 
@@ -130,20 +144,37 @@ def find_signals(
 
 def _third_kind(segs: list[Segment], pivots: Sequence[Pivot],
                 level: str) -> list[Signal]:
-    """第三类买卖点：离开中枢后回抽不回中枢。"""
+    """第三类买卖点：离开中枢后回抽不回中枢（第 20 课，判据是**位置**）。
+
+    第 20 课原文：「一个次级别走势类型向上离开缠中说禅走势中枢，然后以一个
+    次级别走势类型回试，其低点不跌破ZG，则构成第三类买点」——判定标准是价格
+    与中枢区间的比较，不是线段自己的方向。
+
+    离开段 = **把价格带出中枢区间的那一段** = 中枢组的最后一段
+    `segs[p.end_idx]`：它的起点还在区间里（所以按「有重叠」被并进了中枢），
+    终点已经在 ZG 之上。回试段 = 紧随其后的 `segs[p.end_idx + 1]`。
+
+    为什么不能取 `segs[p.end_idx + 1]` 当离开段：真实线段首尾相连（相邻两段
+    端点价格与时间戳完全重合），中枢最后一段之后的这一段**必然是反向回抽段**
+    —— 它若整段在 ZG 之上，方向必然向下。于是「离开段方向向上且低点 > ZG」
+    在真实数据上恒不成立，本函数曾经在 148 只票 / 193 个中枢上产出 0 个信号，
+    而在合成用例上通过，只因为那些合成线段是断开的（相邻段之间留了缺口）。
+    """
     out: list[Signal] = []
     for p in pivots:
-        leave_i, back_i = p.end_idx + 1, p.end_idx + 2
+        leave_i, back_i = p.end_idx, p.end_idx + 1
         if back_i >= len(segs):
             continue
         leave, back = segs[leave_i], segs[back_i]
-        if leave.direction == 1 and leave.low > p.zg:
+        if _dead(leave) or _dead(back):
+            continue
+        if leave.direction == 1 and leave.high > p.zg:
             if back.direction == -1 and back.low > p.zg:
                 out.append(_sig(
                     SignalKind.B3, back, level, p.idx,
                     f"向上离开中枢{p.idx}(ZG={p.zg:.3f})后回抽低点 {back.low:.3f} 不回中枢",
                 ))
-        elif leave.direction == -1 and leave.high < p.zd:
+        elif leave.direction == -1 and leave.low < p.zd:
             if back.direction == 1 and back.high < p.zd:
                 out.append(_sig(
                     SignalKind.S3, back, level, p.idx,
@@ -154,18 +185,22 @@ def _third_kind(segs: list[Segment], pivots: Sequence[Pivot],
 
 def _entering_and_leaving(segs: list[Segment], pivots: Sequence[Pivot],
                           want: int) -> list[tuple[Pivot, Segment, Segment | None]]:
-    """每个中枢的「离开段」以及上一个中枢的「离开段」，用于背驰比较。"""
+    """每个中枢的「离开段」以及上一个中枢的「离开段」，用于背驰比较。
+
+    离开段同样取**位置**口径：中枢组的最后一段 `segs[p.end_idx]`，也就是把
+    价格带出中枢区间、创出新极值的那一段 —— 第 24 课比较力度的对象正是它。
+    取 `segs[p.end_idx + 1]` 会把回抽段当离开段，方向必然与趋势相反，
+    于是 `leave.direction != want`，第一类买卖点永远不会触发。
+    """
     out = []
     for k, p in enumerate(pivots):
-        if p.end_idx + 1 >= len(segs):
-            continue
-        leave = segs[p.end_idx + 1]
-        if leave.direction != want:
+        leave = segs[p.end_idx]
+        if _dead(leave) or leave.direction != want:
             continue
         prev = None
-        if k > 0 and pivots[k - 1].end_idx + 1 < len(segs):
-            cand = segs[pivots[k - 1].end_idx + 1]
-            if cand.direction == want:
+        if k > 0:
+            cand = segs[pivots[k - 1].end_idx]
+            if not _dead(cand) and cand.direction == want:
                 prev = cand
         out.append((p, leave, prev))
     return out

@@ -42,23 +42,18 @@
   "evidence": "# 尺子：缠论流水线审计脚本（24 只票 / 日线 / 2020-01-01..2026-09-29）\n$ cd chanlun && python -m chanlun.optimizer.cli --root . --audit\nmetrics = {\"b1\": 0, \"b2\": 0, \"b3\": 0, \"bars\": 38754, \"confirmed_segments\": 323, \"pivots\": 56, \"s1\": 0, \"s2\": 0, \"s3\": 0, \"segments\": 361, \"signal_problems\": 0, \"signals\": 0, \"stroke_max\": 69, \"stroke_median\": 6.0, \"trends_consolidation\": 6, \"trends_down\": 7, \"trends_up\": 10, \"zero_signal_codes\": 24}\n$ cd chanlun && python -m chanlun.optimizer.cli --root . --audit --patch optimizer/patches/round-001-G1a.patch\nmetrics = {\"b1\": 0, \"b2\": 0, \"b3\": 26, \"bars\": 38754, \"confirmed_segments\": 323, \"pivots\": 56, \"s1\": 0, \"s2\": 0, \"s3\": 12, \"segments\": 361, \"signal_problems\": 0, \"signals\": 38, \"stroke_max\": 69, \"stroke_median\": 6.0, \"trends_consolidation\": 6, \"trends_down\": 7, \"trends_up\": 10, \"zero_signal_codes\": 3}\n[口径] 冻结快照 basis_sha256=1e315b566426ea2c，24/24 只票\n# 注：命令每次重跑都会重新冻结当时的行情仓，basis_sha256 会随数据变；同一轮里的 before/after 用的是同一份快照。",
   "finding": "第三类买卖点整个失效：_third_kind 拿 end_idx+1 / end_idx+2 当「离开段 / 回试段」，实测 44/57 个中枢的 end_idx+1 方向与离开方向相反（exit_dir_matches_position=0），24 只票 5 年一个买卖点都不出（zero_signal_codes=24 → 2）",
   "kind": "theory",
-  "notes": "24x7 回访：补丁内容不变，重新量一次当前数据。\n[口径] 冻结快照 basis_sha256=1e315b566426ea2c，24/24 只票\n[机制] before={\"pivots_with_next\": 56, \"exit_entirely_outside\": 42, \"exit_dir_matches_position\": 0, \"exit_dir_opposite_position\": 42, \"trend_groups\": 17, \"trend_group_leave_dir_ok\": 13, \"trend_group_prev_ok\": 0, \"trend_group_both_ok\": 0, \"b3_trunk\": 0, \"b3_positional\": 42, \"pivot_max_segments\": 14, \"pivot_over_9\": 8, \"pivot_segment_total\": 300}\n[机制] after={\"pivots_with_next\": 56, \"exit_entirely_outside\": 42, \"exit_dir_matches_position\": 0, \"exit_dir_opposite_position\": 42, \"trend_groups\": 17, \"trend_group_leave_dir_ok\": 13, \"trend_group_prev_ok\": 0, \"trend_group_both_ok\": 0, \"b3_trunk\": 0, \"b3_positional\": 42, \"pivot_max_segments\": 14, \"pivot_over_9\": 8, \"pivot_segment_total\": 300}\n[基准漂移] finding 里的流水线计数写自 24/24 只票那一版口径（bars 39240）；本条的 before/after 量自本轮冻结快照（见上一行 [口径]）。取证期间全市场同步正在重写 data/day，600000 与 000001 暂时不在库里，所以每轮绝对计数少 4 个信号；同一快照内的 before/after 差值不受影响，判据也不依赖缺掉的那两只票。",
+  "notes": "24x7 回访：补丁内容不变，重新量一次当前数据。\n[口径] 冻结快照 basis_sha256=1e315b566426ea2c，24/24 只票\n[机制] before={\"pivots_with_next\": 56, \"exit_entirely_outside\": 42, \"exit_dir_matches_position\": 0, \"exit_dir_opposite_position\": 42, \"trend_groups\": 17, \"trend_group_leave_dir_ok\": 13, \"trend_group_prev_ok\": 0, \"trend_group_both_ok\": 0, \"b3_trunk\": 0, \"b3_positional\": 42, \"pivot_max_segments\": 14, \"pivot_over_9\": 8, \"pivot_segment_total\": 300}\n[机制] after={\"pivots_with_next\": 56, \"exit_entirely_outside\": 42, \"exit_dir_matches_position\": 0, \"exit_dir_opposite_position\": 42, \"trend_groups\": 17, \"trend_group_leave_dir_ok\": 13, \"trend_group_prev_ok\": 0, \"trend_group_both_ok\": 0, \"b3_trunk\": 0, \"b3_positional\": 42, \"pivot_max_segments\": 14, \"pivot_over_9\": 8, \"pivot_segment_total\": 300}\n[基准漂移] finding 里的流水线计数写自 24/24 只票那一版口径（bars 39240）；本条的 before/after 量自本轮冻结快照（见上一行 [口径]）。取证期间全市场同步正在重写 data/day，600000 与 000001 暂时不在库里，所以每轮绝对计数少 4 个信号；同一快照内的 before/after 差值不受影响，判据也不依赖缺掉的那两只票。\n[历史] 采纳前的实测：round-001-G1a.patch 单独 apply 进主干会撞掉 3 个常驻用例（tests/chan/test_signal.py::test_third_buy_point_after_leaving_pivot、::test_third_sell_point_is_symmetric、::test_tentative_trigger_segment_yields_tentative_signal）——它们钉的正是被改掉的旧口径，所以采纳时判据必须一起改（改判据引了第 20 课原文）。采纳后这些用例按位置口径重写，并新增 test_real_data_must_produce_signals（真实数据必须出信号）与 tests/scan/test_scanner.py 的端到端命中。",
   "patch_file": "round-001-G1a.patch",
-  "patch_sha256": "9d57dff8eac493a9",
+  "patch_sha256": "b771a9ceacbfcd23",
   "probe": "G1a",
   "round": 1,
   "started_at": "2026-10-01T13:04:10+08:00",
-  "status": "proposed",
+  "status": "adopted",
   "tests": {
-    "after": "3 failed, 650 passed, 13 deselected, 1 warning in 14.53s",
+    "after": "654 passed, 12 deselected, 1 warning in 15.41s",
     "before": "654 passed, 12 deselected, 1 warning in 15.41s",
-    "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
-    "failed_tests": [
-      "tests/chan/test_signal.py::test_third_buy_point_after_leaving_pivot",
-      "tests/chan/test_signal.py::test_third_sell_point_is_symmetric",
-      "tests/chan/test_signal.py::test_tentative_trigger_segment_yields_tentative_signal"
-    ],
-    "summary": "round-001-G1a.patch 单独 apply 进主干后跑同一套测试：主干基线「654 passed, 12 deselected, 1 warning in 15.41s」→ 打补丁后「3 failed, 650 passed, 13 deselected, 1 warning in 14.53s」，新增失败 3 个：tests/chan/test_signal.py::test_third_buy_point_after_leaving_pivot、tests/chan/test_signal.py::test_third_sell_point_is_symmetric、tests/chan/test_signal.py::test_tentative_trigger_segment_yields_tentative_signal。这些用例钉的正是本提案要改的行为，所以采纳时必须连同判据一起改（改判据要引 theory 原文），不能只看 before/after 变好就落地。"
+    "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py",
+    "summary": "已采纳：补丁已是主干的一部分，本工具不再重复 apply（git 会静默跳过），判据在常驻回归里"
   },
   "theory_id": "L20-THIRD-POINT-POSITION"
 }

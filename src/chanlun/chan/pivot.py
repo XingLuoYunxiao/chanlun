@@ -95,15 +95,23 @@ def find_pivots(segments: Sequence[Segment], level: str) -> list[Pivot]:
     也不参与延伸），因此调用方可以安全地把「含未确认尾段」的线段序列传进来。
 
     返回的 `start_idx`/`end_idx` 是**入参列表**的下标（未确认段被跳过后，
-    下标可能不连续，这是刻意的：调用方拿 `segments[p.end_idx + 1]` 就能直接
-    取到封闭该中枢的「离开段」）。
+    下标可能不连续，这是刻意的）。
+
+    下标约定（第 20 课的口径，消费方别搞反）：
+
+    - `segments[end_idx]` = 中枢组的最后一段 = **离开段**，即把价格带出
+      `[zd, zg]` 的那一段。它的起点仍在区间内（所以按「有重叠」并入了中枢），
+      终点已经跑到 ZG 之上或 ZD 之下。三类买卖点的位置判据看它。
+    - `segments[end_idx + 1]` = **回试段**，紧随其后、方向与离开相反的那一段。
+      「回抽不回中枢」看它。
     """
     positions = [i for i, s in enumerate(segments)
                  if s.status is Status.CONFIRMED]
     confirmed = [segments[i] for i in positions]
-    # 离开段 = 下一个「确认」线段；它可能不在入参列表里紧邻的位置（中间隔着
-    # 未确认段），所以确认时间必须按 confirmed 列表取。
-    leave_of: list[Segment | None] = [
+    # 中枢被离开段封闭，而离开段要到被破坏时才锁定，所以确认时间取**下一个
+    # 确认段**（回试段）的确认时间 —— 早于此都还在延伸，属于未来函数。它可能
+    # 不在入参列表里紧邻的位置（中间隔着未确认段），所以要按 confirmed 列表取。
+    back_of: list[Segment | None] = [
         confirmed[k + 1] if k + 1 < len(confirmed) else None
         for k in range(len(confirmed))
     ]
@@ -125,7 +133,7 @@ def find_pivots(segments: Sequence[Segment], level: str) -> list[Pivot]:
             j += 1
 
         group = confirmed[i:j]
-        leave = leave_of[j - 1]
+        back = back_of[j - 1]
         pivots.append(
             Pivot(
                 idx=len(pivots),
@@ -139,19 +147,19 @@ def find_pivots(segments: Sequence[Segment], level: str) -> list[Pivot]:
                 end_ts=group[-1].end.end.ts,
                 level=level,
                 # 右端用尽可用线段 → 右侧还可能延伸，未定。
-                status=Status.TENTATIVE if leave is None else Status.CONFIRMED,
-                # 中枢被「离开段」封闭，而离开段本身也要到被破坏时才锁定，
-                # 所以中枢的确认时间就是离开段的确认时间 —— 早于此都还在
+                status=Status.TENTATIVE if back is None else Status.CONFIRMED,
+                # 中枢由离开段封闭，而离开段要到「回试段确认」时才锁定，
+                # 所以中枢的确认时间取回试段的确认时间 —— 早于此都还在
                 # 延伸，属于未来函数。
                 confirmed_at=(
-                    None if leave is None
-                    else (leave.confirmed_at or leave.end.end.ts)
+                    None if back is None
+                    else (back.confirmed_at or back.end.end.ts)
                 ),
                 src_start=group[0].src_start,
                 src_end=group[-1].src_end,
             )
         )
-        # 离开段（confirmed 下标 j）是下一个中枢的候选起点；若它与紧随的两段
+        # 回试段（confirmed 下标 j）是下一个中枢的候选起点；若它与紧随的两段
         # 构成不了重叠，循环里的 i += 1 会继续右移，等价于「离开后回抽」的再寻找。
         i = j
 

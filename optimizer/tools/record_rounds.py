@@ -34,6 +34,7 @@ from chanlun.optimizer.agent import (  # noqa: E402
     default_probes,
 )
 from chanlun.optimizer.journal import ADOPTED, read_all, write_entry  # noqa: E402
+from chanlun.optimizer.theory import parse_header  # noqa: E402
 
 CLI = "python -m chanlun.optimizer.cli --root . --audit"
 
@@ -83,6 +84,27 @@ def patch_key(entry, results: dict) -> str | None:
         if cand and cand in keys:
             return cand
     return None
+
+
+def adopted_note(patches_dir: Path, entry) -> str:
+    """已采纳的说明取自**补丁头** ``# adopted_note:``，不写死在某一个观测点上。
+
+    这里曾经写死「判据搬进 tests/optimizer/test_optimizer.py::test_adopted_patches_
+    are_regression_tested_in_trunk 与 test_summary_breaks_the_check_down_by_kind」——
+    那是 G5a 那两个用例。G1a 采纳后照抄这句话，就会把它的判据指到毫不相干的测试上。
+    """
+    detail = ""
+    if entry.patch_file:
+        path = patches_dir / entry.patch_file
+        if path.is_file():
+            detail = " ".join(
+                parse_header(path.read_text(encoding="utf-8")).get("adopted_note", "").split()
+            )
+    head = "[采纳] 补丁已是主干的一部分（补丁头 `# status: adopted`）。"
+    tail = "本观测点不再作为提案回访。"
+    if detail:
+        return f"{head}{detail}{tail}"
+    return f"{head}判据搬进常驻回归。{tail}"
 
 
 def tests_for(entry, results: dict) -> dict:
@@ -186,13 +208,7 @@ def main() -> int:
                 (e for e in read_all(opt.journal_dir) if e.probe == probe.rid), None
             )
             if old is not None:
-                note = (
-                    "[采纳] 补丁已是主干的一部分（补丁头 `# status: adopted`），"
-                    "判据搬进常驻回归：tests/optimizer/test_optimizer.py::"
-                    "test_adopted_patches_are_regression_tested_in_trunk 与"
-                    " test_summary_breaks_the_check_down_by_kind。"
-                    "本观测点不再作为提案回访。"
-                )
+                note = adopted_note(opt.patches_dir, old)
                 fresh_tests = tests_for(old, test_results)
                 # 幂等：状态、判据、说明都对齐成「已采纳」，重复跑不会追加。
                 stale = (
