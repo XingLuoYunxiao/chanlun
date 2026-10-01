@@ -1,4 +1,7 @@
 # kind: engineering
+# status: adopted
+# adopted_at: 2026-10-01
+# adopted_note: 已进主干：自选股行的未确认买卖点补上「（未确认）」，与中栏 ledger 的 chip 口径一致（用户 Request A/B 那一轮里与中枢日期区间一并落的）。判据落在常驻回归 tests/web/test_frontend_watchlist.py::test_watch_row_marks_tentative_signals（另有一份真实 DOM 证据：000002 的 s3 2026-09-23 行）。本补丁的 hunk 已在主干里（且原上下文行被同一次改动改写过），再 apply 必然失败 —— 保留原文只为留下提案记录。
 # finding: 自选股行把未确认的买卖点显示得和已确认的一模一样（app.js 第742行只印 kind+ts），而页面免责声明只提「笔画与中枢」未确认、没提买卖点；同一份数据在中栏 ledger 里反而标了确认/未确认。
 # evidence: cd chanlun && curl -s 'http://127.0.0.1:8888/api/watchlist/structure'  # 4 只自选股里 000002 唯一的信号 s3 2026-09-23 status=tentative confirmed_at=null，自选股行只印「三卖 2026-09-23」无任何未确认标记；同一份数据在中栏 ledger 里是有「未确认」chip 的。另 600030 行印「中枢 未确认 23.39–31.68」+「三买 2025-04-07 @ 22.97」，该三买属于上一个中枢（ZG=20.25），价格低于所印中枢的下沿
 diff --git a/src/chanlun/web/static/app.js b/src/chanlun/web/static/app.js

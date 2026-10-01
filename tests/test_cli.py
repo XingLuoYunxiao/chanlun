@@ -279,3 +279,148 @@ def test_sync_rejects_bad_since_format(env):
     with pytest.raises(SystemExit) as exc:
         cli.main(["sync", "--period", "day", "--codes", "600000", "--since", "2021/01/01"])
     assert exc.value.code == 2
+
+
+def test_derived_periods_are_not_treated_as_minute_periods():
+    """周/月是**派生周期**，不是分钟周期。
+
+    `_is_minute_period` 曾经写成 `period != "day"`：一旦周期表里多了周线/月线，
+    它们就会被当成分钟周期去圈自选池范围（`_period_scope` 拿它算同步范围），
+    而它们根本不需要同步 —— 范围规则必须按「派生与否」判，不能按「是不是日线」判。
+    """
+    assert cli._is_minute_period("30") is True
+    assert cli._is_minute_period("5") is True
+    assert cli._is_minute_period("day") is False
+    assert cli._is_minute_period("week") is False
+    assert cli._is_minute_period("month") is False
+
+
+# ---------------- 默认自选池 = 七个大盘指数 ----------------
+def test_seed_watchlist_resets_the_pool_to_the_seven_indices(env, monkeypatch):
+    """用户要的是「默认只放指数」，所以缺省必须**清空重建**，不是往旧池子里补。
+
+    指数走 `adjustflag=3`（不复权）：指数没有除权，用缺省的 `2` 取数价格一样，
+    但 `sync_state.adjust` 会替指数声称「前复权」，这句话会一路传到页面。
+    """
+    seen: list[tuple[str, str]] = []
+
+    def fake_fetch(code, period, start, end, adjust="2"):
+        seen.append((str(code), str(adjust)))
+        return _df(2, "2024-01-02")
+
+    monkeypatch.setattr(cli, "fetch_bars", fake_fetch)
+    meta.init(env.data.meta_db).close()
+    conn = meta.init(env.data.meta_db)
+    meta.add_watch(conn, "600000", "浦发银行")
+    conn.close()
+
+    rc = cli.main(["seed-watchlist"])
+    assert rc == 0
+
+    conn = meta.init(env.data.meta_db)
+    try:
+        codes = [str(r["code"]) for r in meta.get_watchlist(conn)]
+        names = {str(r["code"]): str(r["name"]) for r in meta.get_watchlist(conn)}
+        sync = {str(r["code"]): str(r["adjust"]) for r in meta.all_sync(conn, "day")}
+    finally:
+        conn.close()
+    assert codes == [code for code, _ in meta.DEFAULT_WATCHLIST]
+    assert "600000" not in codes, "旧的股票自选要清掉"
+    assert names["399006"] == "创业板指"
+    assert all(adjust == "3" for _code, adjust in seen), seen
+    assert set(sync.values()) == {"3"}
+    assert store.exists("sh.000001", "day")
+
+
+def test_seed_watchlist_keep_does_not_clear_the_pool(env, monkeypatch):
+    monkeypatch.setattr(cli, "fetch_bars", lambda *a, **k: _df(2, "2024-01-02"))
+    meta.init(env.data.meta_db).close()
+    conn = meta.init(env.data.meta_db)
+    meta.add_watch(conn, "600000", "浦发银行")
+    conn.close()
+
+    assert cli.main(["seed-watchlist", "--keep", "--no-sync"]) == 0
+    conn = meta.init(env.data.meta_db)
+    try:
+        codes = [str(r["code"]) for r in meta.get_watchlist(conn)]
+    finally:
+        conn.close()
+    assert codes[0] == "600000", "用户排在第一位的票不该被搬走"
+    assert "sh.000001" in codes
+
+
+def test_seed_watchlist_reports_zero_row_indices_instead_of_pretending(env, monkeypatch):
+    """数据源没有这只指数时（实测 sh.000688 科创50 返回 0 行），
+
+    不许静默当成成功：`error` 里要写明原因，`rows` 要等于库里真实行数，
+    否则「自选栏有 7 只、其中一只永远空白」会变成一个没人解释得清的现象。
+    """
+    def fake_fetch(code, period, start, end, adjust="2"):
+        if str(code).endswith("000688"):
+            return _df(0, "2024-01-02")
+        return _df(2, "2024-01-02")
+
+    monkeypatch.setattr(cli, "fetch_bars", fake_fetch)
+    meta.init(env.data.meta_db).close()
+    assert cli.main(["seed-watchlist"]) == 0
+
+    conn = meta.init(env.data.meta_db)
+    try:
+        rows = {r["code"]: r for r in meta.all_sync(conn, "day")}
+    finally:
+        conn.close()
+    assert rows["sh.000688"]["rows"] == 0
+    assert rows["sh.000688"]["error"] and "0 行" in rows["sh.000688"]["error"]
+    assert rows["sh.000001"]["error"] is None
+
+
+def _write_day(path: Path, rows: list[tuple[int, float, float, float, float]]) -> None:
+    """写一个通达信 `.day` 文件：32 字节/条，`<IIIIIfII`。"""
+    import struct
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    blob = b"".join(
+        struct.pack("<IIIIIfII", date, int(o * 100), int(h * 100), int(l * 100),
+                    int(c * 100), amt, vol, 0)
+        for date, o, h, l, c in rows
+        for amt, vol in [(0.0, 0)]
+    )
+    path.write_bytes(blob)
+
+
+def test_seed_watchlist_falls_back_to_the_local_tdx_package(env, monkeypatch):
+    """baostock 没有科创50（实测 0 行），本地通达信整包里有 —— 用它补上，而不是留个空行。
+
+    整包写的是不复权价，指数也没有除权，所以这条兜底不改口径；但**必须验号段**：
+    `sz000688` 是另一只个股（收 24.24），拿它顶替指数就是换了一只票。
+    """
+    monkeypatch.setattr(cli, "fetch_bars", lambda *a, **k: _df(0, "2024-01-02"))
+    _write_day(
+        env.data.root / "tdx_raw" / "sh" / "lday" / "sh000688.day",
+        [(20240102, 1000.0, 1010.0, 990.0, 1005.0), (20240103, 1005.0, 1020.0, 1000.0, 1015.0)],
+    )
+    meta.init(env.data.meta_db).close()
+    assert cli.main(["seed-watchlist"]) == 0
+
+    conn = meta.init(env.data.meta_db)
+    try:
+        rows = {r["code"]: r for r in meta.all_sync(conn, "day")}
+    finally:
+        conn.close()
+    assert rows["sh.000688"]["rows"] == 2
+    assert rows["sh.000688"]["error"] is None
+    assert store.exists("sh.000688", "day")
+    df = store.read("sh.000688", "day")
+    assert list(df["ts"]) == ["2024-01-02", "2024-01-03"]
+    assert df["close"].iloc[-1] == 1015.0
+
+
+def test_tdx_fallback_refuses_a_stock_number_segment(env):
+    """同一串数字在别的号段是个股：`sh600000` 不是指数，兜底不许把它当指数收下。"""
+    _write_day(
+        env.data.root / "tdx_raw" / "sh" / "lday" / "sh600000.day",
+        [(20240102, 10.0, 10.5, 9.9, 10.2)],
+    )
+    df, why = cli._tdx_index_frame(env, "sh.600000")
+    assert df is None
+    assert "不是指数" in why

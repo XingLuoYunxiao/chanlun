@@ -22,6 +22,8 @@
     </label>
     <div class="periods" role="tablist" aria-label="级别">
       <button type="button" class="period is-on" role="tab" aria-selected="true" data-period="day">日线</button>
+      <button type="button" class="period" role="tab" aria-selected="false" data-period="week">周线</button>
+      <button type="button" class="period" role="tab" aria-selected="false" data-period="month">月线</button>
       <button type="button" class="period" role="tab" aria-selected="false" data-period="30">30分</button>
       <button type="button" class="period" role="tab" aria-selected="false" data-period="5">5分</button>
     </div>
@@ -69,7 +71,7 @@
       <div class="watch-empty">自选股是空的。把常看的票加进来，点一下就能看它的笔、线段、中枢和买卖点。</div>
     </div>
 
-    <p class="watch-foot">数据为本地已同步的日线；缺数据的票会标出来。</p>
+    <p class="watch-foot">默认是七个大盘指数；日线在本地，周线/月线由日线聚合。缺数据的票会标出来，↑↓ 调顺序。</p>
   </aside>
 
   <main class="stage">

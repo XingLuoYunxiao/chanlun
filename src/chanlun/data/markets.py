@@ -103,3 +103,25 @@ def store_key(bs_code: str) -> str:
     if not digits:
         return text
     return text if needs_prefix(market, digits) else digits
+
+
+# 指数的号段：沪市 `000xxx`、深市 `399xxx`、北交所 `899xxx`。
+INDEX_PREFIXES: dict[str, tuple[str, ...]] = {
+    "sh": ("000",),
+    "sz": ("399",),
+    "bj": ("899",),
+}
+
+
+def is_index(code: str) -> bool:
+    """是不是**指数**。必须带市场前缀：裸码 `000001` 是平安银行，`399001` 也判不出来。
+
+    用途是同步时的复权口径 —— 指数没有除权除息，必须按 `adjustflag=3`（不复权）
+    落库，否则 `sync_state.adjust` 会写成前复权，页面在指数上显示「前复权」，
+    而它的含义（除权参考价折算）对指数根本不成立。
+    """
+    text = str(code or "").strip().lower()
+    market, _, digits = text.partition(".")
+    if not digits:
+        return False
+    return digits.startswith(INDEX_PREFIXES.get(market, ()))

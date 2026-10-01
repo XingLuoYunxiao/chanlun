@@ -90,3 +90,27 @@ def test_needs_prefix(market, digits, needed):
 )
 def test_store_key(bs_code, key):
     assert markets.store_key(bs_code) == key
+
+
+@pytest.mark.parametrize(
+    ("code", "is_idx"),
+    [
+        ("sh.000001", True),    # 上证指数
+        ("sh.000300", True),    # 沪深300
+        ("sh.000688", True),    # 科创50
+        ("sz.399001", True),    # 深证成指
+        ("sz.399006", True),    # 创业板指
+        ("bj.899050", True),    # 北证50
+        ("sh.600000", False),
+        ("sz.000001", False),   # 平安银行：同一个号段，靠市场区分
+        ("000001", False),      # 裸码判不了指数 —— 只能是股票
+        ("399001", False),      # 深市裸码同理：保留前缀才认得出是指数
+    ],
+)
+def test_is_index(code, is_idx):
+    """指数靠**市场前缀 + 号段**判定：`sh.000xxx`/`sz.399xxx`/`bj.899xxx`。
+
+    这件事关系到同步时的复权口径（指数没有除权，必须按不复权落库），
+    也关系到裸码不能冒充指数（`000001` 是平安银行）。
+    """
+    assert markets.is_index(code) is is_idx

@@ -49,7 +49,7 @@ from tqdm import tqdm
 from .calendar import get_calendar
 from .chan.macd import macd
 from .config import PROJECT_ROOT, Config, load_config
-from .data import markets, meta, quality, store
+from .data import markets, meta, periods, quality, store
 from .data.baostock_source import fetch_bars, strip_bs_code, to_bs_code
 from .data.factors import MIN_OVERLAP
 from .data.universe import build_universe
@@ -95,6 +95,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_factors(args, cfg)
     if args.command == "serve":
         return _cmd_serve(args, cfg)
+    if args.command == "seed-watchlist":
+        return _cmd_seed_watchlist(args, cfg)
     _build_parser().print_help()
     return 2
 
@@ -171,6 +173,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p_serve = sub.add_parser("serve", help="启动盘后看盘页（FastAPI + ECharts）")
     p_serve.add_argument("--host", default=None, help="监听地址，缺省取配置（127.0.0.1）")
     p_serve.add_argument("--port", type=int, default=None, help="端口，缺省取配置（8888）")
+
+    p_seed = sub.add_parser(
+        "seed-watchlist",
+        help="把自选池重置成七个大盘指数（上证/深证/创业板/沪深300/上证50/中证500/科创50）")
+    p_seed.add_argument(
+        "--keep", action="store_true",
+        help="只补缺的，不清空已有自选（缺省清空重建：用户要的是「默认只放指数」）")
+    p_seed.add_argument(
+        "--no-sync", action="store_true",
+        help="只改自选池，不联网同步日线（缺省把缺的指数一并拉下来）")
+    p_seed.add_argument(
+        "--since", type=_parse_date, default=None, metavar="YYYY-MM-DD",
+        help="本地无数据的指数从这个日期开始拉（默认 1990-01-01）")
     return parser
 
 
@@ -285,6 +300,108 @@ def _cmd_serve(args, cfg: Config) -> int:
         print(f"启动失败：{exc}", file=sys.stderr)
         return 3
     return 0
+
+
+def _tdx_index_frame(cfg: Config, code: str) -> tuple[pd.DataFrame | None, str]:
+    """本地通达信整包里有没有这只**指数**的日线。返回 `(df, 说明)`。
+
+    为什么需要这条兜底：baostock 没有科创50（实测 `sh.000688` 三次重登都返回 0 行），
+    而用户点名要它进默认自选池。通达信整包里 `sh000688.day` 是有的（1637 根，
+    2019-12-31 起，与科创50 指数 2019-12-31 基日吻合），且整包写的就是不复权价 ——
+    指数本来也没有除权。**必须用 `tdx.is_index` 验号段**：`sz000688` 是另一只
+    个股（收 24.24），拿它顶替指数就是换了一只票。
+    """
+    from .data import tdx
+
+    # 找文件用**带市场前缀**的形式（`sh600000.day` 的命名规则），不要用落库键：
+    # 落库键对普通个股是裸码（`600000`），拿它拼路径会拼出个不存在的文件，
+    # 于是「号段不是指数」这条检查就永远走不到。
+    market, _, bare = to_bs_code(code).partition(".")
+    if not market or len(bare) != 6 or not bare.isdigit():
+        return None, ""
+    path = cfg.data.root / "tdx_raw" / market / "lday" / f"{market}{bare}.day"
+    if not path.is_file():
+        return None, f"本地通达信整包里也没有 {path.name}"
+    if not tdx.is_index(market, bare):
+        return None, f"通达信 {path.name} 不是指数（号段不符），不用它冒充指数"
+    df = tdx.parse_file(path)
+    return df, f"取自本地通达信整包 {path.name}（不复权，{len(df)} 根）"
+
+
+def _cmd_seed_watchlist(args, cfg: Config) -> int:
+    """把自选池重置成七个大盘指数，并把缺的日线一并拉下来。
+
+    为什么单独取数、不复用 `_sync_period`：
+
+    1. **指数的复权口径与股票不同**。指数没有除权，必须按不复权取（baostock `adjustflag=3`）；
+       而 `_sync_period` 用的是 `cfg.bs_adjust`（缺省 `2`=前复权）。价格上两者对指数恰好相同，
+       但 `sync_state.adjust` 会替指数声称「前复权」，这句话一路传到页面的复权说明里。
+    2. 指数一共七只、单只几百到几千根，**每次都全量重拉**最省事也最不容易出错：
+       增量拉法会让「库里有 1393 根（2021 起）」的沪深300 永远停在 2021 起。
+    """
+    conn = meta.init(cfg.data.meta_db)
+    try:
+        rows = meta.seed_watchlist(conn, replace=not bool(args.keep))
+        listed = "、".join(f"{code} {name}" for code, name in meta.DEFAULT_WATCHLIST)
+        print(f"自选池：{len(rows)} 只 —— {listed}")
+        if args.no_sync:
+            return 0
+        cal = get_calendar()
+        end = cal.last_trading_day(dt.date.today())
+        ok = failed = skipped = 0
+        for code, _name in meta.DEFAULT_WATCHLIST:
+            try:
+                start = _start_for(code, "day", True, cal, end, args.since)
+                df = fetch_bars(to_bs_code(code), "day", start, end, adjust="3")
+                origin = "baostock 不复权"
+                if len(df) == 0:
+                    # 数据源没有这只指数 → 先在**本地通达信整包**里找（科创50 就是这样来的）。
+                    fallback, why = _tdx_index_frame(cfg, code)
+                    if fallback is not None and len(fallback):
+                        df, origin = fallback, why
+                    else:
+                        # 两条路都没有：**不谎报**。库里有旧文件就照实记它的行数，
+                        # 并把原因写进 error —— 页面上它仍是「有数据」，日报会报出来。
+                        prev = meta.get_sync(conn, code, "day")
+                        have = store.read(code, "day") if store.exists(code, "day") else None
+                        _record(
+                            conn, code, "day", "3",
+                            start_ts=(str(have["ts"].iloc[0])
+                                      if have is not None and len(have) else None),
+                            end_ts=(str(have["ts"].iloc[-1])
+                                    if have is not None and len(have) else None),
+                            rows=len(have) if have is not None else int(prev["rows"]) if prev else 0,
+                            error=f"baostock 返回 0 行；{why or '本地无通达信整包'}",
+                        )
+                        skipped += 1
+                        log.warning("指数无数据 code=%s（baostock 0 行，%s）", code, why)
+                        continue
+                store.upsert(code, "day", df)
+                stored = store.read(code, "day")
+                _record(
+                    conn, code, "day", "3",
+                    start_ts=str(stored["ts"].iloc[0]) if len(stored) else None,
+                    end_ts=str(stored["ts"].iloc[-1]) if len(stored) else None,
+                    rows=len(stored), error=None,
+                )
+                ok += 1
+                print(f"  {code}: {len(stored)} 根（{origin}）"
+                      f" {stored['ts'].iloc[0]} → {stored['ts'].iloc[-1]}")
+            except Exception as exc:  # noqa: BLE001 - 单只失败不中断整批
+                failed += 1
+                prev = meta.get_sync(conn, code, "day")
+                _record(
+                    conn, code, "day", "3",
+                    start_ts=prev["start_ts"] if prev else None,
+                    end_ts=prev["end_ts"] if prev else None,
+                    rows=int(prev["rows"]) if prev else 0,
+                    error=str(exc),
+                )
+                log.warning("指数同步失败 code=%s: %s", code, exc)
+        print(f"指数日线：成功 {ok} 失败 {failed} 跳过 {skipped}（共 {len(meta.DEFAULT_WATCHLIST)} 只）")
+        return 0 if failed == 0 else 1
+    finally:
+        conn.close()
 
 
 def _cmd_sync(args, cfg: Config) -> int:
@@ -868,7 +985,13 @@ def _format_daily(rep: DailyReport) -> str:
 #: 5471 只 ≈100 小时，会直接撞上第二天开盘。所以分钟缺省只跑自选池。
 #: 显式 `--codes` 是用户自己圈定的范围，照办：范围已经是有界的，不存在误伤全市场这回事。
 def _is_minute_period(period: str) -> bool:
-    return str(period) != "day"
+    """**只有分钟周期**才按自选池圈范围。
+
+    不能写成 `period != "day"`：周线/月线是由日线聚合出来的**派生周期**，既不需要
+    单独同步，也不该被当成分钟周期圈进自选池（`_period_scope` 会拿它去算同步范围）。
+    """
+    key = str(period)
+    return not periods.is_derived(key) and key != "day"
 
 
 def _codes_for_period(conn: sqlite3.Connection, period: str, codes: Sequence[str],

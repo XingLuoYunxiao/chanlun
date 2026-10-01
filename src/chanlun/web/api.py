@@ -32,6 +32,7 @@ from ..chan.signal import find_signals
 from ..chan.types import Status, to_jsonable
 from ..data import adjust as adjust_mod
 from ..data import markets, meta, store
+from ..data import periods as periods_mod
 from ..data.baostock_source import to_bs_code
 from ..data.types import DataSourceError
 
@@ -40,7 +41,9 @@ router = APIRouter()
 #: 页面固定免责声明（原文也用于接口返回值，前端与推送共用一句话）。
 DISCLAIMER = "仅结构信号提示，不构成投资建议；结构为收盘后确认，非盘中实时。"
 
-PERIODS = ("day", "60", "30", "15", "5")
+#: 接口认得的周期。`week`/`month` **不落库**：本地日线聚合出来（见 `periods_mod`），
+#: 所以它们没有自己的 parquet，也不需要 `sync --period week`。
+PERIODS = ("day", "week", "month", "60", "30", "15", "5")
 _CODE_RE = re.compile(r"^(?:(sh|sz|bj)\.?)?(\d{6})$")
 
 #: 默认显示窗口（根数）。**窗口只决定看得见多少，不决定怎么划分**：
@@ -241,26 +244,61 @@ def _cfg(request: Request):
     return request.app.state.cfg
 
 
-def _read_bars(code: str, period: str, limit: int | None = None) -> pd.DataFrame:
-    """读某只票的行情。`limit=None` = **全量**。
+def _read_bars(code: str, period: str, limit: int | None = None, *,
+               requested: str | None = None) -> pd.DataFrame:
+    """读某只票的行情（**落库口径，未复权**）。`limit=None` = 全量。
 
     结构必须在完整历史上算完再裁窗口，所以 `snapshot_of` 走 `limit=None`；
     只有显示用的那一段才按根数截断。
+
+    派生周期（周/月）在这里**先聚合再截断**：反过来先截日线再聚合，第一根周K
+    就只剩窗口内的那几天，开盘价会变成一个不存在的价格。聚合永远基于全量日线。
+
+    `requested` 只影响**报错时说的是哪个周期**：用户请求的是周线，报错却说
+    「day 周期没有数据」，他会去 sync 日线；说清「周线由日线聚合」才能自救。
     """
     if period not in PERIODS:
         raise HTTPException(status_code=400, detail=f"不支持的周期: {period!r}（可选 {'/'.join(PERIODS)}）")
-    if not store.exists(code, period):
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"{code} 的 {period} 周期没有本地数据。"
-                f"请先同步：python -m chanlun sync --period {period} --codes {code}"
-            ),
-        )
-    df = store.read(code, period, limit=limit)
+    shown = requested or period
+    base = periods_mod.base_period(period)
+    if not store.exists(code, base):
+        if base != shown:
+            detail = (
+                f"{code} 的 {periods_mod.label(shown)}由{periods_mod.label(base)}聚合，"
+                f"但本地没有{periods_mod.label(base)}数据。"
+                f"请先同步：python -m chanlun sync --period {base} --codes {code}"
+            )
+        else:
+            detail = (
+                f"{code} 的 {shown} 周期没有本地数据。"
+                f"请先同步：python -m chanlun sync --period {shown} --codes {code}"
+            )
+        raise HTTPException(status_code=404, detail=detail)
+    df = store.read(code, base, limit=None if periods_mod.is_derived(period) else limit)
     if len(df) == 0:
-        raise HTTPException(status_code=404, detail=f"{code} 的 {period} 周期数据为空文件")
+        raise HTTPException(status_code=404, detail=f"{code} 的 {shown} 周期数据为空文件")
+    if periods_mod.is_derived(period):
+        df = periods_mod.aggregate(df, period)
+        if limit is not None and len(df) > limit:
+            df = df.tail(limit).reset_index(drop=True)
     return df
+
+
+def _period_frame(code: str, period: str, *, adjust: str, meta_db) -> tuple[pd.DataFrame, str, str, tuple]:
+    """读 + 复权 + （派生周期）聚合，返回 `(全量帧, 生效口径, 口径说明, 因子指纹)`。
+
+    **复权必须排在聚合前面**：后复权是把每一天的价格各乘一个因子，周K的开盘价取的是
+    那一周**第一天**的价格 —— 先把日线聚合成周线、再整根乘最后一个交易日的因子，
+    除权发生在周中间时开盘价就错了（最高/最低同理，它们可能来自不同的日子）。
+    所以顺序固定为：读日线 → 按日复权 → 再按周/月聚合。
+    """
+    base = periods_mod.base_period(period)
+    full = _read_bars(code, base, None, requested=period)
+    factors = pd.DataFrame() if meta_db is None else factors_for(meta_db, code)
+    full, effective, note = _apply_factors(full, factors, adjust, _stored_adjust(meta_db, code, base))
+    if periods_mod.is_derived(period):
+        full = periods_mod.aggregate(full, period)
+    return full, effective, note, _factor_fingerprint(factors)
 
 
 def _bars_payload(df: pd.DataFrame) -> list[dict[str, Any]]:
@@ -306,6 +344,9 @@ class StructureView:
     bars_total: int
     effective: str
     note: str
+    derived: bool = False
+    base_period: str = "day"
+    partial: bool | None = None
 
 
 def snapshot_of(code: str, period: str, limit: int, *, adjust: str = "qfq",
@@ -324,12 +365,9 @@ def snapshot_of(code: str, period: str, limit: int, *, adjust: str = "qfq",
     取数一律走 `_read_bars`：缺数据的 404 与周期校验必须只有一处实现，
     否则某条路径会绕过检查、拿着空 DataFrame 往下跑到 500。
     """
-    full = _read_bars(code, period, None)
-    factors = pd.DataFrame() if meta_db is None else factors_for(meta_db, code)
-    full, effective, note = _apply_factors(full, factors, adjust,
-                                          _stored_adjust(meta_db, code, period))
+    full, effective, note, fingerprint = _period_frame(code, period, adjust=adjust, meta_db=meta_db)
     last_ts = str(full["ts"].iloc[-1])
-    key = (code, period, effective, last_ts, _factor_fingerprint(factors))
+    key = (code, period, effective, last_ts, fingerprint)
     with _CACHE_LOCK:
         snap = _CACHE.get(key)
     if snap is None:
@@ -350,7 +388,24 @@ def snapshot_of(code: str, period: str, limit: int, *, adjust: str = "qfq",
         bars_total=len(full),
         effective=effective,
         note=note,
+        derived=periods_mod.is_derived(period),
+        base_period=periods_mod.base_period(period),
+        partial=_partial_last_bar(last_ts, period) if periods_mod.is_derived(period) else None,
     )
+
+
+def _partial_last_bar(last_ts: str, period: str) -> bool | None:
+    """派生的最后一根 K 线走完了没有。**不知道就返回 None**（不假装走完了）。
+
+    周末/月末的最后一根要等本周/本月最后一个交易日收盘才算定下来。页面据此标
+    「未走完」—— 不标的话，读图的人会把一根还在变的周K 当成定论去数中枢。
+    """
+    try:
+        from ..calendar import get_calendar
+
+        return not periods_mod.is_complete(last_ts, period, get_calendar())
+    except Exception:  # noqa: BLE001 - 日历取不到时宁可不说，也不谎报
+        return None
 
 
 def clear_cache() -> None:
@@ -367,10 +422,14 @@ def _rail_payload(code: str, period: str, limit: int, *, meta_db=None) -> dict[s
     拿不复权前收盘去除，每只票除权日都会凭空多出一根跌停。
 
     代价是每行多读一次 parquet（不算缠论、不进 `_CACHE`），换来自选栏与券商对得上账。
+
+    取数一律走**落库周期**（`base_period`）：这一格问的是「现在多少钱」，
+    与图表选的是日线还是周线无关；拿一根还在变的周K 的收盘价当"现价"是另一回事。
     """
-    stored_df = _read_bars(code, period, limit)
+    base = periods_mod.base_period(period)
+    stored_df = _read_bars(code, base, limit)
     factors = pd.DataFrame() if meta_db is None else factors_for(meta_db, code)
-    stored = _stored_adjust(meta_db, code, period)
+    stored = _stored_adjust(meta_db, code, base)
     # 不复权落库时库里就是原始价，前复权落库时要除回去 —— 拿反了会二次复权。
     # 注意反算用的是**该根 K 线当时**的因子：库里断更、因子表却已经走到下一段时，
     # 库内价仍是旧的复权价，不能直接当成交价用。
@@ -431,6 +490,9 @@ def structure_payload(view: StructureView, *, include_merged: bool = False) -> d
     body["counts"] = _counts(view.snap)
     body["counts_total"] = view.totals
     body["bars_total"] = view.bars_total
+    body["derived"] = view.derived
+    body["base_period"] = view.base_period
+    body["partial"] = view.partial
     body["disclaimer"] = DISCLAIMER
     return body
 
@@ -471,9 +533,9 @@ def bars(request: Request, code: str, period: str = "day",
     key = normalize_code(code)
     mode = normalize_adjust_or_400(adjust)
     periods = parse_ma(ma)
-    df = _read_bars(key, period, limit)
-    df, effective, note = _apply_factors(df, factors_for(cfg.data.meta_db, key), mode,
-                                       _stored_adjust(cfg.data.meta_db, key, period))
+    df, effective, note, _ = _period_frame(key, period, adjust=mode, meta_db=cfg.data.meta_db)
+    if len(df) > limit:
+        df = df.tail(limit).reset_index(drop=True)
     return {
         "code": key, "period": period, "count": len(df), "bars": _bars_payload(df),
         "adjust": mode, "adjust_effective": effective, "adjust_note": note,
@@ -491,8 +553,13 @@ def structure(request: Request, code: str, period: str = "day",
     periods = parse_ma(ma)
     view = snapshot_of(key, period, limit, adjust=mode, meta_db=cfg.data.meta_db)
     body = structure_payload(view, include_merged=merged)
+    conn = meta.init(cfg.data.meta_db)
+    try:
+        name = meta.name_of(conn, key)
+    finally:
+        conn.close()
     body.update({
-        "code": key, "period": period,
+        "code": key, "name": name, "period": period,
         "adjust": mode, "adjust_effective": view.effective, "adjust_note": view.note,
         "ma": ma_payload(view.bars, periods), "ma_periods": list(periods),
     })
@@ -539,6 +606,36 @@ async def watchlist_add(request: Request) -> dict[str, Any]:
     return {"ok": True, "code": code}
 
 
+@router.patch("/api/watchlist")
+async def watchlist_move(request: Request) -> dict[str, Any]:
+    """自选池的「改」= **上下移动**（用户 2026-10-01 选定）。
+
+    不做改名/改代码：代码是这只票的身份，改名只是显示；两者都会让「自选池里的顺序」
+    这件事被搅进一堆无关的写操作里。顺序是用户唯一的排序诉求，就只做顺序。
+    """
+    cfg = _cfg(request)
+    try:
+        body = await request.json()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"请求体不是合法 JSON: {exc}") from exc
+    code = normalize_code(str(body.get("code", "")))
+    try:
+        delta = int(body.get("delta"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="delta 只能是 -1（上移）或 +1（下移）") from exc
+    if delta not in (-1, 1):
+        raise HTTPException(status_code=400, detail=f"delta 只能是 -1（上移）或 +1（下移），收到 {delta}")
+    conn = meta.init(cfg.data.meta_db)
+    try:
+        known = {str(r["code"]) for r in meta.get_watchlist(conn)}
+        if code not in known:
+            raise HTTPException(status_code=404, detail=f"{code} 不在自选池里，无法移动")
+        order = meta.move_watch(conn, code, delta)
+    finally:
+        conn.close()
+    return {"ok": True, "code": code, "delta": delta, "order": order}
+
+
 @router.delete("/api/watchlist")
 def watchlist_remove(request: Request, code: str) -> dict[str, Any]:
     cfg = _cfg(request)
@@ -566,7 +663,9 @@ def watchlist_structure(request: Request, period: str = "day", limit: int = DEFA
         rows = [dict(r) for r in meta.get_watchlist(conn)]
         # 自选池只记代码（加自选时懒得输名字），名称从 universe 表兜底：
         # 左侧栏里一排光秃秃的数字，看盘时根本认不出是哪只票。
+        # 指数**不在品种表里**（那张表只有股票），名称来自默认池或加自选时存的那一份。
         names = {str(r["code"]): str(r["name"] or "") for r in meta.get_universe(conn)}
+        names.update({str(c): str(n) for c, n in meta.DEFAULT_WATCHLIST})
     finally:
         conn.close()
 
@@ -575,7 +674,9 @@ def watchlist_structure(request: Request, period: str = "day", limit: int = DEFA
         code = str(row["code"])
         base = {"code": code, "name": row.get("name") or names.get(code, ""), "period": period,
                 "note": row.get("note") or "", "adjust": mode}
-        if not store.exists(code, period):
+        # 存在性判据用**落库周期**：周/月没有自己的 parquet，`store.exists(code, "week")`
+        # 永远为假，整栏会被标成「未同步」—— 明明日线就在本地。
+        if not store.exists(code, periods_mod.base_period(period)):
             items.append({**base, "missing": True, "error": f"{period} 周期未同步"})
             continue
         try:

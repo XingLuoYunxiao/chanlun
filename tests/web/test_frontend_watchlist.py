@@ -172,3 +172,75 @@ def test_watchlist_rail_renders_the_unadjusted_price():
     js = _js()
     assert "it.rail_close" in js
     assert "it.rail_change_pct" in js
+
+
+# ---------------- 周线 / 月线（Request A） ----------------
+def test_period_buttons_include_week_and_month():
+    html = _html()
+    js = _js()
+    for period in ("week", "month"):
+        assert f'data-period="{period}"' in html, f"{period} 没有切换按钮"
+        assert f'{period}:' in js or f'"{period}"' in js, f"PERIOD_CN 少了 {period}"
+    for word in ("周线", "月线"):
+        assert word in html
+    # 按钮上的字和 PERIOD_CN 必须一致，否则图注和按钮会各说各的
+    assert "周线" in js and "月线" in js
+
+
+def test_derived_periods_say_they_come_from_day_bars():
+    """周/月由日线聚合，图注要说出来；最后一根没走完时必须标「未走完」。"""
+    js = _js()
+    assert "DERIVED_CN" in js or "base_period" in js
+    assert "未走完" in js
+    assert "body.partial" in js
+    assert "body.base_period" in js
+
+
+# ---------------- 图注：代码 + 名称（Request A） ----------------
+def test_stamp_shows_the_name_next_to_the_code():
+    """只给 6 位数字，看盘时认不出是哪只票 —— 名称必须出现在图注里。"""
+    js = _js()
+    assert "body.name" in js
+    line = [l for l in js.splitlines() if "截至" in l and "body.code" in l]
+    assert line, "找不到图注那一行"
+    assert "body.name" in line[0], f"图注里没带名称：{line[0]!r}"
+
+
+# ---------------- 趋势口径标注（决策 #2） ----------------
+def test_trend_basis_is_annotated_on_the_page():
+    """趋势判据只判 ZG/ZD 单调，第20课定理二说的是 [DD,GG]；页面上不许出现光秃秃的「趋势」。"""
+    js = _js()
+    assert "TREND_BASIS" in js
+    assert "[ZD,ZG]" in js and "[DD,GG]" in js
+    assert "TREND_BASIS" in js.split("setStamp(")[1] or "basisLine" in js
+
+
+# ---------------- 自选股行：中枢日期区间 + 未确认买卖点（决策 #3 / G11e） ----------------
+def test_watch_row_prints_the_last_pivot_with_its_date_range():
+    """「中枢 3.40–3.86」配现价 8.28，不写日期读的人会以为是当下的中枢。"""
+    js = _js()
+    assert "piv.start_ts" in js and "piv.end_ts" in js
+    assert "dateRange" in js
+
+
+def test_watch_row_marks_tentative_signals():
+    js = _js()
+    assert "last.status" in js
+    assert "（未确认）" in js
+
+
+# ---------------- 自选池 CRUD（Request B） ----------------
+def test_watch_rows_have_up_and_down_buttons():
+    js = _js()
+    css = _css()
+    assert "watch-move" in js and "watch-mv" in js
+    assert 'method: "PATCH"' in js
+    assert "delta" in js
+    assert ".watch-move" in css
+    # 首尾置灰：边界上后端是空操作，界面不能做出"点了会动"的样子
+    assert "disabled" in js
+
+
+def test_watch_foot_no_longer_claims_only_day_bars_are_local():
+    html = _html()
+    assert "默认是七个大盘指数" in html

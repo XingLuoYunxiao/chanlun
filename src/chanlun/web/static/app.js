@@ -23,7 +23,15 @@
 
   const KIND_CN = { b1: "一买", b2: "二买", b3: "三买", s1: "一卖", s2: "二卖", s3: "三卖" };
   const STATUS_CN = { confirmed: "确认", tentative: "未确认", invalidated: "已失效" };
-  const PERIOD_CN = { day: "日线", 30: "30分", 5: "5分", 60: "60分", 15: "15分" };
+  const PERIOD_CN = { day: "日线", week: "周线", month: "月线", 30: "30分", 5: "5分", 60: "60分", 15: "15分" };
+  // 派生周期（周/月）由**本地日线**聚合而来，不单独同步。这句话必须出现在图注里：
+  // 用户看到"周线"会以为是从数据源拿的一份独立数据，实际它跟着日线的复权口径走。
+  const DERIVED_CN = { week: "day", month: "day" };
+  // 趋势口径（第 20 课定理二讲的是 [DD,GG] 波动区间；本系统只判 ZG/ZD 单调）。
+  // 只在页面上标注口径、不改判据：实测 19/19 对相邻确认中枢在 [DD,GG] 上都重叠，
+  // 按 [DD,GG] 判会让 17 组趋势全部退化成"盘整"——那是把判据换成另一个判据，不是修 bug。
+  // 所以页面上不许出现**光秃秃的"趋势"**三个字。
+  const TREND_BASIS = "趋势按 [ZD,ZG] 口径（第20课定理二说的是 [DD,GG] 波动区间，本系统只判 ZG/ZD 单调）";
   // 价格按最小报价单位两位小数显示；原始值仍是引擎给的 float，这里只做呈现。
   const f2 = (v) => (v == null || v === "" ? "—" : Number(v).toFixed(2));
   // 成交量轴宽度只有 62px：40,000,000 会被截成 "00,000,000"，所以改成万/亿单位。
@@ -122,10 +130,22 @@
       ? `\n全史 ${t.segments} 段 / ${t.pivots} 中枢 / ${t.signals} 买卖点（这里只画与窗口相交的部分）`
       : "";
     setStamp(
-      `${body.code} · ${PERIOD_CN[body.period] || body.period} · 截至 ${body.as_of}\n` +
+      `${body.code}${body.name ? " " + body.name : ""} · ${PERIOD_CN[body.period] || body.period} · 截至 ${body.as_of}\n` +
       `线段 ${c.segments}（确认 ${c.confirmed_segments} / 未确认 ${c.tentative_segments}） · 中枢 ${c.pivots} · 买卖点 ${c.signals}` +
-      totals
+      totals + "\n" + basisLine(body)
     );
+  }
+
+  // 图注最后一行：周期来源 + 趋势口径。周/月的最后一根**还没走完**时必须标出来 ——
+  // 一根还在变的周K 被当成定论去数中枢，是这套系统最容易骗到自己的地方。
+  function basisLine(body) {
+    const parts = [];
+    if (body.derived) {
+      parts.push(`${PERIOD_CN[body.period] || body.period}由${PERIOD_CN[body.base_period] || body.base_period}聚合`
+        + (body.partial === true ? "（最后一根未走完）" : ""));
+    }
+    parts.push(TREND_BASIS);
+    return parts.join(" · ");
   }
 
   // 工具条上的口径：按钮写"请求"的口径，实际生效口径不一致时用一句话说清原因。
@@ -707,7 +727,7 @@
       box.append(p);
       return;
     }
-    for (const it of items) box.append(watchRow(it));
+    for (let i = 0; i < items.length; i += 1) box.append(watchRow(items[i], i, items.length));
   }
 
   function span(cls, text) {
@@ -717,7 +737,16 @@
     return s;
   }
 
-  function watchRow(it) {
+  // 日期区间：同一个年份里省掉后半段的年，264px 的自选栏才放得下。
+  // 不省年份的话「2018-01-02→2024-06-30」会被 ellipsis 吃掉后半段 —— 而"这个中枢是哪几年的"
+  // 恰恰是这一行最要紧的信息（601398 那个中枢是 2018–2024 的，不写日期没人看得出来）。
+  function dateRange(a, b) {
+    const s = String(a || "").slice(0, 10), e = String(b || "").slice(0, 10);
+    if (!s || !e) return "";
+    return s.slice(0, 4) === e.slice(0, 4) ? `${s}→${e.slice(5)}` : `${s}→${e}`;
+  }
+
+  function watchRow(it, idx, total) {
     const row = document.createElement("div");
     row.className = "watch-row";
     // 代码挂在 dataset 上：无头浏览器 dump-dom 也能读到"这一栏有哪几只票"
@@ -753,10 +782,14 @@
       row.classList.add("is-missing");
       meta.textContent = it.error || "缺少本地数据";
     } else {
+      // 只显示**最后一个**中枢，并且必须带上它的日期区间：光写「中枢 3.40–3.86」
+      // 配现价 8.28，读的人根本不知道那是 2018–2024 年的事，会当成当下在盘整。
       const piv = (it.pivots || [])[it.pivots.length - 1];
       const seg = it.last_segment;
       const bits = [
-        piv ? `中枢 ${piv.status === "tentative" ? "未确认 " : ""}${f2(piv.zd)}–${f2(piv.zg)}` : "无中枢",
+        piv ? `中枢 ${piv.status === "tentative" ? "未确认 " : ""}${f2(piv.zd)}–${f2(piv.zg)}`
+              + (dateRange(piv.start_ts, piv.end_ts) ? `（${dateRange(piv.start_ts, piv.end_ts)}）` : "")
+          : "无中枢",
       ];
       if (seg) bits.push(`末段${seg.direction > 0 ? "上" : "下"}${seg.status === "tentative" ? "（未确认）" : ""}`);
       meta.textContent = bits.join(" · ");
@@ -764,16 +797,62 @@
       if (sigs.length) {
         row.classList.add("has-signal");
         const last = sigs[sigs.length - 1];
-        const tag = span("watch-sig", `${KIND_CN[last.kind] || last.kind} ${last.ts}`);
+        // 未确认的买卖点必须标出来：它可能明天就失效（000002 的 s3 就是 tentative），
+        // 不标的话读图的人会把它当成已经落定的信号。
+        const tag = span("watch-sig", `${KIND_CN[last.kind] || last.kind} ${last.ts}`
+          + (last.status === "tentative" ? "（未确认）" : ""));
         row.append(top, mid, meta, tag);
-        return finishWatchRow(row, it);
+        return finishWatchRow(row, it, idx, total);
       }
     }
     row.append(top, mid, meta);
-    return finishWatchRow(row, it);
+    return finishWatchRow(row, it, idx, total);
   }
 
-  function finishWatchRow(row, it) {
+  // 自选池的「改」= 上下移动（用户 2026-10-01 选定）：顺序本身就是信息，
+  // 常看的放上面，比按代码/涨幅排序更符合盯盘的习惯。首尾两行对应方向的按钮置灰 ——
+  // 后端在边界上是空操作，界面不该做出"点了会动"的样子。
+  async function moveWatch(code, delta) {
+    try {
+      const resp = await fetch("/api/watchlist", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, delta }),
+      });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        watchError(body.detail || `移动失败：HTTP ${resp.status}`);
+        return;
+      }
+      watchError("");
+    } catch (err) {
+      watchError(`移动失败：连不上本地服务（${err}）。`);
+      return;
+    }
+    loadWatch();
+  }
+
+  function moveBtn(text, title, code, delta, disabled) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "watch-mv";
+    b.title = title;
+    b.textContent = text;
+    b.disabled = Boolean(disabled);
+    b.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (!b.disabled) moveWatch(code, delta);
+    });
+    return b;
+  }
+
+  function finishWatchRow(row, it, idx, total) {
+    const mv = document.createElement("div");
+    mv.className = "watch-move";
+    mv.append(
+      moveBtn("▲", "上移", it.code, -1, idx === 0),
+      moveBtn("▼", "下移", it.code, 1, idx === total - 1),
+    );
     const rm = document.createElement("button");
     rm.type = "button";
     rm.className = "watch-rm";
@@ -784,7 +863,7 @@
       await fetch(`/api/watchlist?code=${encodeURIComponent(it.code)}`, { method: "DELETE" });
       loadWatch();
     });
-    row.append(rm);
+    row.append(mv, rm);
     if (!it.missing) {
       const open = () => { setCode(it.code); load(); };
       row.addEventListener("click", open);

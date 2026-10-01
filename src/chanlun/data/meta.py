@@ -77,7 +77,8 @@ CREATE TABLE IF NOT EXISTS watchlist (
     code     TEXT PRIMARY KEY,
     name     TEXT,
     added_at TEXT,
-    note     TEXT
+    note     TEXT,
+    sort_order INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS symbol_alias (
@@ -112,8 +113,24 @@ def init(target: Path | str | sqlite3.Connection | None = None) -> sqlite3.Conne
         conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _ensure_watch_order(conn)
     conn.commit()
     return conn
+
+
+def _ensure_watch_order(conn: sqlite3.Connection) -> None:
+    """给老库的自选表补 `sort_order` 列，并按**原来的显示顺序**（added_at）回填。
+
+    不补列的话「上移/下移」在页面刷新后就会失效（顺序还是按 added_at 排）；
+    回填必须按 added_at 而不是 rowid —— 两者通常一致，但一致不是契约。
+    """
+    cols = {str(r["name"]) for r in conn.execute("PRAGMA table_info(watchlist)")}
+    if not cols or "sort_order" in cols:
+        return
+    conn.execute("ALTER TABLE watchlist ADD COLUMN sort_order INTEGER")
+    rows = list(conn.execute("SELECT code FROM watchlist ORDER BY added_at, rowid"))
+    for i, row in enumerate(rows):
+        conn.execute("UPDATE watchlist SET sort_order=? WHERE code=?", (i, str(row["code"])))
 
 
 # ---------------- 同步状态 ----------------
@@ -259,11 +276,30 @@ def get_scan_results(conn: sqlite3.Connection, run_date: str | None = None) -> l
     return list(conn.execute("SELECT * FROM scan_result ORDER BY id DESC LIMIT 500"))
 
 
+def name_of(conn: sqlite3.Connection, code: str) -> str:
+    """这只票叫什么。查不到就返回空串（页面自己决定要不要显示）。
+
+    三处来源，优先级从高到低：品种表（股票的正式名）→ 自选池（用户加自选时存的名字，
+    改名后应当以这里的为准）→ 内置指数名。指数不在 `universe` 里，没有第三处，
+    `sh.000001` 在页面上就只剩一串数字。
+    """
+    for table in ("universe", "watchlist"):
+        row = conn.execute(f"SELECT name FROM {table} WHERE code=?", (code,)).fetchone()
+        if row is not None and row["name"]:
+            return str(row["name"])
+    return dict(DEFAULT_WATCHLIST).get(str(code), "")
+
+
 def add_watch(conn: sqlite3.Connection, code: str, name: str = "", note: str = "") -> None:
+    """加自选。新票落在**末尾**；已在池里的票只更新名称/备注，位置不动。
+
+    没给名字就去 `name_of` 兜底：页面只输一个代码时，左侧栏不至于只剩一串数字。
+    """
     conn.execute(
-        """INSERT INTO watchlist (code, name, added_at, note) VALUES (?, ?, ?, ?)
+        """INSERT INTO watchlist (code, name, added_at, note, sort_order)
+           VALUES (?, ?, ?, ?, COALESCE((SELECT MAX(sort_order) FROM watchlist), -1) + 1)
            ON CONFLICT(code) DO UPDATE SET name=excluded.name, note=excluded.note""",
-        (code, name, now(), note),
+        (code, str(name) or name_of(conn, code), now(), note),
     )
     conn.commit()
 
@@ -274,7 +310,63 @@ def remove_watch(conn: sqlite3.Connection, code: str) -> None:
 
 
 def get_watchlist(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    return list(conn.execute("SELECT * FROM watchlist ORDER BY added_at"))
+    """按用户排好的顺序返回（`sort_order` 为空的老行排在最后，再看加入时间）。"""
+    return list(conn.execute(
+        "SELECT * FROM watchlist ORDER BY sort_order IS NULL, sort_order, added_at"
+    ))
+
+
+def move_watch(conn: sqlite3.Connection, code: str, delta: int) -> list[str]:
+    """上移（-1）/下移（+1）一只票，返回移动后的完整顺序。
+
+    换位而不是「改一个数字」：移完统一重排成 0..n-1，顺序永远稠密，也不会因为
+    历史 NULL 而出现两行同号。已经在头/尾的移动是空操作（不报错）。
+    """
+    if delta not in (-1, 1):
+        raise ValueError(f"delta 只能是 -1（上移）或 +1（下移），收到 {delta!r}")
+    codes = [str(r["code"]) for r in get_watchlist(conn)]
+    if code not in codes:
+        return codes
+    i = codes.index(code)
+    j = i + delta
+    if 0 <= j < len(codes):
+        codes[i], codes[j] = codes[j], codes[i]
+    for pos, c in enumerate(codes):
+        conn.execute("UPDATE watchlist SET sort_order=? WHERE code=?", (pos, c))
+    conn.commit()
+    return codes
+
+
+# 默认自选池 = 主要大盘指数（用户 2026-10-01 选定）。
+# 指数名不在 `universe` 表里（那张表只有股票），所以名字必须和代码一起写死在这里。
+# 代码用**落库键**（`markets.store_key` 的结果）：沪市指数必须带前缀（裸 `000001`
+# 是平安银行），深市 `399xxx` 反而要裸写，否则和页面加进来的键不是同一个字符串。
+DEFAULT_WATCHLIST: tuple[tuple[str, str], ...] = (
+    ("sh.000001", "上证指数"),
+    ("399001", "深证成指"),
+    ("399006", "创业板指"),
+    ("sh.000300", "沪深300"),
+    ("sh.000016", "上证50"),
+    ("sh.000905", "中证500"),
+    ("sh.000688", "科创50"),
+)
+
+
+def seed_watchlist(
+    conn: sqlite3.Connection,
+    rows: Sequence[tuple[str, str]] | None = None,
+    *,
+    replace: bool = False,
+) -> list[str]:
+    """写入默认自选池。`replace=True` 清空后重建（`--reset` 用），否则只补缺的，
+    已经在池里的票**保持用户排好的位置**。返回写入后的顺序。"""
+    pairs = tuple(rows) if rows is not None else DEFAULT_WATCHLIST
+    if replace:
+        conn.execute("DELETE FROM watchlist")
+        conn.commit()
+    for code, name in pairs:
+        add_watch(conn, str(code), str(name))
+    return [str(r["code"]) for r in get_watchlist(conn)]
 
 
 # ---------------- 代码改号（北交所 43/83/87 → 920 段） ----------------
