@@ -175,10 +175,60 @@ def test_non_trading_day_exits_zero_without_syncing(env, monkeypatch, capsys):
 
 # ------------------------------------------------------------------ 4. 分钟数据陈旧降级
 
-def test_stale_minute_data_degrades_to_day_only(env, monkeypatch, capsys):
-    """30 分钟数据停在 09-25、日线到 09-30：必须降级「仅日线」，并在输出里写明陈旧程度。"""
+def test_minute_periods_are_scoped_to_the_watchlist(env, monkeypatch, capsys):
+    """没有 `--codes` 时，30/5 分钟只跑**自选池**；日线仍走全市场。
+
+    日线有通达信整包（一次 551 MB、本地解析 83 秒），全市场跑得起；分钟没有公开整包，
+    只能逐只走 baostock —— 实测 30 分 ≈30 秒/只、5 分 ≈162 秒/只，5471 只 ≈100 小时，
+    会直接撞上第二天开盘。所以分钟的范围缺省是自选池。
+
+    范围用**落库结果**观察，不看「某个函数被调用过」：给非自选票也造一份新鲜的 30 分
+    数据，范围没收住的话它就会被同步、被算出结构快照。
+    """
     env = replace(env, periods=["day", "30"])
     monkeypatch.setattr(cli, "load_config", lambda *a, **k: env)
+    monkeypatch.setattr(cli, "build_universe", lambda *a, **k: [
+        *SECS, Security("000001", "sz.000001", "平安银行", "sz", "1991-04-03", False)])
+    conn = _conn(env)
+    try:
+        meta.add_watch(conn, "600000", "浦发银行")          # 自选池只有 600000
+    finally:
+        conn.close()
+    _seed(env, "600000", "day", end=TRADING_DAY)
+    _seed(env, "000001", "day", end=TRADING_DAY)
+    _seed(env, "600000", "30", end=TRADING_DAY, n=500)      # 自选票的分钟：该算
+    _seed(env, "000001", "30", end=TRADING_DAY, n=500)      # 非自选票的分钟：不该算
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(cli, "fetch_bars", _fake_fetch({"30": _bars(500)}, calls))
+
+    rc = cli.main(["daily", "--workers", "1"])
+    out = capsys.readouterr().out
+    assert rc == 0
+
+    assert {c for c, p, _ in calls if p == "30"} == {"sh.600000"}, "30 分只同步自选池"
+    assert {c for c, p, _ in calls if p == "day"} == {"sh.600000", "sz.000001"}, "日线仍走全市场"
+    conn = _conn(env)
+    try:
+        assert meta.get_structure_snapshot(conn, "600000", "30") is not None, "自选票的分钟结构要算"
+        assert meta.get_structure_snapshot(conn, "000001", "30") is None, "非自选票的分钟结构不该算"
+    finally:
+        conn.close()
+    assert "每日流水线" in out
+
+
+def test_stale_minute_data_degrades_to_day_only(env, monkeypatch, capsys):
+    """30 分钟数据停在 09-25、日线到 09-30：必须降级「仅日线」，并在输出里写明陈旧程度。
+
+    分钟周期的范围是自选池，所以场景要先把票放进自选池 —— 否则它会因为「范围为空」
+    而蒙对，测不到「陈旧」这件事。
+    """
+    env = replace(env, periods=["day", "30"])
+    monkeypatch.setattr(cli, "load_config", lambda *a, **k: env)
+    conn = _conn(env)
+    try:
+        meta.add_watch(conn, "600000", "浦发银行")
+    finally:
+        conn.close()
     _seed(env, "600000", "day", end=TRADING_DAY)
     _seed(env, "600000", "30", end=STALE_DAY, n=500)
     calls: list[tuple[str, str, str]] = []
@@ -203,6 +253,11 @@ def test_fresh_minute_data_is_not_degraded(env, monkeypatch, capsys):
     """对照实验：30 分钟数据跟日线一样新时，不许降级（否则就是无脑只跑日线）。"""
     env = replace(env, periods=["day", "30"])
     monkeypatch.setattr(cli, "load_config", lambda *a, **k: env)
+    conn = _conn(env)
+    try:
+        meta.add_watch(conn, "600000", "浦发银行")
+    finally:
+        conn.close()
     calls: list[tuple[str, str, str]] = []
     monkeypatch.setattr(cli, "fetch_bars", _fake_fetch({"30": _bars(500)}, calls))
 

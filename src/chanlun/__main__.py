@@ -24,6 +24,10 @@
   → 写 `structure_snapshot`/`scan_result` → 推送。**非交易日直接 INFO 退出 0**
   （launchd 在周末补跑不算错误）；分钟数据陈旧时降级为「仅日线」并在输出里写明
   数据源与陈旧程度，绝不用落后几周的分钟数据去算当下的结构。
+- **周期范围**：日线跑全市场（通达信整包一次 551 MB、本地解析 83 秒）；分钟没有公开整包，
+  只能逐只走 baostock（实测 30 分 ≈30 秒/只、5 分 ≈162 秒/只，全市场 ≈292 小时），
+  所以缺省只跑**自选池**。显式 `--codes` 仍照办：用户自己圈定的范围已经是有界的。
+  同步 / 结构快照 / 扫描共用同一份范围（`_period_scope`）。
 - `daily --dry-run` 是彩排：不联网同步、不落库、不推送，只把结果打在屏幕上。
   「跑通但不留痕」这件事必须真的成立，所以它走的是与真跑**同一套代码**，只在写入口收手。
 """
@@ -35,6 +39,7 @@ import datetime as dt
 import logging
 import sqlite3
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -138,7 +143,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_sync = sub.add_parser("sync", help="同步 K 线到 Parquet")
     p_sync.add_argument("--period", required=True, choices=list(PERIODS), help="周期")
-    p_sync.add_argument("--codes", default=None, help="逗号分隔代码，缺省为品种表全市场")
+    p_sync.add_argument(
+        "--codes", default=None,
+        help="逗号分隔代码，缺省为品种表全市场（分钟周期缺省只跑自选池）")
     p_sync.add_argument("--full", action="store_true", help="从 1990-01-01 全量重拉")
     p_sync.add_argument(
         "--since", type=_parse_date, default=None, metavar="YYYY-MM-DD",
@@ -182,7 +189,9 @@ def _add_daily_parser(sub) -> argparse.ArgumentParser:
         "--periods", type=_parse_periods, default=None, metavar="day,30,5",
         help="本次同步并参与结构计算的周期，缺省取配置（day,30,5）；分钟数据陈旧时自动降级",
     )
-    p.add_argument("--codes", default=None, help="逗号分隔代码，缺省为品种表全市场")
+    p.add_argument(
+        "--codes", default=None,
+        help="逗号分隔代码，缺省为品种表全市场（分钟周期缺省只跑自选池）")
     p.add_argument(
         "--source", choices=("baostock", "tdx"), default=None,
         help="日线数据源，缺省取配置（baostock）；tdx 走通达信整包",
@@ -282,8 +291,10 @@ def _cmd_sync(args, cfg: Config) -> int:
     conn = meta.init(cfg.data.meta_db)
     try:
         out = _sync_period(
-            conn, cfg, str(args.period), codes=_resolve_codes(args), full=bool(args.full),
-            since=args.since, workers=args.workers,
+            conn, cfg, str(args.period),
+            codes=_codes_for_period(
+                conn, str(args.period), _resolve_codes(args), explicit=bool(args.codes)),
+            full=bool(args.full), since=args.since, workers=args.workers,
         )
     finally:
         conn.close()
@@ -604,6 +615,7 @@ def _run_daily(args, cfg: Config, conn: sqlite3.Connection) -> DailyReport:
         return rep
 
     codes = _resolve_codes(args)
+    scope = _period_scope(conn, rep.periods, codes, explicit=bool(args.codes))
     source = _daily_source(args, cfg)
     rep.source = source
     note = _switch_note(conn, source)
@@ -616,12 +628,12 @@ def _run_daily(args, cfg: Config, conn: sqlite3.Connection) -> DailyReport:
         for period in rep.periods:
             if _period_source(period, source) == "tdx":
                 outcomes.append(_sync_day_tdx(
-                    conn, tdx_root=_tdx_root(args, cfg), codes=codes, dry_run=False,
+                    conn, tdx_root=_tdx_root(args, cfg), codes=scope[str(period)], dry_run=False,
                     download=not getattr(args, "no_download", False),
                 ))
             else:
                 outcomes.append(_sync_period(
-                    conn, cfg, period, codes=codes, full=False, since=args.since,
+                    conn, cfg, period, codes=scope[str(period)], full=False, since=args.since,
                     workers=args.workers,
                 ))
         rep.sync = tuple(outcomes)
@@ -634,10 +646,10 @@ def _run_daily(args, cfg: Config, conn: sqlite3.Connection) -> DailyReport:
          rep.quality_kinds) = _run_quality()
 
     rep.snapshots, rep.snapshot_failed = _snapshot_all(
-        conn, codes, rep.active_periods, save=not dry)
+        conn, codes, rep.active_periods, save=not dry, codes_by_period=scope)
     rep.scan = scan_report(
         periods=rep.active_periods, codes=codes, max_workers=int(args.workers or 1),
-        conn=conn, save=not dry, run_date=rep.run_day,
+        conn=conn, save=not dry, run_date=rep.run_day, codes_by_period=scope,
     )
     rep.track_rows = tuple(track_watchlist(
         periods=rep.active_periods or ("day",), conn=conn, save=not dry))
@@ -757,7 +769,8 @@ def _usable_periods(
 
 
 def _snapshot_all(conn: sqlite3.Connection, codes: Sequence[str],
-                  periods: Sequence[str], *, save: bool) -> tuple[int, int]:
+                  periods: Sequence[str], *, save: bool,
+                  codes_by_period: Mapping[str, Sequence[str]] | None = None) -> tuple[int, int]:
     """把每只票每个周期的结构指纹冻结入库，返回（入库份数, 失败只数）。
 
     数据不足的票直接跳过（全市场大部分票在首次同步前都没有数据）；
@@ -765,10 +778,10 @@ def _snapshot_all(conn: sqlite3.Connection, codes: Sequence[str],
     """
     synced = {(str(r["code"]), str(r["period"])): r for r in meta.all_sync(conn)}
     saved = failed = 0
-    for code in codes:
-        code = str(code)
-        for period in periods:
-            period = str(period)
+    for period in periods:
+        period = str(period)
+        for code in _scope_codes(codes, codes_by_period, period):
+            code = str(code)
             try:
                 bars = store.read(code, period)
                 row = synced.get((code, period))
@@ -850,6 +863,39 @@ def _format_daily(rep: DailyReport) -> str:
 
 
 # ---------------- 内部 ----------------
+#: 分钟周期的缺省取数范围。日线有通达信整包（一次 551 MB、本地解析 83 秒），全市场跑得起；
+#: 分钟没有公开整包，只能逐只走 baostock —— 实测 30 分 ≈30 秒/只、5 分 ≈162 秒/只，
+#: 5471 只 ≈100 小时，会直接撞上第二天开盘。所以分钟缺省只跑自选池。
+#: 显式 `--codes` 是用户自己圈定的范围，照办：范围已经是有界的，不存在误伤全市场这回事。
+def _is_minute_period(period: str) -> bool:
+    return str(period) != "day"
+
+
+def _codes_for_period(conn: sqlite3.Connection, period: str, codes: Sequence[str],
+                      *, explicit: bool) -> list[str]:
+    """按周期给出**取数范围**：日线=给定范围；分钟=自选池（除非显式指定了 `--codes`）。"""
+    if not _is_minute_period(period) or explicit:
+        return [str(c) for c in codes]
+    return [str(r["code"]) for r in meta.get_watchlist(conn)]
+
+
+def _period_scope(conn: sqlite3.Connection, periods: Sequence[str], codes: Sequence[str],
+                  *, explicit: bool) -> dict[str, list[str]]:
+    """一次算清每个周期的范围，同步/快照/扫描**共用同一份**，免得三处各写一套。"""
+    return {
+        str(p): _codes_for_period(conn, str(p), codes, explicit=explicit) for p in periods
+    }
+
+
+def _scope_codes(codes: Sequence[str],
+                 codes_by_period: Mapping[str, Sequence[str]] | None,
+                 period: str) -> list[str]:
+    """某个周期实际要跑的代码；没给分周期范围就退回同一份（旧行为）。"""
+    if codes_by_period is None:
+        return [str(c) for c in codes]
+    return [str(c) for c in codes_by_period.get(str(period), ())]
+
+
 def _resolve_codes(args) -> list[str]:
     if args.codes:
         # 保留原始写法（可能带 sh./sz. 前缀），标准化放到同步循环内，

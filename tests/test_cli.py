@@ -162,6 +162,34 @@ def test_sync_without_codes_uses_universe(env, monkeypatch):
     assert set(calls) == {"sh.600000", "sz.000001"}
 
 
+def test_minute_sync_without_codes_uses_watchlist(env, monkeypatch):
+    """分钟周期缺省只跑**自选池**，日线才跑全市场。
+
+    日线有通达信整包（一次 551 MB、本地解析 83 秒），全市场跑得起；分钟没有公开整包，
+    只能逐只走 baostock —— 实测 30 分 ≈30 秒/只、5 分 ≈162 秒/只，5471 只 ≈100 小时，
+    会直接撞上第二天开盘。所以缺省范围是自选池（显式 `--codes` 仍照办）。
+    """
+    secs = [
+        Security("600000", "sh.600000", "浦发银行", "sh", "1999-11-10", False),
+        Security("000001", "sz.000001", "平安银行", "sz", "1991-04-03", False),
+    ]
+    monkeypatch.setattr(cli, "build_universe", lambda *a, **k: secs)
+    conn = meta.init(env.data.meta_db)
+    try:
+        meta.add_watch(conn, "600000", "浦发银行")
+    finally:
+        conn.close()
+    calls: list[str] = []
+
+    def fake_fetch(code, period, start, end, adjust="2"):
+        calls.append(str(code))
+        return _df()
+
+    monkeypatch.setattr(cli, "fetch_bars", fake_fetch)
+    assert cli.main(["sync", "--period", "30"]) == 0
+    assert calls == ["sh.600000"], "30 分只该同步自选池里的那一只"
+
+
 def test_universe_command_prints_count(env, monkeypatch, capsys):
     secs = [
         Security("600000", "sh.600000", "浦发银行", "sh", "1999-11-10", False),

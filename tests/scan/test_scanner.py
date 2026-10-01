@@ -343,7 +343,9 @@ def test_scan_period_missing_from_store_is_insufficient(env):
 def test_data_quality_note_survives_even_without_any_signal_row(env):
     """元数据声称 1999 年就有数据、本地文件却是 2024 年起 → 必须留下数据质量提示。
 
-    这条票（1 个中枢、0 个买卖点）不产生任何 hits/skipped/errors 行，
+    **这条测试证明的是报告层**：夹具（`_fake_quiet_source`）直接给了一份
+    「3 段 + 1 个中枢 + 0 个买卖点」的快照，所以不产生任何 hits/skipped/errors 行。
+    空行是夹具给的，不是引擎算出来的 —— 本测试不校验引擎会不会算出 0 个买卖点。
     若警告只挂在行上就会**被静默丢掉**，所以报告本身要带 notes。
     """
     bars = synth_bars(260, day_step=2)

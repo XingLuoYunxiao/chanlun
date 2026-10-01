@@ -102,11 +102,13 @@ def test_bars_endpoint(client):
 
 
 def test_structure_has_status_and_confirmed_at_for_every_object(client):
-    """字段契约用短窗，内容断言必须用**全窗**。
+    """字段契约用短窗，内容断言用**全窗**。
 
-    窗口不是自相似的：`limit=300/500` 从结构中间切入，样本 4 只票一段中枢都没有；
-    `limit=1212`（全窗）实测 sh.600000 段 12 / 确认 10 / 中枢 2。
-    拿短窗去断言"应该有中枢"，测的是窗口而不是引擎。
+    短窗不是「另一套划分」：它是**全量划分裁到窗口**的结果（见
+    `test_structure_window.py`），所以短窗里的对象与全窗里的那一个逐字相同，
+    只是窗口外的不再送出。字段（`status`/`confirmed_at`）每条都要有，短窗就能查。
+    内容断言仍用全窗：`limit=1212` 实测 sh.600000 段 12 / 确认 10 / 中枢 2，
+    这些是全史规模，只有全窗才看得全（`counts_total` 里也报着同样的数）。
     """
     s = client.get("/api/structure?code=600000&period=day&limit=300").json()
     assert s["segments"], "短窗里也应有线段"

@@ -19,6 +19,7 @@ import datetime as dt
 import json
 import logging
 import sqlite3
+from collections.abc import Mapping
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
@@ -528,6 +529,7 @@ def scan_report(
     max_workers: int = 8,
     *,
     conn: sqlite3.Connection | None = None,
+    codes_by_period: Mapping[str, Iterable[str]] | None = None,
     snapshot_source: Callable[..., Snapshot] | None = None,
     macd_fn: Callable[[Any], pd.DataFrame] | None = None,
     save: bool = True,
@@ -536,6 +538,8 @@ def scan_report(
     """全市场 / 指定代码的扫描，返回完整报告（命中 + 跳过 + 失败 + 统计）。
 
     - `codes=None`：扫 `meta.universe` 全市场（5471 只），这是「全市场扫描」的默认口径；
+    - `codes_by_period`：**按周期**覆盖代码范围（分钟周期缺省只跑自选池就靠它）。
+      给了映射的周期以映射为准，没给的周期仍用 `codes`/全市场；
     - `snapshot_source` / `macd_fn` 只为测试与复用注入；一旦注入就自动**串行**执行
       （闭包无法 pickle，而且串行才能保证测试确定性）；
     - `save=True`：命中写入 `scan_result`（跳过/失败不落库）。
@@ -569,7 +573,11 @@ def scan_report(
                             if (code, period) in sync_rows else None),
                 data_root=root,
             )
-            for code in code_list for period in period_list
+            for period in period_list
+            for code in ([str(c).strip() for c in codes_by_period.get(period, ())
+                          if str(c).strip()]
+                         if codes_by_period is not None and period in codes_by_period
+                         else code_list)
         ]
 
         results: list[TaskResult] = []

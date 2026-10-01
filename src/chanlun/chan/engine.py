@@ -72,6 +72,39 @@ class Snapshot:
 
         return tuple(s for s in self.segments if s.status is Status.CONFIRMED)
 
+    def clipped_to(self, first_ts: str, last_ts: str) -> "Snapshot":
+        """把**全量**结构裁到可见窗口：只决定看得见多少，不重算、不新造划分。
+
+        「根数」是显示参数，不是划分参数。同一个交易日、同一只票，把根数从 1200 切到
+        300，划分必须一字不变 —— 变的只是窗口外那些对象不再送出。所以调用方要
+        先 `full()` 全量算完，再用本方法裁剪；反过来（先截断再算）等于让窗口
+        参与划分：实测同一只票 `limit=300` 的首段在 1212 根全量里根本不存在。
+
+        裁剪规则是**相交就留**，不是「完全落在窗口内才留」：笔与线段首尾相接铺满
+        时间轴，从中间切一刀必然有一段横跨左边界。丢掉它，图上就会凭空断一段；
+        留下它，前端 category 轴把窗口外的坐标线性外推到画布外，由画布裁掉，
+        画出来的仍是那条直线，几何不变。
+
+        分型与买卖点是**点**，没有「横跨」一说，必须严格落在窗口内 —— 否则坐标不在
+        轴上，ECharts 会静默丢掉，图上看不出错，只是少了个点。
+
+        对象的 `idx` 保持全量编号：同一段线段换个窗口仍是同一个号，这也是
+        「窗口无关」的一部分。`merged` 默认不出口，一起裁只为口径自洽。
+        """
+
+        def kept(start: str, end: str) -> bool:
+            return end >= first_ts and start <= last_ts
+
+        return replace(
+            self,
+            merged=tuple(m for m in self.merged if kept(m.start_ts, m.ts)),
+            fractals=tuple(f for f in self.fractals if first_ts <= f.ts <= last_ts),
+            strokes=tuple(s for s in self.strokes if kept(s.start.ts, s.end.ts)),
+            segments=tuple(g for g in self.segments if kept(g.start.start.ts, g.end.end.ts)),
+            pivots=tuple(p for p in self.pivots if kept(p.start_ts, p.end_ts)),
+            signals=tuple(s for s in self.signals if first_ts <= s.ts <= last_ts),
+        )
+
     def as_dict(self) -> dict[str, Any]:
         from .types import to_jsonable
 

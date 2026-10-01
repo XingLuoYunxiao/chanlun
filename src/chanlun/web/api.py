@@ -20,6 +20,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 import threading
+from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
@@ -42,13 +43,14 @@ DISCLAIMER = "仅结构信号提示，不构成投资建议；结构为收盘后
 PERIODS = ("day", "60", "30", "15", "5")
 _CODE_RE = re.compile(r"^(?:(sh|sz|bj)\.?)?(\d{6})$")
 
-#: 默认窗口。窗口不是自相似的：**结构随窗口起点变化**，500 根时实测 4 只样本
-#: 一段中枢都凑不出（中枢至少要 3 段确认线段重叠），1200 根才各 2 个。
-#: 所有"给结构用"的接口共用这一个值，避免页面（1200）和自选池卡片（曾用 300）
-#: 描述两个不同窗口、看起来像自相矛盾。
+#: 默认显示窗口（根数）。**窗口只决定看得见多少，不决定怎么划分**：
+#: 结构一律在完整历史上算完再裁到窗口（见 `snapshot_of`），所以同一只票
+#: 换个根数不会换一套笔/段/中枢 —— 价格早就定了这条原则（spec §3.3），结构同理。
+#: 所有"给结构用"的接口共用这一个值，避免页面和自选池卡片描述两个不同窗口。
 DEFAULT_LIMIT = 1200
 
-#: 结构快照缓存：同一只票同一段行情只算一次。键为 (code, period, limit, 口径, last_ts, 因子指纹)。
+#: 结构快照缓存：同一只票同一段行情只算一次。键为 (code, period, 口径, last_ts, 因子指纹)
+#: —— **不含 limit**：快照是全量的，窗口只在出口处裁，所以多切几次根数不必重算。
 _CACHE: dict[tuple, Snapshot] = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE_MAX = 64
@@ -231,7 +233,12 @@ def _cfg(request: Request):
     return request.app.state.cfg
 
 
-def _read_bars(code: str, period: str, limit: int) -> pd.DataFrame:
+def _read_bars(code: str, period: str, limit: int | None = None) -> pd.DataFrame:
+    """读某只票的行情。`limit=None` = **全量**。
+
+    结构必须在完整历史上算完再裁窗口，所以 `snapshot_of` 走 `limit=None`；
+    只有显示用的那一段才按根数截断。
+    """
     if period not in PERIODS:
         raise HTTPException(status_code=400, detail=f"不支持的周期: {period!r}（可选 {'/'.join(PERIODS)}）")
     if not store.exists(code, period):
@@ -263,40 +270,79 @@ def _bars_payload(df: pd.DataFrame) -> list[dict[str, Any]]:
     ]
 
 
-def _macd_payload(bars: pd.DataFrame) -> dict[str, list[float]]:
-    """MACD 由**服务端**算：页面必须和引擎看到同一条 DIF/DEA/柱子。
+def _macd_payload(macd_df: pd.DataFrame, n: int) -> dict[str, list[float]]:
+    """MACD 由**服务端**算，且由**全量**收盘序列算完再裁尾巴。
 
     前端自己再算一遍 EMA 看着更省事，但两边一旦口径分叉（种子、hist 是否乘 2），
-    页面上就会拿一条和买卖点无关的 MACD 去解释背驰 —— 那是自欺。
+    页面上就会拿一条和买卖点无关的 MACD 去解释背驰 —— 那是自欺。在窗口里重算
+    同样不行：EMA 是递推量，窗口一变种子就变，实测同一只票 `limit=500` 的柱子
+    与全量尾部最大差 0.0958 —— 那是两条不同的 MACD。
     """
-    df = compute_macd(bars["close"].to_numpy(dtype=float))
-    return {c: [round(float(v), 4) for v in df[c]] for c in ("dif", "dea", "hist")}
+    return {c: [round(float(v), 4) for v in macd_df[c].to_numpy()[-n:]]
+            for c in ("dif", "dea", "hist")}
+
+
+@dataclass(frozen=True)
+class StructureView:
+    """一次结构请求的全部结果：**全量算出来的结构** + 按窗口裁出来的显示数据。
+
+    两者分开存，是为了让「怎么划分」与「看得见多少」互不污染：`snap` 与全量快照
+    是**同一套划分**，只是窗口外的对象没送出；`totals`/`bars_total` 是全史规模，
+    页面据此说明「还有多少没画」——不报，用户会以为全史就这么点结构。
+    """
+
+    snap: Snapshot
+    bars: pd.DataFrame
+    macd: pd.DataFrame
+    totals: dict[str, int]
+    bars_total: int
+    effective: str
+    note: str
 
 
 def snapshot_of(code: str, period: str, limit: int, *, adjust: str = "qfq",
-                meta_db=None) -> tuple[Snapshot, pd.DataFrame, str, str]:
-    """算（或取缓存）某只票的结构快照，返回 `(快照, 复权后行情, 生效口径, 口径说明)`。
+                meta_db=None) -> StructureView:
+    """全量算结构、按 `limit` 裁显示，返回 `StructureView`。
 
     **结构必须与画出来的 K 线同一个口径**：请求 `hfq` 却拿 `raw` 的笔/段/中枢，
     中枢的 ZG/ZD 会与 K 线对不上。所以复权在这里做，缓存键也带口径与因子指纹。
 
+    **结构也必须与可见窗口无关**：先在**全量**历史上算完划分，再裁出要画的对象
+    （`Snapshot.clipped_to`）。反过来「先按 limit 截断再算」等于让窗口参与划分 ——
+    实测同一只票 `limit=300` 的首段在 1212 根全量里根本不存在，默认 1200 根只
+    显示全史买卖点的三分之一。价格早就定过同一条原则（spec §3.3：某一天的后复权价
+    是该日期的属性，与可见窗口无关），结构同理。
+
     取数一律走 `_read_bars`：缺数据的 404 与周期校验必须只有一处实现，
     否则某条路径会绕过检查、拿着空 DataFrame 往下跑到 500。
     """
-    df = _read_bars(code, period, limit)
+    full = _read_bars(code, period, None)
     factors = pd.DataFrame() if meta_db is None else factors_for(meta_db, code)
-    df, effective, note = _apply_factors(df, factors, adjust, _stored_adjust(meta_db, code, period))
-    last_ts = str(df["ts"].iloc[-1])
-    key = (code, period, limit, effective, last_ts, _factor_fingerprint(factors))
+    full, effective, note = _apply_factors(full, factors, adjust,
+                                          _stored_adjust(meta_db, code, period))
+    last_ts = str(full["ts"].iloc[-1])
+    key = (code, period, effective, last_ts, _factor_fingerprint(factors))
     with _CACHE_LOCK:
         snap = _CACHE.get(key)
     if snap is None:
-        snap = ChanEngine(code, period, signal_fn=find_signals, level=period).full(df)
+        snap = ChanEngine(code, period, signal_fn=find_signals, level=period).full(full)
         with _CACHE_LOCK:
             if len(_CACHE) >= _CACHE_MAX:
                 _CACHE.clear()
             _CACHE[key] = snap
-    return snap, df, effective, note
+    if limit is None or len(full) <= limit:
+        bars = full
+    else:
+        bars = full.tail(limit).reset_index(drop=True)
+    return StructureView(
+        snap=snap.clipped_to(str(bars["ts"].iloc[0]), last_ts),
+        bars=bars,
+        macd=compute_macd(full["close"].to_numpy(dtype=float)),
+        totals=_counts(snap),
+        bars_total=len(full),
+        effective=effective,
+        note=note,
+    )
 
 
 def clear_cache() -> None:
@@ -360,19 +406,23 @@ def _counts(snap: Snapshot) -> dict[str, int]:
     }
 
 
-def structure_payload(snap: Snapshot, bars: pd.DataFrame, *,
-                      include_merged: bool = False) -> dict[str, Any]:
+def structure_payload(view: StructureView, *, include_merged: bool = False) -> dict[str, Any]:
     """结构 + 行情一起返回：一次请求就能画图，且两边必然对齐。
+
+    `counts` 数的是**本窗口看得见**的对象（要和图上的条数对得上），
+    `counts_total`/`bars_total` 数的是**全史**（要说清还有多少没画）。
 
     `merged`（包含处理后的 K 线）默认不传 —— 它是内部中间量，条数与 bars 同量级，
     传了只会让页面变慢；需要核对包含处理时用 `?merged=true` 单独取。
     """
-    body = to_jsonable(snap)
+    body = to_jsonable(view.snap)
     if not include_merged:
         body.pop("merged", None)
-    body["bars"] = _bars_payload(bars)
-    body["macd"] = _macd_payload(bars)
-    body["counts"] = _counts(snap)
+    body["bars"] = _bars_payload(view.bars)
+    body["macd"] = _macd_payload(view.macd, len(view.bars))
+    body["counts"] = _counts(view.snap)
+    body["counts_total"] = view.totals
+    body["bars_total"] = view.bars_total
     body["disclaimer"] = DISCLAIMER
     return body
 
@@ -431,13 +481,12 @@ def structure(request: Request, code: str, period: str = "day",
     key = normalize_code(code)
     mode = normalize_adjust_or_400(adjust)
     periods = parse_ma(ma)
-    snap, df, effective, note = snapshot_of(key, period, limit, adjust=mode,
-                                            meta_db=cfg.data.meta_db)
-    body = structure_payload(snap, df, include_merged=merged)
+    view = snapshot_of(key, period, limit, adjust=mode, meta_db=cfg.data.meta_db)
+    body = structure_payload(view, include_merged=merged)
     body.update({
         "code": key, "period": period,
-        "adjust": mode, "adjust_effective": effective, "adjust_note": note,
-        "ma": ma_payload(df, periods), "ma_periods": list(periods),
+        "adjust": mode, "adjust_effective": view.effective, "adjust_note": view.note,
+        "ma": ma_payload(view.bars, periods), "ma_periods": list(periods),
     })
     return body
 
@@ -522,11 +571,11 @@ def watchlist_structure(request: Request, period: str = "day", limit: int = DEFA
             items.append({**base, "missing": True, "error": f"{period} 周期未同步"})
             continue
         try:
-            snap, df, effective, note = snapshot_of(code, period, limit, adjust=mode,
-                                                    meta_db=cfg.data.meta_db)
+            view = snapshot_of(code, period, limit, adjust=mode, meta_db=cfg.data.meta_db)
         except (DataSourceError, HTTPException, ValueError) as exc:
             items.append({**base, "missing": True, "error": str(exc)})
             continue
+        snap, df = view.snap, view.bars
         last = snap.segments[-1] if snap.segments else None
         try:
             rail = _rail_payload(code, period, limit, meta_db=cfg.data.meta_db)
@@ -536,8 +585,8 @@ def watchlist_structure(request: Request, period: str = "day", limit: int = DEFA
         items.append({
             **base,
             "missing": False,
-            "adjust_effective": effective,
-            "adjust_note": note,
+            "adjust_effective": view.effective,
+            "adjust_note": view.note,
             "as_of": snap.as_of,
             "ts": str(df["ts"].iloc[-1]),
             # `close`/`change_pct` 是**图表口径**的价（和图上最后一根 K 线对得上）；
