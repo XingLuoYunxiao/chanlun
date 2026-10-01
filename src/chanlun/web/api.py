@@ -29,8 +29,9 @@ from ..chan.engine import ChanEngine, Snapshot
 from ..chan.macd import macd as compute_macd
 from ..chan.signal import find_signals
 from ..chan.types import Status, to_jsonable
-from ..data import meta, store
-from ..data.baostock_source import strip_bs_code, to_bs_code
+from ..data import adjust as adjust_mod
+from ..data import markets, meta, store
+from ..data.baostock_source import to_bs_code
 from ..data.types import DataSourceError
 
 router = APIRouter()
@@ -47,15 +48,28 @@ _CODE_RE = re.compile(r"^(?:(sh|sz|bj)\.?)?(\d{6})$")
 #: 描述两个不同窗口、看起来像自相矛盾。
 DEFAULT_LIMIT = 1200
 
-#: 结构快照缓存：同一只票同一段行情只算一次。键为 (code, period, limit, last_ts)。
+#: 结构快照缓存：同一只票同一段行情只算一次。键为 (code, period, limit, 口径, last_ts, 因子指纹)。
 _CACHE: dict[tuple, Snapshot] = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE_MAX = 64
 
+#: 默认均线组：MA5/10/20/60/120/250。页面开关直接对应这一组，服务端只算一次。
+DEFAULT_MA = (5, 10, 20, 60, 120, 250)
+#: 单次请求最多几条均线：画在图上再多也没有信息量，只会让响应变胖。
+MAX_MA = 12
+#: 均线窗口上限，防 `ma=100000` 这类请求把 pandas 拖住。
+MAX_MA_PERIOD = 1000
+
 
 # ---------------- 工具 ----------------
 def normalize_code(raw: str) -> str:
-    """把各种写法归一成裸数字代码；前缀与号段不符时抛 400。"""
+    """把各种写法归一成 **store 的键**；前缀与号段不符时抛 400。
+
+    注意这里**不是**一律去前缀：`sh.000300`（沪深300）与 `sz.000300` 是同号段不同品种，
+    去掉前缀会退化成裸码 `000300`，按约定指向深市，于是页面安静地读到别人的文件
+    （实测表现为 404 或画出另一只票的曲线）。要不要保留前缀只由
+    `markets.store_key` 一处决定。
+    """
     text = str(raw or "").strip().lower().replace(" ", "")
     m = _CODE_RE.match(text)
     if not m:
@@ -65,7 +79,91 @@ def normalize_code(raw: str) -> str:
         bs = to_bs_code(f"{market}.{digits}" if market else digits)
     except ValueError as exc:  # 号段与前缀矛盾（例如 sh.300059）
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return strip_bs_code(bs)
+    return markets.store_key(bs)
+
+
+def normalize_adjust_or_400(value: str | None) -> str:
+    """复权口径归一；不认识的写法给 400 而不是静默当不复权。
+
+    静默兜底的后果是：用户点了「后复权」，页面画出来的却是不复权，
+    而没有任何地方提示口径没生效 —— 复权图与不复权图在前复权下几乎一样，
+    只有除权日附近才分叉，很难肉眼发现。
+    """
+    try:
+        return adjust_mod.normalize_adjust(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def parse_ma(raw: str | None) -> tuple[int, ...]:
+    """解析 `ma=5,10,20`：`None` = 默认六条，空串/`none`/`off`/`0` = 关掉均线。"""
+    if raw is None:
+        return DEFAULT_MA
+    text = str(raw).strip().lower().replace("，", ",")
+    if text in ("", "none", "off", "0"):
+        return ()
+    out: list[int] = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            period = int(part)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"均线周期必须是整数: {part!r}") from None
+        if not 1 <= period <= MAX_MA_PERIOD:
+            raise HTTPException(status_code=400, detail=f"均线周期必须在 1..{MAX_MA_PERIOD} 之间: {period}")
+        if period not in out:
+            out.append(period)
+    if len(out) > MAX_MA:
+        raise HTTPException(status_code=400, detail=f"均线最多 {MAX_MA} 条，收到 {len(out)} 条")
+    return tuple(out)
+
+
+def ma_payload(df: pd.DataFrame, periods: tuple[int, ...] = DEFAULT_MA) -> dict[str, list[float | None]]:
+    """按**当前口径**的收盘价算均线；不足窗口的前几根给 `None`（不是 0）。
+
+    给 0 会让前端把均线画到坐标原点，图上多出一条垂直假线；`None` 才会断掉。
+    """
+    close = df["close"].astype("float64")
+    out: dict[str, list[float | None]] = {}
+    for period in periods:
+        series = close.rolling(int(period)).mean()
+        out[str(period)] = [None if pd.isna(v) else round(float(v), 4) for v in series]
+    return out
+
+
+def factors_for(meta_db, code: str) -> pd.DataFrame:
+    """读除权因子阶梯；没有记录时返回空表（不是 None）。"""
+    conn = meta.init(meta_db)
+    try:
+        return meta.get_adjust_factors(conn, code)
+    finally:
+        conn.close()
+
+
+def _apply_factors(df: pd.DataFrame, factors: pd.DataFrame, mode: str) -> tuple[pd.DataFrame, str, str]:
+    """按因子表把行情切成三态之一，并如实报告**实际生效**的口径。"""
+    if len(factors) == 0:
+        return df, "raw", "无除权记录（三态相同，价格即不复权原始价）"
+    segments = len(factors)
+    if mode == "raw":
+        return df, "raw", f"不复权：原始价（本票有 {segments} 段除权因子，可切前/后复权）"
+    name = {"qfq": "前复权", "hfq": "后复权"}[mode]
+    adjusted = adjust_mod.apply_adjust(df, factors, mode)
+    return adjusted, mode, f"{name}：按 {segments} 段除权因子缩放开高低收（成交量/成交额不复权）"
+
+
+def _factor_fingerprint(factors: pd.DataFrame) -> tuple:
+    """因子指纹：段数 + 末段（起始日, 系数）。
+
+    只按 `last_ts` 做缓存键会漏掉「行情没动、因子表被修正」这一种更新
+    （除权数据后补、系数纠正都属此类），于是页面继续拿旧复权价算结构。
+    """
+    if len(factors) == 0:
+        return ()
+    last = factors.iloc[-1]
+    return (len(factors), str(last["ts"]), float(last["k"]))
 
 
 def _cfg(request: Request):
@@ -114,15 +212,21 @@ def _macd_payload(bars: pd.DataFrame) -> dict[str, list[float]]:
     return {c: [round(float(v), 4) for v in df[c]] for c in ("dif", "dea", "hist")}
 
 
-def snapshot_of(code: str, period: str, limit: int) -> tuple[Snapshot, pd.DataFrame]:
-    """算（或取缓存）某只票的结构快照。缓存键含最后时间戳，数据一更新就自动失效。
+def snapshot_of(code: str, period: str, limit: int, *, adjust: str = "qfq",
+                meta_db=None) -> tuple[Snapshot, pd.DataFrame, str, str]:
+    """算（或取缓存）某只票的结构快照，返回 `(快照, 复权后行情, 生效口径, 口径说明)`。
+
+    **结构必须与画出来的 K 线同一个口径**：请求 `hfq` 却拿 `raw` 的笔/段/中枢，
+    中枢的 ZG/ZD 会与 K 线对不上。所以复权在这里做，缓存键也带口径与因子指纹。
 
     取数一律走 `_read_bars`：缺数据的 404 与周期校验必须只有一处实现，
     否则某条路径会绕过检查、拿着空 DataFrame 往下跑到 500。
     """
     df = _read_bars(code, period, limit)
+    factors = pd.DataFrame() if meta_db is None else factors_for(meta_db, code)
+    df, effective, note = _apply_factors(df, factors, adjust)
     last_ts = str(df["ts"].iloc[-1])
-    key = (code, period, limit, last_ts)
+    key = (code, period, limit, effective, last_ts, _factor_fingerprint(factors))
     with _CACHE_LOCK:
         snap = _CACHE.get(key)
     if snap is None:
@@ -131,7 +235,7 @@ def snapshot_of(code: str, period: str, limit: int) -> tuple[Snapshot, pd.DataFr
             if len(_CACHE) >= _CACHE_MAX:
                 _CACHE.clear()
             _CACHE[key] = snap
-    return snap, df
+    return snap, df, effective, note
 
 
 def clear_cache() -> None:
@@ -196,20 +300,39 @@ def universe(request: Request, limit: int = Query(200, ge=1, le=10000), q: str =
 
 
 @router.get("/api/bars")
-def bars(request: Request, code: str, period: str = "day", limit: int = Query(DEFAULT_LIMIT, ge=10, le=20000)) -> dict[str, Any]:
-    _cfg(request)
-    bare = normalize_code(code)
-    df = _read_bars(bare, period, limit)
-    return {"code": bare, "period": period, "count": len(df), "bars": _bars_payload(df)}
+def bars(request: Request, code: str, period: str = "day",
+         limit: int = Query(DEFAULT_LIMIT, ge=10, le=20000),
+         adjust: str = "qfq", ma: str | None = None) -> dict[str, Any]:
+    cfg = _cfg(request)
+    key = normalize_code(code)
+    mode = normalize_adjust_or_400(adjust)
+    periods = parse_ma(ma)
+    df = _read_bars(key, period, limit)
+    df, effective, note = _apply_factors(df, factors_for(cfg.data.meta_db, key), mode)
+    return {
+        "code": key, "period": period, "count": len(df), "bars": _bars_payload(df),
+        "adjust": mode, "adjust_effective": effective, "adjust_note": note,
+        "ma": ma_payload(df, periods), "ma_periods": list(periods),
+    }
 
 
 @router.get("/api/structure")
 def structure(request: Request, code: str, period: str = "day",
-              limit: int = Query(DEFAULT_LIMIT, ge=10, le=20000), merged: bool = False) -> dict[str, Any]:
+              limit: int = Query(DEFAULT_LIMIT, ge=10, le=20000), merged: bool = False,
+              adjust: str = "qfq", ma: str | None = None) -> dict[str, Any]:
     cfg = _cfg(request)
-    bare = normalize_code(code)
-    snap, df = snapshot_of(bare, period, limit)
-    return structure_payload(snap, df, include_merged=merged)
+    key = normalize_code(code)
+    mode = normalize_adjust_or_400(adjust)
+    periods = parse_ma(ma)
+    snap, df, effective, note = snapshot_of(key, period, limit, adjust=mode,
+                                            meta_db=cfg.data.meta_db)
+    body = structure_payload(snap, df, include_merged=merged)
+    body.update({
+        "code": key, "period": period,
+        "adjust": mode, "adjust_effective": effective, "adjust_note": note,
+        "ma": ma_payload(df, periods), "ma_periods": list(periods),
+    })
+    return body
 
 
 @router.get("/api/scan")
@@ -265,9 +388,15 @@ def watchlist_remove(request: Request, code: str) -> dict[str, Any]:
 
 
 @router.get("/api/watchlist/structure")
-def watchlist_structure(request: Request, period: str = "day", limit: int = DEFAULT_LIMIT) -> dict[str, Any]:
-    """自选池结构摘要：一次请求给全，字段足以做「结构跟踪表」。"""
+def watchlist_structure(request: Request, period: str = "day", limit: int = DEFAULT_LIMIT,
+                        adjust: str = "qfq") -> dict[str, Any]:
+    """自选池结构摘要：一次请求给全，字段足以做「结构跟踪表」。
+
+    这里也接受 `adjust`：摘要里的中枢 ZG/ZD 是**价位**，口径与看盘页不一致的话，
+    同一只票在自选栏卡片和图表上会显示两个不同的中枢区间。
+    """
     cfg = _cfg(request)
+    mode = normalize_adjust_or_400(adjust)
     conn = meta.init(cfg.data.meta_db)
     try:
         rows = [dict(r) for r in meta.get_watchlist(conn)]
@@ -278,12 +407,13 @@ def watchlist_structure(request: Request, period: str = "day", limit: int = DEFA
     for row in rows:
         code = str(row["code"])
         base = {"code": code, "name": row.get("name") or "", "period": period,
-                "note": row.get("note") or ""}
+                "note": row.get("note") or "", "adjust": mode}
         if not store.exists(code, period):
             items.append({**base, "missing": True, "error": f"{period} 周期未同步"})
             continue
         try:
-            snap, df = snapshot_of(code, period, limit)
+            snap, df, effective, note = snapshot_of(code, period, limit, adjust=mode,
+                                                    meta_db=cfg.data.meta_db)
         except (DataSourceError, HTTPException, ValueError) as exc:
             items.append({**base, "missing": True, "error": str(exc)})
             continue
@@ -291,6 +421,8 @@ def watchlist_structure(request: Request, period: str = "day", limit: int = DEFA
         items.append({
             **base,
             "missing": False,
+            "adjust_effective": effective,
+            "adjust_note": note,
             "as_of": snap.as_of,
             "counts": _counts(snap),
             "pivots": [
