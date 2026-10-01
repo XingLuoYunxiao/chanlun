@@ -203,7 +203,15 @@ def _apply_factors(df: pd.DataFrame, factors: pd.DataFrame, mode: str,
             return df, "qfq", f"本票为前复权落库（baostock），且无除权因子，无法还原{name}：当前显示前复权"
         return df, "raw", "无除权记录（三态相同，价格即不复权原始价）"
     if stored == "qfq":
-        name = {"raw": "不复权", "qfq": "前复权", "hfq": "后复权"}[mode]
+        if mode == "qfq":
+            # 前复权是**原样返回**（`unapply_adjust` 对 qfq 直接 return）：这条路上
+            # 一次换算都没发生。写成"按因子反算"会让人以为图上的价是算出来的，
+            # 而它其实就是落库价 —— 说明本身不能先误导一次。
+            return df, "qfq", (
+                f"前复权：库内即前复权（{segments} 段除权因子可切不复权/后复权，"
+                f"成交量/成交额不复权）{extrapolated}"
+            )
+        name = {"raw": "不复权", "hfq": "后复权"}[mode]
         adjusted = adjust_mod.unapply_adjust(df, factors, mode)
         return adjusted, mode, (
             f"{name}：由库内前复权价按 {segments} 段除权因子反算（成交量/成交额不复权）{extrapolated}"

@@ -111,9 +111,16 @@
     renderLedger();
     renderWatch(); // 高亮"图上是哪一只"：换票后自选栏要跟着动
     const c = body.counts;
+    const t = body.counts_total;
+    // 结构是**全史**算出来的，窗口只决定画多少：两边数不一样时明说还有多少没画，
+    // 否则用户会把"窗口里 12 段"读成"这只票只有 12 段"。
+    const totals = t && (t.segments !== c.segments || t.pivots !== c.pivots || t.signals !== c.signals)
+      ? `\n全史 ${t.segments} 段 / ${t.pivots} 中枢 / ${t.signals} 买卖点（这里只画与窗口相交的部分）`
+      : "";
     setStamp(
       `${body.code} · ${PERIOD_CN[body.period] || body.period} · 截至 ${body.as_of}\n` +
-      `线段 ${c.segments}（确认 ${c.confirmed_segments} / 未确认 ${c.tentative_segments}） · 中枢 ${c.pivots} · 买卖点 ${c.signals}`
+      `线段 ${c.segments}（确认 ${c.confirmed_segments} / 未确认 ${c.tentative_segments}） · 中枢 ${c.pivots} · 买卖点 ${c.signals}` +
+      totals
     );
   }
 
@@ -649,6 +656,17 @@
       return;
     }
     state.watch = body.items;
+    // 首屏定位：URL 没指定票时开在自选池第一只（见 boot 里的 initialCodePinned）。
+    // 不做这一步，页面会停在写死的 600000 上，而自选栏里一只都没高亮 ——
+    // 看起来像"高亮坏了"，其实是图上的票根本不在这份自选里。
+    if (!initialCodePinned) {
+      initialCodePinned = true;
+      const first = (body.items || [])[0];
+      if (first && first.code !== state.code) {
+        setCode(first.code);
+        load();
+      }
+    }
     renderWatch();
   }
 
@@ -895,6 +913,10 @@
     }
   }
   applyAdjustUI({ adjust_effective: state.adjust, adjust_note: "" });
+  // 首屏开在哪只票：URL 里写了 `?code=` 就听 URL（书签优先），没写就等自选池回来
+  // 开在**第一只自选票**上 —— 那是用户自己加的、他每天要盯的票。只认第一次，
+  // 之后用户手动换票不再被拽回去。
+  let initialCodePinned = Boolean(sp.get("code"));
   // 初始加载：URL 可带 ?code=&period=，方便把常看的票做成书签。
   // 取数不等渲染：requestAnimationFrame 在后台标签页会停摆（无头浏览器 + 虚拟时间下
   // 亦同），把它放在加载路径上会导致页面永远停在"尚未加载"。尺寸校准另走兜底回调。

@@ -336,6 +336,25 @@ def test_stored_qfq_answers_qfq_and_names_the_stored_mode(client, cfg):
     assert "前复权" in body["adjust_note"]
 
 
+def test_qfq_note_does_not_claim_a_conversion_when_the_store_is_already_qfq(cfg, client):
+    """库内即前复权、请求的也是前复权：**没有发生任何换算**，说明里不能写"反算"。
+
+    反算（除以因子）只在切到不复权/后复权时发生，前复权是原样返回（见
+    `adjust.unapply_adjust`）。三种口径共用一句"由库内前复权价按 N 段因子反算"，
+    用户会以为图上这条价格是算出来的 —— 而它其实就是落库价。这套口径说明存在的
+    意义正是防这种误解，所以说明自己不能先误导一次。
+    """
+    _set_stored(cfg, "2")
+    _add_factors(cfg)
+    qfq = client.get("/api/bars", params={"code": "600000", "period": "day",
+                                          "adjust": "qfq"}).json()
+    raw = client.get("/api/bars", params={"code": "600000", "period": "day",
+                                          "adjust": "raw"}).json()
+    assert "反算" not in qfq["adjust_note"], qfq["adjust_note"]
+    assert "库内" in qfq["adjust_note"] and "前复权" in qfq["adjust_note"]
+    assert "反算" in raw["adjust_note"], "不复权确实要反算，这句说明要留着"
+
+
 def test_stored_raw_keeps_the_raw_formula(client, cfg):
     """`sync_state.adjust="3"`（通达信落库）走原来的公式：qfq = raw × k_t。"""
     _set_stored(cfg, "3")
