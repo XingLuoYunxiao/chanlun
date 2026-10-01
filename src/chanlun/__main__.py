@@ -50,6 +50,7 @@ from .calendar import get_calendar
 from .chan.macd import macd
 from .config import PROJECT_ROOT, Config, load_config
 from .data import markets, meta, periods, quality, store
+from .data import sync as sync_mod
 from .data.baostock_source import fetch_bars, strip_bs_code, to_bs_code
 from .data.factors import MIN_OVERLAP
 from .data.universe import build_universe
@@ -65,7 +66,8 @@ from .scan import (
 
 log = logging.getLogger("chanlun")
 
-FULL_START = "1990-01-01"
+# 首次同步的起点：与 `data/sync.py` 共用一份，避免两处口径分叉。
+FULL_START = sync_mod.FULL_START
 PERIODS = ("day", "60", "30", "15", "5")
 
 
@@ -527,41 +529,18 @@ def _sync_period(conn: sqlite3.Connection, cfg: Config, period: str, *, codes,
     ok = failed = skipped = 0
     first_error = ""
     for raw in tqdm(codes, desc=f"sync {period}", unit="只"):
-        code = str(raw)
-        try:
-            # 解析放在 try 内：无法识别的代码按单只失败处理，不中断整批
-            code = markets.store_key(to_bs_code(raw))
-            start = _start_for(code, period, full, cal, end, since)
-            if start is None:
-                skipped += 1
-                continue
-            df = fetch_bars(to_bs_code(code), period, start, end, adjust=cfg.bs_adjust)
-            if len(df) == 0:
-                skipped += 1
-                _record(conn, code, period, cfg.bs_adjust, start_ts=None, end_ts=None,
-                        rows=0, error=None)
-                continue
-            store.upsert(code, period, df)
-            stored = store.read(code, period)
-            _record(
-                conn, code, period, cfg.bs_adjust,
-                start_ts=str(stored["ts"].iloc[0]) if len(stored) else None,
-                end_ts=str(stored["ts"].iloc[-1]) if len(stored) else None,
-                rows=len(stored), error=None,
-            )
+        # 单只同步的全部逻辑在 `data/sync.py`：命令行与看盘页的「同步这个周期」
+        # 按钮共用一份，免得两处的增量起点/复权口径各写一套、最后分叉成两个库。
+        out = sync_mod.sync_one(
+            conn, cfg, str(raw), period, full=full, since=since, cal=cal, fetch=fetch_bars,
+        )
+        if out.status == "ok":
             ok += 1
-        except Exception as exc:  # noqa: BLE001 - 单只失败必须不中断整批
+        elif out.status == "failed":
             failed += 1
-            first_error = first_error or f"{raw}: {exc}"
-            log.warning("同步失败 code=%s period=%s: %s", raw, period, exc)
-            prev = meta.get_sync(conn, code, period)
-            _record(
-                conn, code, period, cfg.bs_adjust,
-                start_ts=prev["start_ts"] if prev else None,
-                end_ts=prev["end_ts"] if prev else None,
-                rows=int(prev["rows"]) if prev else 0,
-                error=str(exc),
-            )
+            first_error = first_error or f"{raw}: {out.error}"
+        else:
+            skipped += 1
     return SyncOutcome(period=period, ok=ok, failed=failed, skipped=skipped,
                        total=len(codes), first_error=first_error)
 
@@ -1033,17 +1012,9 @@ def _start_for(
 ) -> str | None:
     """返回拉取起始日；已是最新则返回 None（跳过）。
 
-    `since`（`--since`）只作用于**本地还没有数据的票**：首次全市场同步没必要为 5471 只票
-    各拉 35 年。已有数据的票仍然纯增量 —— 若把起点强行压到 `since`，本地数据停在上古年份的
-    票就会被跳过中间几年、在文件里留下空洞，而缠论结构会跨着洞算，这比少几年历史危险。
+    实现在 `data/sync.py`（命令行与看盘页共用）；这里留个名字转发，历史调用点不动。
     """
-    if full:
-        return FULL_START
-    last = store.last_ts(code, period)
-    if not last:
-        return (since or dt.date.fromisoformat(FULL_START)).isoformat()
-    nxt = cal.next_trading_day(str(last)[:10])
-    return None if nxt > end else nxt.isoformat()
+    return sync_mod.start_for(code, period, full, cal, end, since)
 
 
 def _record(

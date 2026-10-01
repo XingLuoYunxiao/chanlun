@@ -114,7 +114,12 @@
     }
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-      return showNotice(httpTitle(resp.status), body.detail || "接口返回了无法解析的内容。", null);
+      // 404 = 这个周期本地真没有数据。命令行提示是给终端用户的，看盘的人需要能点的东西。
+      const action = resp.status === 404
+        ? { label: "同步这个周期", run: syncThisPeriod }
+        : null;
+      return showNotice(
+        httpTitle(resp.status), body.detail || "接口返回了无法解析的内容。", null, action);
     }
     state.data = body;
     applyAdjustUI(body);
@@ -174,7 +179,7 @@
     return `接口出错（HTTP ${status}）`;
   }
 
-  function showNotice(title, detail, command) {
+  function showNotice(title, detail, command, action) {
     const box = $("#notice");
     box.innerHTML = "";
     const h = document.createElement("h3");
@@ -182,6 +187,14 @@
     const p = document.createElement("p");
     p.textContent = detail;
     box.append(h, p);
+    if (action) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "notice-action";
+      btn.textContent = action.label;
+      btn.addEventListener("click", action.run);
+      box.append(btn);
+    }
     if (command) {
       const code = document.createElement("code");
       code.textContent = command;
@@ -193,6 +206,101 @@
   }
 
   function hideNotice() { $("#notice").hidden = true; }
+
+  // ------------------------------------------------------- 同步这个周期
+  // 首次拉一只票的 5 分钟线实测要 149 秒（78432 根），30 分钟线 30 秒。所以点下去
+  // **不能等请求返回**：POST 只负责排队，结果靠轮询。轮询必须有上限——无限转圈
+  // 会让人以为"永远同步不完"，而真相比这更简单：服务端可能已经挂了。
+  const SYNC_POLL_MS = 2000;
+  const SYNC_MAX_MS = 15 * 60 * 1000;
+
+  function syncNote(text, warn) {
+    const box = $("#notice");
+    let note = box.querySelector(".sync-note");
+    if (!note) {
+      note = document.createElement("p");
+      note.className = "sync-note";
+      box.append(note);
+    }
+    note.textContent = text;
+    note.classList.toggle("is-warn", Boolean(warn));
+  }
+
+  function syncButton() { return $("#notice .notice-action"); }
+
+  async function syncThisPeriod() {
+    const btn = syncButton();
+    const cn = PERIOD_CN[state.period] || state.period;
+    const started = Date.now();
+    const tick = () => {
+      if (!btn) return;
+      btn.disabled = true;
+      btn.textContent = `正在同步${cn}… 已 ${Math.round((Date.now() - started) / 1000)}s`;
+    };
+    tick();
+    syncNote(`正在向行情源拉取${cn}数据，首次可能要一两分钟，请不要关掉页面。`, false);
+
+    let resp;
+    try {
+      resp = await fetch("/api/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: state.code, period: state.period }),
+      });
+    } catch (err) {
+      return finishSync(null, `连不上本地服务：${err}`);
+    }
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      // 400 是**确定性拒绝**（例如"指数没有分钟线"）：再点一百次结果一样，
+      // 所以把按钮撤掉，只留原因，不做"重试"这种假承诺。
+      if (btn) btn.remove();
+      return syncNote(`无法同步：${body.detail || `HTTP ${resp.status}`}`, true);
+    }
+
+    const timer = setInterval(tick, 500);
+    const status = await pollSync(started);
+    clearInterval(timer);
+    finishSync(status, null);
+  }
+
+  async function pollSync(started) {
+    while (Date.now() - started < SYNC_MAX_MS) {
+      await new Promise((r) => setTimeout(r, SYNC_POLL_MS));
+      const qs = new URLSearchParams({ code: state.code, period: state.period });
+      let resp;
+      try {
+        resp = await fetch(`/api/sync/status?${qs}`);
+      } catch (err) {
+        return { state: "error", error: `连不上本地服务：${err}` };
+      }
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok) return { state: "error", error: body.detail || `HTTP ${resp.status}` };
+      if (body.state !== "running") return body;
+    }
+    return { state: "error", error: "等太久了。同步可能还在后台跑，刷新页面看看有没有数据。" };
+  }
+
+  function finishSync(status, error) {
+    const btn = syncButton();
+    if (error || !status || status.state === "error") {
+      const msg = error || status.error || "同步失败";
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "重试";
+      }
+      return syncNote(`同步失败：${msg}`, true);
+    }
+    if (status.state === "skipped") {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "重试";
+      }
+      return syncNote("行情源没有返回这个周期的数据（可能是真空区间，也可能这只票没有分钟线）。", true);
+    }
+    syncNote(`同步完成：${status.rows} 根（${status.start_ts || "?"} → ${status.end_ts || "?"}）。`, false);
+    load(); // 数据到位了，图应该出来
+  }
 
   function setStamp(text) { $("#stamp").textContent = text; }
 

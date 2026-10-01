@@ -18,8 +18,10 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import re
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,9 +34,12 @@ from ..chan.signal import find_signals
 from ..chan.types import Status, to_jsonable
 from ..data import adjust as adjust_mod
 from ..data import markets, meta, store
+from ..data import sync as sync_mod
 from ..data import periods as periods_mod
 from ..data.baostock_source import to_bs_code
 from ..data.types import DataSourceError
+
+log = logging.getLogger("chanlun.web")
 
 router = APIRouter()
 
@@ -723,3 +728,149 @@ def watchlist_structure(request: Request, period: str = "day", limit: int = DEFA
             ],
         })
     return {"period": period, "count": len(items), "items": items}
+
+
+# ---------------- 「同步这个周期」（Task 31） ----------------
+#: baostock 是单会话 socket 协议：两个线程同时拉会互相踩，所以**全局串行**。
+#: 首次拉一只票的 5 分钟线实测要 149 秒（78432 根），串行是唯一不把自己搞崩的做法。
+_SYNC_RUN_LOCK = threading.Lock()
+#: 任务登记表：`(code, period) -> 状态`。**跑完不删**：按钮要靠它显示结果与失败原因，
+#: 也要靠「跑完的任务不算在跑」来判断重试。
+_SYNC_TASKS: dict[tuple[str, str], dict[str, Any]] = {}
+_SYNC_TASKS_LOCK = threading.Lock()
+
+#: `sync_one` 的三态 → 页面四态。`skipped` 单列：源返回零行**不是**失败，
+#: 页面不能把它画成红字（真空区间是合法的）。
+_SYNC_STATE = {"ok": "done", "skipped": "skipped", "failed": "error"}
+
+
+def clear_sync_tasks() -> None:
+    """清空任务登记表（测试用；服务运行期没有清理的理由——条目很小且要留着看结果）。"""
+    with _SYNC_TASKS_LOCK:
+        _SYNC_TASKS.clear()
+
+
+def _sync_target_period(raw: Any) -> str:
+    """校验周期并映射到**落库周期**：周线/月线是本地聚合的，同步 `week` 落不了库。"""
+    # 与 `/api/bars` 一致：**大小写严格**。同一个参数在两个接口上放宽程度不同，
+    # 页面调 A 能过、调 B 报 400，是最难查的那种不一致。
+    period = str(raw or "")
+    if period not in PERIODS:
+        raise HTTPException(
+            status_code=400, detail=f"不认得的周期: {raw!r}（可选 {'/'.join(PERIODS)}）"
+        )
+    return periods_mod.base_period(period)
+
+
+def _task_view(key: tuple[str, str], rec: dict[str, Any]) -> dict[str, Any]:
+    elapsed = rec.get("elapsed")
+    if elapsed is None:
+        elapsed = time.monotonic() - float(rec["started_mono"])
+    return {
+        "code": key[0],
+        "period": key[1],
+        "requested": rec.get("requested", key[1]),
+        "state": rec["state"],
+        "rows": int(rec.get("rows") or 0),
+        "start_ts": rec.get("start_ts"),
+        "end_ts": rec.get("end_ts"),
+        "error": rec.get("error") or "",
+        "elapsed": round(float(elapsed), 1),
+        "started_at": rec.get("started_at"),
+        "finished_at": rec.get("finished_at"),
+    }
+
+
+def _run_sync(cfg: Any, code: str, period: str, requested: str, key: tuple[str, str]) -> None:
+    """后台线程：串行取数并落库，把结果写回登记表。**不抛异常给线程**。"""
+    error = ""
+    rows = 0
+    start_ts: str | None = None
+    end_ts: str | None = None
+    status = "failed"
+    with _SYNC_RUN_LOCK:
+        conn = meta.init(cfg.data.meta_db)  # SQLite 连接必须在用它自己的线程里开
+        try:
+            out = sync_mod.sync_one(conn, cfg, code, period)
+            status, rows = out.status, out.rows
+            start_ts, end_ts, error = out.start_ts, out.end_ts, out.error
+        except Exception as exc:  # noqa: BLE001 - 后台线程抛异常会让按钮永远停在「正在同步」
+            error = f"{type(exc).__name__}: {exc}"
+            log.warning("同步任务异常 code=%s period=%s: %s", code, period, exc)
+        finally:
+            conn.close()
+    with _SYNC_TASKS_LOCK:
+        rec = _SYNC_TASKS.get(key)
+        if rec is None:  # 被 clear_sync_tasks 清掉了（只可能发生在测试里）
+            return
+        rec.update(
+            state=_SYNC_STATE.get(status, "error"),
+            rows=rows,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            error=error,
+            elapsed=time.monotonic() - float(rec["started_mono"]),
+            finished_at=dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        )
+
+
+@router.post("/api/sync", status_code=202)
+async def sync_start(request: Request) -> dict[str, Any]:
+    """立刻返回 202，取数在后台线程里跑。
+
+    **不能同步等待**：首次拉 5 分钟线实测 149 秒，浏览器会先超时。
+    """
+    cfg = _cfg(request)
+    try:
+        body = await request.json()
+    except Exception as exc:  # noqa: BLE001 - 空 body / 坏 JSON 都按参数错误处理
+        raise HTTPException(status_code=400, detail=f"请求体不是合法 JSON: {exc}") from exc
+    code = normalize_code(str(body.get("code", "")))
+    requested = str(body.get("period", "day"))
+    period = _sync_target_period(requested)
+
+    if period != "day" and markets.is_index(to_bs_code(code)):
+        # 拒绝要发生在取数之前：实测 baostock 对 sh.000001/sh.000300/sh.000688 的
+        # 分钟线一律返回 0 行（重登重试后仍是 0），等 30 秒再看「没有数据」是浪费。
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{code} 是指数，baostock 不提供指数的分钟线，同步这个周期只会空跑。"
+                "指数看日线/周线/月线即可（周月线由本地日线聚合）。"
+            ),
+        )
+
+    key = (code, period)
+    now = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+    with _SYNC_TASKS_LOCK:
+        rec = _SYNC_TASKS.get(key)
+        if rec is not None and rec["state"] == "running":
+            return _task_view(key, rec)  # 幂等：连点不叠加第二个任务
+        rec = {
+            "state": "running",
+            "requested": requested.strip().lower(),
+            "started_mono": time.monotonic(),
+            "started_at": now,
+            "finished_at": None,
+        }
+        _SYNC_TASKS[key] = rec
+    threading.Thread(
+        target=_run_sync, args=(cfg, code, period, requested, key),
+        name=f"sync-{code}-{period}", daemon=True,
+    ).start()
+    return _task_view(key, rec)
+
+
+@router.get("/api/sync/status")
+def sync_status(request: Request, code: str, period: str = "day") -> dict[str, Any]:
+    """轮询用：如实汇报 `idle/running/done/skipped/error` 与失败原因。"""
+    key = (normalize_code(code), _sync_target_period(period))
+    with _SYNC_TASKS_LOCK:
+        rec = _SYNC_TASKS.get(key)
+        if rec is None:
+            return {
+                "code": key[0], "period": key[1], "requested": str(period), "state": "idle",
+                "rows": 0, "start_ts": None, "end_ts": None, "error": "", "elapsed": 0.0,
+                "started_at": None, "finished_at": None,
+            }
+        return _task_view(key, rec)

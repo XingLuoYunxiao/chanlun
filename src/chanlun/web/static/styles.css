@@ -590,3 +590,29 @@ button, input { font: inherit; color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* 「同步这个周期」：提示框里的行动按钮。它是提示的一部分，不是工具条按钮，
+   所以视觉上比工具条弱一档，但必须明显可点（这是页面上唯一的自救入口）。 */
+.notice-action {
+  margin: 4px 0 8px;
+  padding: 6px 14px;
+  font: inherit;
+  font-weight: 600;
+  color: #fff;
+  background: #2f6fb5;
+  border: 1px solid #2a5f9e;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.notice-action:hover:not(:disabled) { background: #3a7dc4; }
+.notice-action:disabled {
+  cursor: progress;
+  background: #6b7d8f;
+  border-color: #5f707f;
+}
+.sync-note {
+  margin: 2px 0 8px;
+  color: #4a5a6a;
+  font-size: 13px;
+}
+.sync-note.is-warn { color: #b23b2e; }

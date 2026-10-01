@@ -424,3 +424,17 @@ def test_tdx_fallback_refuses_a_stock_number_segment(env):
     df, why = cli._tdx_index_frame(env, "sh.600000")
     assert df is None
     assert "不是指数" in why
+
+
+def test_sync_writes_raw_adjust_for_an_index(env, monkeypatch):
+    """普通 `sync` 命令拉到指数时，落库也必须写「不复权」。
+
+    这条口径原先只存在于 `seed-watchlist` 里（硬编码 `"3"`），`sync` 走的是配置里的
+    前复权；Task 30 把两处合到 `data/sync.py`，这里钉住合完之后 `sync` 也是对的。
+    """
+    monkeypatch.setattr(cli, "fetch_bars", lambda *a, **k: _df(2, "2024-01-02"))
+    rc = cli.main(["sync", "--period", "day", "--codes", "sh.000001,600000"])
+    assert rc == 0
+    rows = _sync_rows(env)
+    assert rows["sh.000001"]["adjust"] == "3", "指数没有除权除息"
+    assert rows["600000"]["adjust"] == "2", "股票仍按配置的前复权"
