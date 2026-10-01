@@ -29,6 +29,7 @@ from .journal import (
     INCONCLUSIVE,
     PROPOSED,
     REJECTED,
+    RETIRED,
     CircuitBreaker,
     CircuitState,
     JournalEntry,
@@ -220,6 +221,9 @@ class Probe:
     measure_script: str | None = None
     #: 补丁头写了 ``# status: adopted`` —— 它已经是主干的一部分，不再当提案量。
     adopted: bool = False
+    #: 补丁头写了 ``# status: retired`` —— 它的前提已被实测证伪（见 journal.RETIRED），
+    #: 同样不再当提案量，但日志状态是 rejected 而不是 adopted。
+    retired: bool = False
 
 
 class Optimizer:
@@ -526,9 +530,10 @@ class Optimizer:
         self, rounds: int, probes: Sequence[Probe] | None = None
     ) -> list[JournalEntry]:
         probes = list(probes if probes is not None else default_probes(self.root))
-        # 已采纳的观测点不再进入循环：它的判据在常驻回归里，这里再量一次只会
-        # 写出一条 inconclusive，把「采纳」这件事在日志里冲淡。
-        pending = [p for p in probes if not p.adopted] or probes
+        # 已采纳（判据在常驻回归里）与已证伪（补丁头 `# status: retired`）的观测点
+        # 都不再进入循环：这里再量一次只会写出一条 inconclusive，把「采纳」或
+        # 「证伪」这两件事在日志里冲淡。摘掉它们**不动轮次号**——观测点仍占位。
+        pending = [p for p in probes if not (p.adopted or p.retired)] or probes
         if not pending:
             return []
         probes = pending
@@ -673,12 +678,25 @@ def default_probes(root: str | Path) -> list[Probe]:
         candidates = sorted(patches.glob(f"round-*-{rid}.patch"))
         patch_text = candidates[-1].read_text(encoding="utf-8") if candidates else None
         last = history.get(rid)
-        adopted = bool(
-            patch_text
-            and parse_header(patch_text).get("status", "").strip().lower() == ADOPTED
+        header_status = (
+            parse_header(patch_text).get("status", "").strip().lower() if patch_text else ""
         )
+        adopted = header_status == ADOPTED
+        retired = header_status == RETIRED
         notes = "24x7 回访：补丁内容不变，重新量一次当前数据。"
-        if adopted:
+        if retired:
+            # 前提证伪与「没量出差别」是两件事：后者记 inconclusive 继续回访，
+            # 前者必须停下来。这里交出空补丁 + 补丁头里的证伪结论。
+            detail = " ".join(
+                parse_header(patch_text or "").get("note", "").split()
+            )
+            notes = (
+                "[已证伪] 本观测点的前提被实测证伪，不再作为提案回访"
+                f"（补丁头 `# status: {RETIRED}`）。"
+                + (f" {detail}" if detail else "")
+            )
+            patch_text = None
+        elif adopted:
             # 采纳的定义就是「补丁已经变成主干的一部分」。再把它交给影子目录
             # `git apply` 只会失败（那些 hunk 主干里已经有了），而它的判据已经
             # 搬进常驻回归测试 —— 所以这里交出**空补丁**：观测点照旧在列
@@ -703,6 +721,7 @@ def default_probes(root: str | Path) -> list[Probe]:
             notes=notes,
             measure_script=probe_script(root, rid),
             adopted=adopted,
+            retired=retired,
         )
         probes.append(probe)
     return probes

@@ -125,6 +125,9 @@ def main() -> int:
         # 已采纳的补丁不在这里复核：它已经是主干的一部分，`git apply` 会打印
         # 「跳过补丁」并返回 0 —— 那是一个**假绿**（什么都没改，测试当然全过）。
         # 它的判据归常驻回归管，见 tests/optimizer/test_optimizer.py。
+        # `# status: retired`（前提已被实测证伪）**不跳过**：那种补丁仍然能
+        # apply、仍然真的改字节，所以它没有「假绿」问题；它的测试结果照实记录
+        # （它是被证伪的提案，不是主干的一部分，判据不在常驻回归里）。
         if _is_adopted(path):
             results["patches"][path.name] = {"skipped": "adopted"}
             print(f"{path.name}: 已采纳 → 跳过（判据在常驻回归里，"

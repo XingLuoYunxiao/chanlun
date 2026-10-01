@@ -2,17 +2,17 @@
 # theory: L29-PIVOT-LEVEL-EXPANSION,L20-PIVOT-EXTENSION
 # quote: 整个下跌，最一般的情况就是a+A+b+B+c，其中的a\b\c，其级别最多就是1分钟级别的
 # source: 缠中说禅《教你炒股票108课》第29课《转折的力度与级别》
-# finding: find_pivots 的延伸循环没有段数上限，一个中枢可以无限吸收重叠线段：实测最大 14 段，57 个中枢里有 7 个超过 9 段。超过九段就不是延伸而是级别扩张（a+A+b+B+c 一共 9 段），继续当同一个中枢会把两个中枢吸成一个，直接压掉 6 个盘整走势（trends_consolidation=6）。
-# evidence: cd chanlun && python optimizer/agent.py --audit   # 主干口径
-#    {"signals": 0, "pivots": 57, "trends_consolidation": 6, "pivot_max_segments": 14, "pivot_over_9": 7, "pivot_segment_total": 304}
-#    cd chanlun && python optimizer/agent.py --audit --patch optimizer/patches/round-004-G2a.patch   # 应用本提案后
-#    {"signals": 0, "pivots": 61, "trends_consolidation": 9, "pivot_max_segments": 9, "pivot_over_9": 0, "pivot_segment_total": 305}
-# note: 这一轮**不改变买卖点数量**（signals 0→0），它是结构性修正：把「中枢」的边界收回到第29课给的九段。实测信号数为 0 是另一个独立问题（见 round-001），本轮不为凑信号而改判据。
+# finding: find_pivots 的延伸循环没有段数上限，一个中枢可以无限吸收重叠线段：实测最大 14 段，56 个中枢里有 8 个超过 9 段。超过九段就不是延伸而是级别扩张（a+A+b+B+c 一共 9 段），继续当同一个中枢会把两个中枢吸成一个，直接压掉盘整走势（trends_consolidation 只有 6）。
+# evidence: cd chanlun && python -m chanlun.optimizer.cli --root . --audit   # 主干口径
+#    {"signals": 43, "b1": 0, "b2": 0, "b3": 26, "s1": 1, "s2": 0, "s3": 16, "pivots": 56, "trends_up": 10, "trends_down": 7, "trends_consolidation": 6, "pivot_max_segments": 14, "pivot_over_9": 8, "pivot_segment_total": 300}
+#    cd chanlun && python -m chanlun.optimizer.cli --root . --audit --patch optimizer/patches/round-004-G2a.patch   # 应用本提案后
+#    {"signals": 39, "b1": 0, "b2": 0, "b3": 23, "s1": 1, "s2": 0, "s3": 15, "pivots": 60, "trends_up": 10, "trends_down": 7, "trends_consolidation": 10, "pivot_max_segments": 9, "pivot_over_9": 0, "pivot_segment_total": 300}
+#    basis sha256=ce9f43cfa688318b，24/24 只票，bars 38754（2026-10-01 复量）
+# note: 收口是**会动主干行为**的划分修正：pivots 56→60、盘整 6→10、第三类买点 26→23（少 4 个）—— 差异全部来自中枢边界移动，原本挂在一个超过九段的中枢上的位置判据不再成立。第29课支持收口，但它改变划分，因此**留在提议模式**，等人工确认后再连同判据一起落地。原补丁按旧偏移写成，2026-10-01 已按位置口径的主干重做（判据与 theory 未变）。
 diff --git a/src/chanlun/chan/pivot.py b/src/chanlun/chan/pivot.py
 --- a/src/chanlun/chan/pivot.py
 +++ b/src/chanlun/chan/pivot.py
-@@ -47,8 +47,12 @@
-     "week": "month",
+@@ -48,6 +48,10 @@ LEVEL_UP: dict[str, str] = {
  }
  
  MIN_SEGMENTS = 3
@@ -23,9 +23,7 @@ diff --git a/src/chanlun/chan/pivot.py b/src/chanlun/chan/pivot.py
  
  
  def next_level(level: str) -> str:
-     """返回上一级别名。未知级别退化为 `"<level>+"`，不做静默猜测。"""
-@@ -120,9 +124,10 @@
-             continue
+@@ -129,7 +133,8 @@ def find_pivots(segments: Sequence[Segment], level: str) -> list[Pivot]:
  
          # 延伸：后续段只要仍与 [zd, zg] 重叠就并入（且不改变 zd/zg）
          j = i + MIN_SEGMENTS
@@ -35,4 +33,3 @@ diff --git a/src/chanlun/chan/pivot.py b/src/chanlun/chan/pivot.py
              j += 1
  
          group = confirmed[i:j]
-         leave = leave_of[j - 1]

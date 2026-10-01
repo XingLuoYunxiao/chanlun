@@ -12,11 +12,12 @@
 # quote: 一个次级别走势类型向上离开缠中说禅走势中枢，然后以一个次级别走势类型回试，其低点不跌破ZG，则构成第三类买点；一个次级别走势类型向下离开缠中说禅走势中枢，然后以一个次级别走势类型回抽，其高点不升破ZD，则构成第三类卖点。
 # source: 缠中说禅《教你炒股票108课》第20课《缠中说禅走势中枢级别扩张及第三类买卖点》
 # finding: 第三类买卖点整个失效：_third_kind 把 end_idx+1 / end_idx+2 当成「离开段 / 回试段」，实测 57 个中枢里 44 个的 end_idx+1 方向与离开方向完全相反（exit_dir_opposite_position=44，exit_dir_matches_position=0），于是 24 只票 5 年日线一个买卖点都不出（zero_signal_codes=24）。
-# evidence: cd chanlun && python optimizer/agent.py --audit   # 主干口径
+# evidence: [采纳前] 下列数字量自修复前的主干，保留作为缺陷证据；采纳后主干口径见 journal round-001。
+#    cd chanlun && python optimizer/agent.py --audit   # 修复前主干口径
 #    {"signals": 0, "b1": 0, "b2": 0, "b3": 0, "s1": 0, "s2": 0, "s3": 0, "zero_signal_codes": 24, "pivots": 57, "trends_consolidation": 6}
 #    cd chanlun && python optimizer/agent.py --audit --patch optimizer/patches/round-001-G1a.patch   # 应用本提案后
 #    {"signals": 40, "b1": 0, "b2": 0, "b3": 27, "s1": 0, "s2": 0, "s3": 13, "zero_signal_codes": 2, "pivots": 57, "trends_consolidation": 6}
-# note: 第20课：离开中枢的是「次级别走势类型」，回试是它之后的反向次级别走势类型。find_pivots 的延伸循环只在某根线段完全离开区间时才停，所以 segs[end_idx] 才是离开段，segs[end_idx+1] 是回试段。
+# note: 第20课：离开中枢的是「次级别走势类型」，回试是它之后的反向次级别走势类型。find_pivots 的延伸循环 `while _overlaps(...)` 停在**第一根不与区间重叠**的线段上，而 end_idx = j-1 是**最后一根仍然重叠**的线段：它的起点还在区间里（所以被判为重叠），终点已经是离开点 —— 线段首尾相连（相邻两段共享端点价与时间戳），所以它的终点越过 ZG/ZD，否则下一段不可能整段落在区间外。因此 segs[end_idx] 才是离开段，segs[end_idx+1] 是回试段，而且两者的方向必然相反。
 diff --git a/src/chanlun/chan/signal.py b/src/chanlun/chan/signal.py
 --- a/src/chanlun/chan/signal.py
 +++ b/src/chanlun/chan/signal.py

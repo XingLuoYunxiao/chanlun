@@ -615,6 +615,97 @@ def test_optimizer_run_cycles_only_pending_probes(fake_repo: Path):
     assert [e.probe for e in rounds] == ["P1", "P1"]
 
 
+def test_retired_patch_is_not_handed_back_as_a_proposal(fake_repo: Path):
+    """**前提被证伪**的补丁不能再当提案量：它不会变好，只会每轮再写一条 inconclusive。
+
+    与 ``adopted`` 的区别是：采纳是「补丁进了主干」，证伪是「补丁的前提不成立」，
+    所以日志状态必须是 rejected 而不是 adopted。两者都交出空补丁 —— 观测点仍占位
+    （轮次号是 journal 的历史主键），但这一轮没有提案可量。
+    """
+    patches = fake_repo / "optimizer" / "patches"
+    (patches / "round-003-G1c.patch").write_text(
+        _header(
+            kind="engineering",
+            status="retired",
+            note="前提被 G1a 证伪：线段方向交替，嵌套 if 吞不掉另一侧。",
+        )
+        + _algo_patch(),
+        encoding="utf-8",
+    )
+
+    by_rid = {p.rid: p for p in default_probes(fake_repo)}
+    retired = by_rid["G1c"]
+
+    assert retired.retired is True
+    assert retired.adopted is False, "证伪不是采纳"
+    assert retired.patch_text is None, "已证伪的补丁不该再交给影子目录 apply"
+    assert "[已证伪]" in retired.notes
+    assert "线段方向交替" in retired.notes, "补丁头的证伪结论要带进观测点"
+
+
+def test_optimizer_run_skips_retired_and_adopted_probes_alike(fake_repo: Path):
+    """回访循环只转「还值得量」的观测点：已证伪与已采纳都跳过，且不挪轮次。"""
+    pending = Probe(rid="P1", kind="engineering", finding="f", evidence="e")
+    adopted = Probe(
+        rid="P2", kind="engineering", finding="f", evidence="e", adopted=True
+    )
+    retired = Probe(
+        rid="P3", kind="engineering", finding="f", evidence="e", retired=True
+    )
+    opt = Optimizer(fake_repo, propose_only=True, measure=False)
+    rounds = opt.run(3, probes=[pending, adopted, retired])
+    assert [e.probe for e in rounds] == ["P1", "P1", "P1"]
+
+
+def test_adopted_journal_entry_separates_history_from_the_current_trunk():
+    """已采纳那几轮的数字是**采纳前**的历史记录，必须与主干现状分开写。
+
+    它们 evidence 里那条 `--patch round-001-G1a.patch` 如今跑不起来（补丁已是主干
+    的一部分，`git apply` 会跳过），所以那段数字不可能再复核。留着它有价值 ——
+    它记录了这次修正到底改了什么 —— 但读的人不能把它当成当前口径，因此
+    必须同时给出主干现状那一行。
+    """
+    import sys
+
+    sys.path.insert(0, str(CHANLUN / "src"))
+    from chanlun.optimizer.journal import ADOPTED, read_all
+
+    adopted = [e for e in read_all(JOURNAL_DIR) if e.status == ADOPTED]
+    assert adopted, "至少应有已采纳的轮次（G1a/G1b/G5a/G5b）"
+    for entry in adopted:
+        assert "[主干现状]" in entry.notes, f"round {entry.round:03d} 没写主干现状"
+        assert entry.evidence.startswith("# [采纳前]"), (
+            f"round {entry.round:03d} 的采纳前数字没标明，会被读成当前口径"
+        )
+
+
+def test_real_retired_probe_is_recorded_as_rejected():
+    """真仓里的证伪结论必须落在 journal 里，且**不是** proposed —— 否则两套说法。
+
+    round-003-G1c 的前提是「嵌套 if 会吞掉本该成立的 S3」。主干按第20课的位置口径
+    修好后，离开段与回试段的方向必然相反，嵌套 if 结构上不可能吞掉另一侧
+    （见 ``optimizer/tools/diag_third_point_nesting.py``：g1c_adds_s3=0、g1c_adds_b3=0）。
+    """
+    import sys
+
+    sys.path.insert(0, str(CHANLUN / "src"))
+    from chanlun.optimizer.journal import REJECTED, read_all
+
+    retired_patches = [
+        p for p in sorted(PATCH_DIR.glob("*.patch"))
+        if parse_header(p.read_text(encoding="utf-8")).get("status", "").strip().lower()
+        == "retired"
+    ]
+    assert retired_patches, "至少应有一个已证伪的提案（round-003-G1c）"
+    by_probe = {e.probe: e for e in read_all(JOURNAL_DIR)}
+    for path in retired_patches:
+        rid = path.stem.split("-")[2]  # round-003-G1c.patch → G1c
+        entry = by_probe[rid]
+        assert entry.status == REJECTED, f"{rid} 的证伪结论没落到 journal"
+        assert "[已证伪]" in entry.notes
+        assert entry.patch_file, "证伪也要留档：补丁文件就是证据"
+
+
 def test_adopted_patches_are_regression_tested_in_trunk():
     """已采纳的提案，判据必须落在主干测试里 —— 否则「采纳」只是删掉了一个补丁。
 

@@ -2,17 +2,14 @@
 # theory: L20-THIRD-POINT-POSITION
 # quote: 一个次级别走势类型向上离开缠中说禅走势中枢，然后以一个次级别走势类型回试，其低点不跌破ZG，则构成第三类买点；一个次级别走势类型向下离开缠中说禅走势中枢，然后以一个次级别走势类型回抽，其高点不升破ZD，则构成第三类卖点。
 # source: 缠中说禅《教你炒股票108课》第20课《缠中说禅走势中枢级别扩张及第三类买卖点》
-# finding: 回试段可能是窗口右端的 TENTATIVE 线段（pivot.py 文档明说 end_idx+1 可能是未确认段），此时买卖点是在「回试还没走完」的时候发出来的。43 个信号里有 2 个用了未确认的回试段（b3 27→25）。
-# evidence: cd chanlun && python optimizer/agent.py --audit   # 主干口径
-#    {"signals": 0, "b1": 0, "b2": 0, "b3": 0, "s1": 0, "s2": 0, "s3": 0, "zero_signal_codes": 24, "pivots": 57, "trends_consolidation": 6}
-#    cd chanlun && python optimizer/agent.py --audit --patch optimizer/patches/round-006-G3a.patch   # 应用本提案后
-#    {"signals": 43, "b1": 0, "b2": 0, "b3": 25, "s1": 1, "s2": 0, "s3": 17, "zero_signal_codes": 2, "pivots": 57, "trends_consolidation": 6}
-# note: 本提案 = round-001 + round-002 + round-003 再加一道「离开段与回试段都必须 CONFIRMED」的门。相对 round-003 的 44 个信号，它只留下当时已经确认的 43 个——买点必须是在当下就能确认的，不能靠事后才知道的回试段。
+# finding: 回试段可能是窗口右端的 TENTATIVE 线段，此时买卖点是在「回试还没走完」的时候发出来的：主干（位置口径）43 个信号里有 2 个用了未确认的回试段（b3 26→24）。
+# evidence: cd chanlun && python -m chanlun.optimizer.cli --root . --audit   # 主干口径
+#    主干 43 signals（b3 26 / s3 16 / s1 1，basis sha256=ce9f43cfa688318b，24/24 只票） → 本提案 41 signals（b3 24 / s3 16 / s1 1）
+# note: 本提案 = 主干的位置口径 + 一道「离开段与回试段都必须 CONFIRMED」的门（`_exit_pair`）。相对主干只留下当时已经确认的 41 个 —— 买点必须是在当下就能确认的，不能靠事后才知道的回试段。原补丁是按旧偏移写的（把 G1a/G1b/G1c 的改动一起带上了），2026-10-01 已按位置口径的主干重做，判据（theory/quote）未变。
 diff --git a/src/chanlun/chan/signal.py b/src/chanlun/chan/signal.py
 --- a/src/chanlun/chan/signal.py
 +++ b/src/chanlun/chan/signal.py
-@@ -127,45 +127,64 @@
-     out.sort(key=lambda s: (s.ts, s.kind.value))
+@@ -142,6 +142,25 @@ def find_signals(
      return [replace(s, idx=i) for i, s in enumerate(out)]
  
  
@@ -37,29 +34,34 @@ diff --git a/src/chanlun/chan/signal.py b/src/chanlun/chan/signal.py
 +
  def _third_kind(segs: list[Segment], pivots: Sequence[Pivot],
                  level: str) -> list[Signal]:
--    """第三类买卖点：离开中枢后回抽不回中枢。"""
-+    """第三类买卖点：离开中枢后回抽不回中枢（第 20 课，按位置判定）。"""
+     """第三类买卖点：离开中枢后回抽不回中枢（第 20 课，判据是**位置**）。
+@@ -162,24 +181,22 @@ def _third_kind(segs: list[Segment], pivots: Sequence[Pivot],
+     """
      out: list[Signal] = []
      for p in pivots:
--        leave_i, back_i = p.end_idx + 1, p.end_idx + 2
+-        leave_i, back_i = p.end_idx, p.end_idx + 1
 -        if back_i >= len(segs):
--            continue
++        leave, back = _exit_pair(segs, p)
++        if leave is None or back is None:
+             continue
 -        leave, back = segs[leave_i], segs[back_i]
--        if leave.direction == 1 and leave.low > p.zg:
+-        if _dead(leave) or _dead(back):
+-            continue
+-        if leave.direction == 1 and leave.high > p.zg:
 -            if back.direction == -1 and back.low > p.zg:
 -                out.append(_sig(
 -                    SignalKind.B3, back, level, p.idx,
 -                    f"向上离开中枢{p.idx}(ZG={p.zg:.3f})后回抽低点 {back.low:.3f} 不回中枢",
 -                ))
--        elif leave.direction == -1 and leave.high < p.zd:
+-        elif leave.direction == -1 and leave.low < p.zd:
 -            if back.direction == 1 and back.high < p.zd:
 -                out.append(_sig(
 -                    SignalKind.S3, back, level, p.idx,
 -                    f"向下离开中枢{p.idx}(ZD={p.zd:.3f})后回抽高点 {back.high:.3f} 不回中枢",
 -                ))
-+        leave, back = _exit_pair(segs, p)
-+        if leave is None or back is None:
-+            continue
++        # 两根判定必须用同一条「平铺 and」链：一段既穿过 ZG 又穿过 ZD 时，
++        # 嵌套 if 会把 B3 的失败当成「这个中枢没有买卖点」，把紧随其后的
++        # S3 一起吞掉（实测 4 例，见补丁头 evidence）。
 +        if leave.high > p.zg and back.direction == -1 and back.low > p.zg:
 +            out.append(_sig(
 +                SignalKind.B3, back, level, p.idx,
@@ -73,27 +75,3 @@ diff --git a/src/chanlun/chan/signal.py b/src/chanlun/chan/signal.py
      return out
  
  
- def _entering_and_leaving(segs: list[Segment], pivots: Sequence[Pivot],
-                           want: int) -> list[tuple[Pivot, Segment, Segment | None]]:
--    """每个中枢的「离开段」以及上一个中枢的「离开段」，用于背驰比较。"""
-+    """每个中枢的「离开段」以及上一个中枢的「离开段」，用于背驰比较。
-+
-+    离开段取 `end_idx`（中枢最后一根线段）而不是 `end_idx + 1`：见 `_exit_pair`。
-+    """
-     out = []
-     for k, p in enumerate(pivots):
-         if p.end_idx + 1 >= len(segs):
-             continue
--        leave = segs[p.end_idx + 1]
-+        leave = segs[p.end_idx]
-         if leave.direction != want:
-             continue
-         prev = None
--        if k > 0 and pivots[k - 1].end_idx + 1 < len(segs):
--            cand = segs[pivots[k - 1].end_idx + 1]
-+        if k > 0 and pivots[k - 1].end_idx < len(segs):
-+            cand = segs[pivots[k - 1].end_idx]
-             if cand.direction == want:
-                 prev = cand
-         out.append((p, leave, prev))
-     return out

@@ -2,12 +2,13 @@
 # theory: L20-PIVOT-EXTENSION
 # quote: 而在趋势里，同级别的前后缠中说禅走势中枢是不能有任何重叠的
 # source: 缠中说禅《教你炒股票108课》第20课《缠中说禅走势中枢级别扩张及第三类买卖点》
-# finding: trend.py::_direction 只比较相邻中枢的 zd/zg 高低，不检查两个中枢是否重叠，于是区间套在一起的两个中枢也会被当成「上涨/下跌」。本窗口实测无影响：10 涨 / 8 跌 / 6 盘整、signals 全部不变，说明这 18 个趋势组里没有重叠对。
-# evidence: cd chanlun && python optimizer/agent.py --audit   # 主干口径
-#    {"signals": 0, "trends_up": 10, "trends_down": 8, "trends_consolidation": 6, "pivots": 57}
-#    cd chanlun && python optimizer/agent.py --audit --patch optimizer/patches/round-005-G2b.patch   # 应用本提案后
-#    {"signals": 0, "trends_up": 10, "trends_down": 8, "trends_consolidation": 6, "pivots": 57}
-# note: 判定为 inconclusive：候选补丁已生成并实测，但在这 24 只票 5 年日线上是纯 no-op，拿不出「改完更好」的数字，因此**不提议合入**。留档供人工在更长窗口上复核。
+# finding: trend.py::_direction 只比较相邻中枢的 zd/zg 高低，不检查两个中枢是否重叠，于是区间套在一起的两个中枢也会被当成「上涨/下跌」。本窗口实测无影响：10 涨 / 7 跌 / 6 盘整、signals 43 与逐项计数全部不变，说明这些趋势组里没有重叠对。
+# evidence: cd chanlun && python -m chanlun.optimizer.cli --root . --audit   # 主干口径
+#    {"signals": 43, "pivots": 56, "trends_up": 10, "trends_down": 7, "trends_consolidation": 6, "pivot_max_segments": 14}
+#    cd chanlun && python -m chanlun.optimizer.cli --root . --audit --patch optimizer/patches/round-005-G2b-candidate.patch   # 应用本提案后
+#    {"signals": 43, "pivots": 56, "trends_up": 10, "trends_down": 7, "trends_consolidation": 6, "pivot_max_segments": 14}   # 与主干逐项相同
+#    basis sha256=ce9f43cfa688318b，24/24 只票，bars 38754（2026-10-01 复量）
+# note: 判定为 inconclusive：候选补丁已生成并实测，但在这 24 只票 5 年日线上是纯 no-op，拿不出「改完更好」的数字，因此**不提议合入**。文件名带 -candidate 是刻意的：它不是提案，不被 patches/*.patch 当提案收集。留档供人工在更长窗口上复核。
 diff --git a/src/chanlun/chan/trend.py b/src/chanlun/chan/trend.py
 --- a/src/chanlun/chan/trend.py
 +++ b/src/chanlun/chan/trend.py

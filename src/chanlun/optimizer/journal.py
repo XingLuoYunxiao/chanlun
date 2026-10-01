@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 PROPOSED = "proposed"
+#: 不采纳：或校验没过（theory 依据不成立），或前提已被实测证伪
+#: （补丁头 `# status: retired`，见 :data:`RETIRED`）。
 REJECTED = "rejected"
 INCONCLUSIVE = "inconclusive"
 CIRCUIT_BREAK = "circuit_break"
@@ -24,6 +26,11 @@ CIRCUIT_BREAK = "circuit_break"
 #: 采纳的定义——所以它必须和 proposed 区分开，否则「提案还能 apply」这条自检
 #: 会在采纳当天变红，把一个正常流程报成故障。
 ADOPTED = "adopted"
+#: 补丁头 ``# status: retired``：这一轮的**前提**已被实测证伪（不是「没量出差别」），
+#: 与 adopted 一样不再回访，但日志状态记 :data:`REJECTED` —— 它没有变成主干的一部分。
+#: 有这个标记才敢把观测点从回访里摘掉：轮次号是 journal 的历史主键，直接删掉一个
+#: 观测点会让后面每一轮往前挪一格、把旧记录覆盖成别的观测点。
+RETIRED = "retired"
 
 VALID_STATUS: tuple[str, ...] = (PROPOSED, REJECTED, INCONCLUSIVE, CIRCUIT_BREAK, ADOPTED)
 VALID_KIND: tuple[str, ...] = ("theory", "engineering")

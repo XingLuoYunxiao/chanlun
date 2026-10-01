@@ -29,26 +29,26 @@ ROOT = Path(__file__).resolve().parents[2]  # chanlun/
 sys.path.insert(0, str(ROOT / "src"))
 
 from chanlun.optimizer.agent import (  # noqa: E402
+    AUDIT_SCRIPT,
     PROBE_SCRIPTS,
     Optimizer,
     default_probes,
 )
-from chanlun.optimizer.journal import ADOPTED, read_all, write_entry  # noqa: E402
+from chanlun.optimizer.journal import ADOPTED, REJECTED, read_all, write_entry  # noqa: E402
 from chanlun.optimizer.theory import parse_header  # noqa: E402
 
 CLI = "python -m chanlun.optimizer.cli --root . --audit"
 
 
-#: 每条记录都要带的口径说明。``finding`` 那句话里的计数写自取证刚开始那一版
-#: （24/24 只票、bars 39240），本轮的 before/after 量自本轮冻结快照（重建中，
-#: 22/24 只票、bars 35970）。两个数都真，差的只是行情仓在两个时刻的完整度；
-#: 缺陷的判据（exit_dir_matches_position=0 之类）不依赖缺掉的那两只票，
-#: 移动的只是绝对计数。不说清楚就会变成「同一件事有两套数字」。
+#: 每条记录都要带的口径说明：补丁头 ``finding`` 里的计数写自取证开始那一版，
+#: 本轮的 before/after 量自本轮冻结快照。两个数都真，差的只是行情仓在两个
+#: 时刻的完整度（全市场同步会重写 data/day），所以必须说清楚 —— 同一快照内的
+#: before/after 差值不受影响，跨快照比绝对计数就会变成「同一件事有两套数字」。
 BASIS_DRIFT_NOTE = (
-    "[基准漂移] finding 里的流水线计数写自 24/24 只票那一版口径（bars 39240）；"
-    "本条的 before/after 量自本轮冻结快照（见上一行 [口径]）。取证期间全市场同步"
-    "正在重写 data/day，600000 与 000001 暂时不在库里，所以每轮绝对计数少 4 个信号；"
-    "同一快照内的 before/after 差值不受影响，判据也不依赖缺掉的那两只票。"
+    "[基准漂移] 补丁头 finding 里的流水线计数写自取证开始那一版口径（24/24 只票、bars 39240）；"
+    "本条的 before/after 量自本轮冻结快照（见上一行 [口径]）。取证期间全市场同步正在重写 data/day，"
+    "绝对计数会随行情仓的完整度小幅移动 —— 同一件事在不同快照上不是同一套数；"
+    "同一快照内的 before/after 差值不受影响。"
 )
 
 
@@ -105,6 +105,25 @@ def adopted_note(patches_dir: Path, entry) -> str:
     if detail:
         return f"{head}{detail}{tail}"
     return f"{head}判据搬进常驻回归。{tail}"
+
+
+def retired_note(patches_dir: Path, entry) -> str:
+    """已证伪的说明取自**补丁头** ``# note:``，与 :func:`adopted_note` 对称。
+
+    证伪与「没量出差别」必须分开记：后者记 ``inconclusive`` 并继续回访（换个更长
+    的窗口可能就量出差别了），前者是**前提不成立**，继续回访只会每轮再写一条
+    inconclusive，把结论冲淡。轮次号不能动，所以摘掉观测点的办法是给它
+    ``# status: retired``：它在列表里占位，但不再被量。
+    """
+    detail = ""
+    if entry.patch_file:
+        path = patches_dir / entry.patch_file
+        if path.is_file():
+            detail = " ".join(
+                parse_header(path.read_text(encoding="utf-8")).get("note", "").split()
+            )
+    head = "[已证伪] 本观测点的前提被实测证伪（补丁头 `# status: retired`），不再作为提案回访。"
+    return f"{head}{detail}" if detail else head
 
 
 def tests_for(entry, results: dict) -> dict:
@@ -174,6 +193,30 @@ def evidence_text(rid: str, patch_file: str | None, before: dict, after: dict) -
     return "\n".join(lines)
 
 
+#: 已采纳的补丁**不能再 apply 到主干**，所以它 evidence 里那条
+#: ``--patch ...`` 命令如今会失败：那是「采纳前」的历史记录，不是可复核的读数。
+#: 留着数字有价值（它是这次修正到底改了什么），但必须标明不可重跑，
+#: 并给出主干现状 —— 否则读的人会把历史基线当成当前口径。
+ADOPTED_BANNER = (
+    "# [采纳前] 下面的数字量自采纳**之前**的主干，保留作为这次修正的缺陷证据；"
+    "命令如今已无法重跑（补丁已是主干的一部分，`git apply` 会跳过）。"
+    "主干现状见 notes 的 [主干现状] 行。"
+)
+
+
+def trunk_note(result: dict) -> str:
+    """把「主干当前口径」写成一行可复核的说明（含重跑命令与冻结快照）。"""
+    m = result.get("metrics", {})
+    basis = result.get("basis", {})
+    return (
+        f"[主干现状] {CLI} 实测：signals={m.get('signals')}"
+        f"（b3={m.get('b3')} / s3={m.get('s3')} / s1={m.get('s1')} / b1={m.get('b1')}），"
+        f"pivots={m.get('pivots')}，bars={m.get('bars')}，"
+        f"basis_sha256={basis.get('sha256')}（{basis.get('copied')}/{basis.get('expected')} 只票，"
+        f"{basis.get('frozen_at')}）"
+    )
+
+
 def main() -> int:
     probes = list(default_probes(ROOT))
 
@@ -194,12 +237,54 @@ def main() -> int:
     test_results = json.loads(results_path.read_text(encoding="utf-8"))
 
     opt = Optimizer(ROOT, propose_only=True, measure=True)
+
+    trunk_cache: list[str] = []
+
+    def trunk_line() -> str:
+        """主干现状只量一次（所有已采纳轮共用同一份冻结快照）。
+
+        已采纳的轮次不重量提案，但它们的 evidence 里留着「采纳前」的数字；
+        不给出主干现状，读的人没法判断那些数字属于哪个年代。
+        """
+        if not trunk_cache:
+            trunk_cache.append(trunk_note(opt.measure(AUDIT_SCRIPT, None)))
+        return trunk_cache[0]
+
     print(f"待回访观测点 {len(probes)} 个：{', '.join(p.rid for p in probes)}\n")
 
     recorded = []
     for round_no, probe in enumerate(probes, start=1):
         # 已采纳的观测点跳过，但**不改变轮次号**：轮次号是 journal 的历史主键，
         # 从列表里删掉一个会让后面每一轮都往前挪一格，把旧记录覆盖成别的观测点。
+        if probe.retired:
+            # 与 adopted 同样的处理：不重量、轮次号不动，只把 journal 对齐。
+            # 区别只在状态：证伪是 rejected（它没有变成主干的一部分）。
+            old = next(
+                (e for e in read_all(opt.journal_dir) if e.probe == probe.rid), None
+            )
+            if old is not None:
+                note = retired_note(opt.patches_dir, old)
+                fresh_tests = tests_for(old, test_results)
+                stale = (
+                    old.status != REJECTED
+                    or old.tests != fresh_tests
+                    or "[已证伪]" not in old.notes
+                )
+                old.status = REJECTED
+                old.tests = fresh_tests
+                if "[已证伪]" not in old.notes:
+                    old.notes = f"{old.notes}\n{note}".strip()
+                if stale:
+                    write_entry(opt.journal_dir, old)
+                    print(f"round {round_no:03d}  {probe.rid:4} 已证伪 → 状态对齐为"
+                          f" rejected（前提被实测证伪，不再回访）")
+                else:
+                    print(f"round {round_no:03d}  {probe.rid:4} 已证伪 → 跳过回访"
+                          f"（前提被实测证伪）")
+            else:
+                print(f"round {round_no:03d}  {probe.rid:4} 已证伪 → journal 里没有这一轮，"
+                      f"跳过")
+            continue
         if probe.adopted:
             # 不重量，但要把 journal 里的状态**对齐成 adopted**：补丁头写着
             # `# status: adopted`、判据在常驻回归里，日志却还留着 proposed，
@@ -215,11 +300,17 @@ def main() -> int:
                     old.status != ADOPTED
                     or old.tests != fresh_tests
                     or "[采纳]" not in old.notes
+                    or "[主干现状]" not in old.notes
+                    or not old.evidence.startswith("# [采纳前]")
                 )
                 old.status = ADOPTED
                 old.tests = fresh_tests
                 if "[采纳]" not in old.notes:
                     old.notes = f"{old.notes}\n{note}".strip()
+                if "[主干现状]" not in old.notes:
+                    old.notes = f"{old.notes}\n{trunk_line()}".strip()
+                if not old.evidence.startswith("# [采纳前]"):
+                    old.evidence = f"{ADOPTED_BANNER}\n{old.evidence}"
                 if stale:
                     write_entry(opt.journal_dir, old)
                     print(f"round {round_no:03d}  {probe.rid:4} 已采纳 → 状态/判据对齐为"
