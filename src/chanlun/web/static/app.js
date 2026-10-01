@@ -47,6 +47,7 @@
   };
   const MA_DEFAULT = [5, 10, 20, 60];
   const LS_MA = "chanlun.ma", LS_ADJUST = "chanlun.adjust";
+  const LS_WATCH = "chanlun.watch-collapsed";
 
   // 存的是看图习惯，不是"上次服务端返回了什么"：换票、换级别都该保持。
   function readChoice(key, allowed, fallback) {
@@ -63,6 +64,9 @@
   }
   function remember(key, value) {
     try { localStorage.setItem(key, value); } catch { /* 无痕模式：记不住就记不住 */ }
+  }
+  function readFlag(key) {
+    try { return localStorage.getItem(key) === "1"; } catch { return false; }
   }
   // 一次要全六档：开关切换时手边就有数据，不必再等一次请求。
   const maQuery = () => MA_PERIODS.join(",");
@@ -670,6 +674,27 @@
     renderWatch();
   }
 
+  // ------------------------------------------------------------ 自选股栏折叠
+  // 收起来不是「删掉」：整栏收成 30px 的书脊，竖排写着「自选股」，点一下就回来。
+  // 状态记在 localStorage（下次打开还是你上次的样子）；URL 的 `?watch=off/on`
+  // 可以覆盖它，方便把「只看K线」做成书签。
+  function watchCollapsed() {
+    return $("#watchlist").classList.contains("is-collapsed");
+  }
+
+  function setWatchCollapsed(collapsed, persist) {
+    $(".work").classList.toggle("is-watch-collapsed", collapsed);
+    $("#watchlist").classList.toggle("is-collapsed", collapsed);
+    const btn = $("#watch-toggle");
+    if (btn) {
+      btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      btn.title = collapsed ? "展开自选股栏" : "收起自选股栏，把宽度让给K线";
+    }
+    if (persist) remember(LS_WATCH, collapsed ? "1" : "0");
+    // 容器宽度变了：ResizeObserver 也会兜住，这里再显式喊一声，免得首屏量到旧宽度。
+    chart.resize();
+  }
+
   function renderWatch() {
     const box = $("#watch-rows");
     const items = state.watch || [];
@@ -871,6 +896,14 @@
     ev.preventDefault();
     addWatch();
   });
+  // 折叠/展开：箭头一个按钮；收起来之后整条书脊都可点（免得只剩 18px 的靶子）。
+  $("#watch-toggle").addEventListener("click", () => {
+    setWatchCollapsed(!watchCollapsed(), true);
+  });
+  $("#watchlist").addEventListener("click", (ev) => {
+    if (!watchCollapsed() || ev.target.closest("#watch-toggle")) return;
+    setWatchCollapsed(false, true);
+  });
   $("#watch-code").addEventListener("input", () => {
     const q = $("#watch-code").value.trim();
     clearTimeout(searchTimer);
@@ -913,6 +946,10 @@
     }
   }
   applyAdjustUI({ adjust_effective: state.adjust, adjust_note: "" });
+  // 自选股栏的收/展：URL 里写了 `?watch=off` / `?watch=on` 就听 URL（书签优先），
+  // 否则沿用上次的选择。URL 只是一次性的覆盖，不写回 localStorage。
+  const wq = sp.get("watch");
+  setWatchCollapsed(wq === "off" ? true : wq === "on" ? false : readFlag(LS_WATCH), false);
   // 首屏开在哪只票：URL 里写了 `?code=` 就听 URL（书签优先），没写就等自选池回来
   // 开在**第一只自选票**上 —— 那是用户自己加的、他每天要盯的票。只认第一次，
   // 之后用户手动换票不再被拽回去。

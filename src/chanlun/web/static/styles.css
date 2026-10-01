@@ -357,7 +357,7 @@ button, input { font: inherit; color: inherit; }
 .watch-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   padding: 11px 14px 8px;
   border-bottom: 1px solid var(--line-soft);
 }
@@ -368,7 +368,28 @@ button, input { font: inherit; color: inherit; }
   letter-spacing: 0.24em;
   color: var(--rice-dim);
 }
-.watch-count { font-family: var(--mono); font-size: 11px; color: var(--mohui); }
+.watch-count { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--mohui); }
+
+/* 折叠按钮：自选股栏常驻会一直吃掉 264px 的横向空间，而看K线的人常常只想看K线。
+   收起来是「收成一条 30px 的书脊」，不是「删掉」—— 书脊上竖排写着「自选股」，
+   一眼能看出那儿还有东西，点一下就回来。状态记在 localStorage。 */
+.watch-toggle {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r);
+  color: var(--mohui);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.watch-toggle:hover { color: var(--rice); border-color: var(--line); background: var(--panel-2); }
+.watch-rail.is-collapsed .watch-toggle { transform: rotate(180deg); }
 
 .watch-add { display: flex; gap: 6px; padding: 9px 12px; }
 .watch-add input {
@@ -484,15 +505,52 @@ button, input { font: inherit; color: inherit; }
   color: var(--mohui);
 }
 
+/* ---------------- 自选股栏折叠 ----------------
+   收起来的样子：整栏只剩 30px，竖排「自选股」三个字 + 一个箭头。
+   省下的 234px 直接归 K 线 —— 图表容器有 ResizeObserver，宽度一变自己重画，
+   所以这里只改 grid 的列宽，不需要谁去通知 ECharts。 */
+.work.is-watch-collapsed { grid-template-columns: 46px 30px minmax(0, 1fr) 336px; }
+.watch-rail.is-collapsed .watch-head {
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 8px 0 10px;
+  border-bottom: 0;
+}
+.watch-rail.is-collapsed .watch-head h2 {
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  letter-spacing: 0.18em;
+  font-size: 12px;
+}
+/* 收起来之后整条书脊都可点：点字、点空白都展开（箭头自己另算）。 */
+.watch-rail.is-collapsed .watch-head { cursor: pointer; }
+.watch-rail.is-collapsed .watch-count,
+.watch-rail.is-collapsed .watch-add,
+.watch-rail.is-collapsed .watch-err,
+.watch-rail.is-collapsed .watch-rows,
+.watch-rail.is-collapsed .watch-foot { display: none; }
+
 /* ---------------- 窄屏 ---------------- */
 @media (max-width: 1400px) {
   .work { grid-template-columns: 46px 240px minmax(0, 1fr); }
+  .work.is-watch-collapsed { grid-template-columns: 46px 30px minmax(0, 1fr); }
   .ledger { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); max-height: 320px; }
 }
 
 @media (max-width: 980px) {
   .work { grid-template-columns: 46px minmax(0, 1fr); }
   .watch-rail { grid-column: 1 / -1; border-right: 0; border-bottom: 1px solid var(--line); max-height: 240px; }
+  /* 自选股栏在这档是整行，收起它省不出横向空间，只把列表收掉、留一条横的头。 */
+  .work.is-watch-collapsed { grid-template-columns: 46px minmax(0, 1fr); }
+  .watch-rail.is-collapsed { max-height: none; }
+  .watch-rail.is-collapsed .watch-head {
+    flex-direction: row;
+    padding: 11px 14px 8px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .watch-rail.is-collapsed .watch-head h2 { writing-mode: horizontal-tb; text-orientation: mixed; }
 }
 
 @media (max-width: 760px) {
@@ -500,6 +558,7 @@ button, input { font: inherit; color: inherit; }
   .query { flex-wrap: wrap; }
   .stamp { width: 100%; text-align: left; }
   .work { grid-template-columns: 1fr; }
+  .work.is-watch-collapsed { grid-template-columns: 1fr; }
   .rail { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
   .rail-tab { writing-mode: horizontal-tb; border-left: 0; border-bottom: 2px solid transparent; padding: 10px 14px; }
   .rail-tab.is-on { border-left-color: transparent; border-bottom-color: var(--indigo); }
