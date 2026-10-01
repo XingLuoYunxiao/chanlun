@@ -132,3 +132,32 @@ systemctl list-timers chanlun-daily.timer
 
 - 流水线：`logs/daily.log`（两个平台都指到这里）；systemd 上还可 `journalctl -u chanlun-daily.service`。
 - 看盘页：`logs/chanlun.log`（`python -m chanlun serve`）。
+
+## 看行情用的 Mac 客户端（计划外，2026-10-01 装好）
+
+通达信没有 Mac 版：`soft.tdx.com.cn` 只是论坛入口，安装包要注册 + 实名，所以本机用同花顺 /
+东方财富的原生 Mac 版看行情，**不引入 Wine、不引入虚拟机**。自建看盘页负责缠论结构，
+这两者负责分时、盘口、F10 —— 分工不重叠。
+
+| | 同花顺 | 东方财富 |
+| --- | --- | --- |
+| 版本 | 5.3.5 | 3.8.2 |
+| 安装位置 | `/Applications/同花顺.app` | `/Applications/东方财富.app` |
+| 架构 | `x86_64 + arm64`（**Apple Silicon 原生**） | `x86_64`（Intel 版） |
+| 签名 | 公证 Developer ID `Zhejiang Hexin Flush Network Services Ltd (74EG3R33SN)` | 公证 Developer ID `East Money Information Co.,Ltd. (25TR5G565J)` |
+| Gatekeeper | `spctl -a -t install` → accepted | accepted |
+| 安装包 | `~/Downloads/ThsMac5.3.5.dmg`，sha256 `14d228c77743771cb43d9f9796b666c6e36c9e43dc8d2ff61f97cd7aefa53dbc` | `~/Downloads/dfcf.dmg`，sha256 `b02d43805693c10d0937bd003e9ea8540458238d025f2d4fe07da0e6e026570f` |
+
+**东方财富是 Intel 版，跑之前要 Rosetta 2**（本机没装，第一次打开会弹窗；装它需要管理员密码）：
+
+```bash
+softwareupdate --install-rosetta --agree-to-license
+```
+
+装法就是挂载 dmg 后 `ditto <卷>/X.app /Applications/X.app`（用 `ditto` 而不是 `cp -R`，
+后者会丢签名相关的扩展属性）。核对安装包真伪看两处：`codesign -dv` 的 TeamIdentifier，
+以及 `spctl -a -vvv -t install` 是否 `accepted`。
+
+一个坑：搜「东方财富 Mac 下载」会撞到 `emdesk.com`，**那不是东方财富的域名**（真的是
+`emdesk.eastmoney.com`）。认域名，别认搜索结果排名。Homebrew 的 `dfcf` cask 是
+`disabled: true`，装了也没用，所以走官网 dmg。
