@@ -150,6 +150,11 @@ snap = ChanEngine(code, period, signal_fn=find_signals, level=period).full(df)
 
 **复现命令**：
 
+**UI 落点**（2026-10-01 真机验收补）：`counts_total` 一开始只活在接口里，页面上看不见，
+用户会把状态栏「线段 12」读成「这只票只有 12 段」（全史 16 段）。右上角补一行，
+**只在两边不一致时**出现：「全史 16 段 / 3 中枢 / 2 买卖点（这里只画与窗口相交的部分）」。
+接口给数、页面说清「还有多少没画」——两件事都做完，F2 才算真的修完。
+
 ```bash
 # 上表全部数字（1 秒跑完，自带「新口径 == 全史 ∩ 窗口」断言）
 ../.venv-chanlun/bin/python optimizer/tools/measure_f2_window_scope.py
