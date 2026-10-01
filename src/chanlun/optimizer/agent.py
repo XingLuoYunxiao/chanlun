@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .journal import (
+    ADOPTED,
     CIRCUIT_BREAK,
     INCONCLUSIVE,
     PROPOSED,
@@ -34,7 +35,7 @@ from .journal import (
     read_all,
     write_entry,
 )
-from .theory import TheoryEntry, load_theory, validate_patch
+from .theory import TheoryEntry, load_theory, parse_header, validate_patch
 
 #: 前后对比的固定样本：24 只主板/创业板龙头，固定窗口。
 #: 换股票或换窗口就等于换了口径，前后数字不可比——所以写死在代码里。
@@ -217,6 +218,8 @@ class Probe:
     tests: dict[str, Any] = field(default_factory=dict)
     notes: str = ""
     measure_script: str | None = None
+    #: 补丁头写了 ``# status: adopted`` —— 它已经是主干的一部分，不再当提案量。
+    adopted: bool = False
 
 
 class Optimizer:
@@ -523,8 +526,12 @@ class Optimizer:
         self, rounds: int, probes: Sequence[Probe] | None = None
     ) -> list[JournalEntry]:
         probes = list(probes if probes is not None else default_probes(self.root))
-        if not probes:
+        # 已采纳的观测点不再进入循环：它的判据在常驻回归里，这里再量一次只会
+        # 写出一条 inconclusive，把「采纳」这件事在日志里冲淡。
+        pending = [p for p in probes if not p.adopted] or probes
+        if not pending:
             return []
+        probes = pending
         existing = read_all(self.journal_dir)
         start = (max((e.round for e in existing), default=0)) + 1
         recorded: list[JournalEntry] = []
@@ -666,6 +673,23 @@ def default_probes(root: str | Path) -> list[Probe]:
         candidates = sorted(patches.glob(f"round-*-{rid}.patch"))
         patch_text = candidates[-1].read_text(encoding="utf-8") if candidates else None
         last = history.get(rid)
+        adopted = bool(
+            patch_text
+            and parse_header(patch_text).get("status", "").strip().lower() == ADOPTED
+        )
+        notes = "24x7 回访：补丁内容不变，重新量一次当前数据。"
+        if adopted:
+            # 采纳的定义就是「补丁已经变成主干的一部分」。再把它交给影子目录
+            # `git apply` 只会失败（那些 hunk 主干里已经有了），而它的判据已经
+            # 搬进常驻回归测试 —— 所以这里交出**空补丁**：观测点照旧在列
+            # （轮次号不漂移），但这一轮没有提案可量。
+            notes = (
+                "已采纳：补丁已是主干的一部分，本轮不重新量提案"
+                "（影子目录 apply 必然失败）。判据在常驻回归里，"
+                "见 tests/optimizer/test_optimizer.py::"
+                "test_adopted_patches_are_regression_tested_in_trunk。"
+            )
+            patch_text = None
         probe = Probe(
             rid=rid,
             kind=kind,
@@ -676,8 +700,9 @@ def default_probes(root: str | Path) -> list[Probe]:
             before=last.after if last else {},
             after=last.after if last else {},
             tests={"before": "skip", "after": "skip", "summary": "re-measure"},
-            notes="24x7 回访：补丁内容不变，重新量一次当前数据。",
+            notes=notes,
             measure_script=probe_script(root, rid),
+            adopted=adopted,
         )
         probes.append(probe)
     return probes

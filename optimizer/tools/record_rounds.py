@@ -33,7 +33,7 @@ from chanlun.optimizer.agent import (  # noqa: E402
     Optimizer,
     default_probes,
 )
-from chanlun.optimizer.journal import read_all, write_entry  # noqa: E402
+from chanlun.optimizer.journal import ADOPTED, read_all, write_entry  # noqa: E402
 
 CLI = "python -m chanlun.optimizer.cli --root . --audit"
 
@@ -65,17 +65,67 @@ def audit_cmd(rid: str, patch: str | None = None) -> str:
     return " ".join(parts)
 
 
+def patch_key(entry, results: dict) -> str | None:
+    """这一轮该看哪份补丁的测试结论。
+
+    ``entry.patch_file`` 只在「量出来数字确实动了」时才落盘（no-op 会被降级成
+    ``inconclusive``，patch_file 留空）—— 但那份补丁**确实量过**，它的测试结论
+    不能因为没被采纳就丢掉。G2b 就是这种：候选补丁叫
+    ``round-005-G2b-candidate.patch``（故意不被 ``patches/*.patch`` 当提案），
+    entry.patch_file 为空，于是这里按轮次+观测点把文件名找回来。
+    """
+    keys = results["patches"]
+    for cand in (
+        entry.patch_file,
+        f"round-{entry.round:03d}-{entry.probe}.patch",
+        f"round-{entry.round:03d}-{entry.probe}-candidate.patch",
+    ):
+        if cand and cand in keys:
+            return cand
+    return None
+
+
 def tests_for(entry, results: dict) -> dict:
-    """这一轮的测试结论。取自 ``run_patch_tests.py`` 的真实输出，不许手写。"""
+    """这一轮的测试结论。取自 ``run_patch_tests.py`` 的真实输出，不许手写。
+
+    **这里曾经写死过一句「结果与主干基线逐项一致，无新增失败」**：那个工具当时
+    在子目录里跑 ``git apply``，路径落在当前目录之外被 git 静默跳过（rc=0、
+    一个字节都没改），于是它永远报全绿，这句话也永远「成立」。工具修好之后
+    真相是：待评审的补丁打进主干，每一份都会撞掉几个常驻用例 —— 那些用例钉的
+    正是提案要改的行为。测试结论必须照实写，包括撞了哪几个用例。
+    """
     base = results["baseline"]
-    got = results["patches"].get(entry.patch_file or "")
+    key = patch_key(entry, results)
+    got = results["patches"].get(key) if key else None
+    if got and "skipped" in got:
+        return {
+            "before": base["summary"],
+            "after": base["summary"],
+            "cmd": base["cmd"],
+            "summary": ("已采纳：补丁已是主干的一部分，本工具不再重复 apply"
+                        "（git 会静默跳过），判据在常驻回归里"),
+        }
     if got:
+        failed = list(got.get("failed_tests", []))
+        if failed:
+            summary = (
+                f"{key} 单独 apply 进主干后跑同一套测试："
+                f"主干基线「{base['summary']}」→ 打补丁后「{got['summary']}」，"
+                f"新增失败 {len(failed)} 个：{'、'.join(failed)}。"
+                "这些用例钉的正是本提案要改的行为，所以采纳时必须连同判据一起改"
+                "（改判据要引 theory 原文），不能只看 before/after 变好就落地。"
+            )
+        else:
+            summary = (
+                f"{key} 单独 apply 进主干后跑同一套测试："
+                "结果与主干基线逐项一致，无新增失败"
+            )
         return {
             "before": base["summary"],
             "after": got["summary"],
             "cmd": got["cmd"],
-            "summary": (f"{entry.patch_file} 单独 apply 进主干后跑同一套测试："
-                        "结果与主干基线逐项一致，无新增失败"),
+            "failed_tests": failed,
+            "summary": summary,
         }
     return {
         "before": base["summary"],
@@ -126,6 +176,45 @@ def main() -> int:
 
     recorded = []
     for round_no, probe in enumerate(probes, start=1):
+        # 已采纳的观测点跳过，但**不改变轮次号**：轮次号是 journal 的历史主键，
+        # 从列表里删掉一个会让后面每一轮都往前挪一格，把旧记录覆盖成别的观测点。
+        if probe.adopted:
+            # 不重量，但要把 journal 里的状态**对齐成 adopted**：补丁头写着
+            # `# status: adopted`、判据在常驻回归里，日志却还留着 proposed，
+            # 那就成了两套说法。这里幂等修正，重复跑不会追加。
+            old = next(
+                (e for e in read_all(opt.journal_dir) if e.probe == probe.rid), None
+            )
+            if old is not None:
+                note = (
+                    "[采纳] 补丁已是主干的一部分（补丁头 `# status: adopted`），"
+                    "判据搬进常驻回归：tests/optimizer/test_optimizer.py::"
+                    "test_adopted_patches_are_regression_tested_in_trunk 与"
+                    " test_summary_breaks_the_check_down_by_kind。"
+                    "本观测点不再作为提案回访。"
+                )
+                fresh_tests = tests_for(old, test_results)
+                # 幂等：状态、判据、说明都对齐成「已采纳」，重复跑不会追加。
+                stale = (
+                    old.status != ADOPTED
+                    or old.tests != fresh_tests
+                    or "[采纳]" not in old.notes
+                )
+                old.status = ADOPTED
+                old.tests = fresh_tests
+                if "[采纳]" not in old.notes:
+                    old.notes = f"{old.notes}\n{note}".strip()
+                if stale:
+                    write_entry(opt.journal_dir, old)
+                    print(f"round {round_no:03d}  {probe.rid:4} 已采纳 → 状态/判据对齐为"
+                          f" adopted（判据在常驻回归里，补丁已是主干的一部分）")
+                else:
+                    print(f"round {round_no:03d}  {probe.rid:4} 已采纳 → 跳过回访"
+                          f"（判据在常驻回归里，补丁已是主干的一部分）")
+            else:
+                print(f"round {round_no:03d}  {probe.rid:4} 已采纳 → journal 里没有这一轮，"
+                      f"跳过（判据在常驻回归里）")
+            continue
         entry = opt.run_round(round_no, probe)
         # 把「能重跑的命令 + 原始输出」写进 evidence。注意 before/after 是
         # run_round 刚刚量出来的，所以这段文字与 journal 的数字必然一致。

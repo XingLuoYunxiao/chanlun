@@ -28,10 +28,10 @@
   "started_at": "2026-10-01T10:47:33+08:00",
   "status": "adopted",
   "tests": {
-    "after": "484 passed, 12 deselected, 1 warning in 12.16s",
-    "before": "484 passed, 12 deselected, 1 warning in 13.15s",
+    "after": "654 passed, 12 deselected, 1 warning in 15.41s",
+    "before": "654 passed, 12 deselected, 1 warning in 15.41s",
     "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py",
-    "summary": "round-010-G5b.patch 单独 apply 进主干后跑同一套测试：结果与主干基线逐项一致，无新增失败"
+    "summary": "已采纳：补丁已是主干的一部分，本工具不再重复 apply（git 会静默跳过），判据在常驻回归里"
   },
   "theory_id": null
 }

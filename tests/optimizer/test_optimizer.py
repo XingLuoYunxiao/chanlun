@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from chanlun.optimizer.agent import Optimizer, Probe
+from chanlun.optimizer.agent import Optimizer, Probe, default_probes
 from chanlun.optimizer.journal import (
     ADOPTED,
     CIRCUIT_BREAK,
@@ -575,6 +575,44 @@ def test_theory_entry_serializes_to_json(theory):
     payload = json.loads(json.dumps(entry.to_dict(), ensure_ascii=False))
     assert payload["id"] == "L27-DIVERGENCE-UNIT"
     assert payload["quote"]
+
+
+def test_adopted_patch_is_not_handed_back_as_a_proposal(fake_repo: Path):
+    """已采纳的补丁**不能再当提案量一遍**：它已经是主干的一部分。
+
+    影子目录里 `git apply` 会直接失败（那些 hunk 主干里有了），24x7 回访
+    因此会在采纳当天崩掉。正确做法是把它标成 ``adopted`` 并交出**空补丁**：
+    回访列表照旧（轮次号稳定），但这一轮没有提案可量。
+    """
+    patches = fake_repo / "optimizer" / "patches"
+    (patches / "round-001-G1a.patch").write_text(
+        _header(kind="engineering", status="adopted") + _algo_patch(), encoding="utf-8"
+    )
+    (patches / "round-002-G1b.patch").write_text(
+        _header(kind="engineering", status="proposed") + _algo_patch(), encoding="utf-8"
+    )
+
+    by_rid = {p.rid: p for p in default_probes(fake_repo)}
+    adopted, pending = by_rid["G1a"], by_rid["G1b"]
+
+    assert adopted.adopted is True
+    assert adopted.patch_text is None, "已采纳的补丁不该再交给影子目录 apply"
+    assert "已采纳" in adopted.notes
+    assert "常驻回归" in adopted.notes
+
+    assert pending.adopted is False
+    assert pending.patch_text is not None, "待评审提案必须照旧交出补丁文本"
+
+
+def test_optimizer_run_cycles_only_pending_probes(fake_repo: Path):
+    """24x7 循环只在**待评审**的观测点里转，不把已采纳的重新量成 inconclusive。"""
+    pending = Probe(rid="P1", kind="engineering", finding="f", evidence="e")
+    adopted = Probe(
+        rid="P2", kind="engineering", finding="f", evidence="e", adopted=True
+    )
+    opt = Optimizer(fake_repo, propose_only=True, measure=False)
+    rounds = opt.run(2, probes=[pending, adopted])
+    assert [e.probe for e in rounds] == ["P1", "P1"]
 
 
 def test_adopted_patches_are_regression_tested_in_trunk():

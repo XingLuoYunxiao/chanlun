@@ -15,18 +15,18 @@
   "evidence": "# 尺子：tools/measure_quality_source.py（在影子目录里跑，主干一个字节都不动）\n$ cd chanlun && python -m chanlun.optimizer.cli --root . --audit --probe G5a\nmetrics = {\"summary_json\": \"{\\\"failed\\\": 0, \\\"ok\\\": 40, \\\"total\\\": 40}\", \"summary_kinds\": [], \"校验行\": \"校验：抽样 40 条，失败 0 条\"}\n$ cd chanlun && python -m chanlun.optimizer.cli --root . --audit --probe G5a --patch optimizer/patches/round-009-G5a.patch\nmetrics = {\"summary_json\": \"{\\\"failed\\\": 0, \\\"kinds\\\": {\\\"cross_source\\\": {\\\"failed\\\": 0, \\\"total\\\": 20}, \\\"latest_equals_actual\\\": {\\\"failed\\\": 0, \\\"total\\\": 20}}, \\\"ok\\\": 40, \\\"total\\\": 40}\", \"summary_kinds\": [\"cross_source\", \"latest_equals_actual\"], \"校验行\": \"校验：抽样 40 条，失败 0 条（cross_source 20 条失败 0；latest_equals_actual 20 条失败 0）\"}\n[口径] 冻结快照 basis_sha256=d8bad28882f27fdf，22/24 只票（缺 2 只：600000、000001）。缺票不是代码造成的，是行情仓那一刻就没有它们；before/after 读的是同一份快照，所以差值仍然有效，但这一轮的绝对数不能和别轮直接比。\n# 注：命令每次重跑都会重新冻结当时的行情仓，basis_sha256 会随数据变；同一轮里的 before/after 用的是同一份快照。",
   "finding": "校验口径被合并：quality_report.json 的 summary 只有 {total, ok, failed}，daily 只印「抽样 40 条，失败 0 条」，跨源校验（要联网取外部源）与前复权自洽校验（本地就能算）共用一个数字；外部源整年不可达也照样显示满分通过。__main__.py 的「数据源：baostock 前复权」还是一行硬编码字符串",
   "kind": "engineering",
-  "notes": "24x7 回访：补丁内容不变，重新量一次当前数据。\n[口径] 冻结快照 basis_sha256=d8bad28882f27fdf，22/24 只票（缺 2 只：600000、000001）。缺票不是代码造成的，是行情仓那一刻就没有它们；before/after 读的是同一份快照，所以差值仍然有效，但这一轮的绝对数不能和别轮直接比。\n[机制] before={\"lines\": [\"数据源：baostock 前复权（本地 Parquet）\", \"校验：抽样 40 条，失败 0 条\"], \"kind_counts\": {\"cross_source\": 20, \"latest_equals_actual\": 20}}\n[机制] after={\"lines\": [\"数据源：baostock 前复权（本地 Parquet）；校验用外部源：东财 fqt=1（不可达时回退腾讯 qfq）\", \"校验：抽样 40 条，失败 0 条（cross_source 20 条失败 0；latest_equals_actual 20 条失败 0）\"], \"kind_counts\": {\"cross_source\": 20, \"latest_equals_actual\": 20}}\n[基准漂移] finding 里的流水线计数写自 24/24 只票那一版口径（bars 39240）；本条的 before/after 量自本轮冻结快照（见上一行 [口径]）。取证期间全市场同步正在重写 data/day，600000 与 000001 暂时不在库里，所以每轮绝对计数少 4 个信号；同一快照内的 before/after 差值不受影响，判据也不依赖缺掉的那两只票。",
+  "notes": "24x7 回访：补丁内容不变，重新量一次当前数据。\n[口径] 冻结快照 basis_sha256=d8bad28882f27fdf，22/24 只票（缺 2 只：600000、000001）。缺票不是代码造成的，是行情仓那一刻就没有它们；before/after 读的是同一份快照，所以差值仍然有效，但这一轮的绝对数不能和别轮直接比。\n[机制] before={\"lines\": [\"数据源：baostock 前复权（本地 Parquet）\", \"校验：抽样 40 条，失败 0 条\"], \"kind_counts\": {\"cross_source\": 20, \"latest_equals_actual\": 20}}\n[机制] after={\"lines\": [\"数据源：baostock 前复权（本地 Parquet）；校验用外部源：东财 fqt=1（不可达时回退腾讯 qfq）\", \"校验：抽样 40 条，失败 0 条（cross_source 20 条失败 0；latest_equals_actual 20 条失败 0）\"], \"kind_counts\": {\"cross_source\": 20, \"latest_equals_actual\": 20}}\n[基准漂移] finding 里的流水线计数写自 24/24 只票那一版口径（bars 39240）；本条的 before/after 量自本轮冻结快照（见上一行 [口径]）。取证期间全市场同步正在重写 data/day，600000 与 000001 暂时不在库里，所以每轮绝对计数少 4 个信号；同一快照内的 before/after 差值不受影响，判据也不依赖缺掉的那两只票。\n[采纳] 补丁已是主干的一部分（补丁头 `# status: adopted`），判据搬进常驻回归：tests/optimizer/test_optimizer.py::test_adopted_patches_are_regression_tested_in_trunk 与 test_summary_breaks_the_check_down_by_kind。本观测点不再作为提案回访。",
   "patch_file": "round-009-G5a.patch",
   "patch_sha256": "b36ad349752a154e",
   "probe": "G5a",
   "round": 9,
   "started_at": "2026-10-01T10:47:32+08:00",
-  "status": "proposed",
+  "status": "adopted",
   "tests": {
-    "after": "484 passed, 12 deselected, 1 warning in 12.15s",
-    "before": "484 passed, 12 deselected, 1 warning in 13.15s",
+    "after": "654 passed, 12 deselected, 1 warning in 15.41s",
+    "before": "654 passed, 12 deselected, 1 warning in 15.41s",
     "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py",
-    "summary": "round-009-G5a.patch 单独 apply 进主干后跑同一套测试：结果与主干基线逐项一致，无新增失败"
+    "summary": "已采纳：补丁已是主干的一部分，本工具不再重复 apply（git 会静默跳过），判据在常驻回归里"
   },
   "theory_id": null
 }

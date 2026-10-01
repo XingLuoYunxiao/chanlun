@@ -67,7 +67,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.list_probes:
         for probe in default_probes(root):
-            patch = "有补丁" if probe.patch_text else "无补丁"
+            if probe.adopted:
+                patch = "已采纳"
+            else:
+                patch = "有补丁" if probe.patch_text else "无补丁"
             print(f"{probe.rid}\t{probe.kind}\t{patch}\t{probe.finding}")
         print(f"理论库条目：{len(optimizer.theory)} 条（{optimizer.theory_dir}）")
         return EXIT_OK
