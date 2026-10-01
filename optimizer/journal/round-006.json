@@ -39,25 +39,25 @@
     "trends_up": 10,
     "zero_signal_codes": 3
   },
-  "evidence": "# 尺子：缠论流水线审计脚本（24 只票 / 日线 / 2020-01-01..2026-09-29）\n$ cd chanlun && python -m chanlun.optimizer.cli --root . --audit\nmetrics = {\"b1\": 0, \"b2\": 0, \"b3\": 26, \"bars\": 38754, \"confirmed_segments\": 323, \"pivots\": 56, \"s1\": 1, \"s2\": 0, \"s3\": 16, \"segments\": 361, \"signal_problems\": 0, \"signals\": 43, \"stroke_max\": 69, \"stroke_median\": 6.0, \"trends_consolidation\": 6, \"trends_down\": 7, \"trends_up\": 10, \"zero_signal_codes\": 3}\n$ cd chanlun && python -m chanlun.optimizer.cli --root . --audit --patch optimizer/patches/round-006-G3a.patch\nmetrics = {\"b1\": 0, \"b2\": 0, \"b3\": 24, \"bars\": 38754, \"confirmed_segments\": 323, \"pivots\": 56, \"s1\": 1, \"s2\": 0, \"s3\": 16, \"segments\": 361, \"signal_problems\": 0, \"signals\": 41, \"stroke_max\": 69, \"stroke_median\": 6.0, \"trends_consolidation\": 6, \"trends_down\": 7, \"trends_up\": 10, \"zero_signal_codes\": 3}\n[口径] 冻结快照 basis_sha256=ccab866d219620d1，24/24 只票\n# 注：命令每次重跑都会重新冻结当时的行情仓，basis_sha256 会随数据变；同一轮里的 before/after 用的是同一份快照。",
+  "evidence": "# 尺子：缠论流水线审计脚本（24 只票 / 日线 / 2020-01-01..2026-09-29）\n$ cd chanlun && python -m chanlun.optimizer.cli --root . --audit\nmetrics = {\"b1\": 0, \"b2\": 0, \"b3\": 26, \"bars\": 38754, \"confirmed_segments\": 323, \"pivots\": 56, \"s1\": 1, \"s2\": 0, \"s3\": 16, \"segments\": 361, \"signal_problems\": 0, \"signals\": 43, \"stroke_max\": 69, \"stroke_median\": 6.0, \"trends_consolidation\": 6, \"trends_down\": 7, \"trends_up\": 10, \"zero_signal_codes\": 3}\n$ cd chanlun && python -m chanlun.optimizer.cli --root . --audit --patch optimizer/patches/round-006-G3a.patch\nmetrics = {\"b1\": 0, \"b2\": 0, \"b3\": 24, \"bars\": 38754, \"confirmed_segments\": 323, \"pivots\": 56, \"s1\": 1, \"s2\": 0, \"s3\": 16, \"segments\": 361, \"signal_problems\": 0, \"signals\": 41, \"stroke_max\": 69, \"stroke_median\": 6.0, \"trends_consolidation\": 6, \"trends_down\": 7, \"trends_up\": 10, \"zero_signal_codes\": 3}\n[口径] 冻结快照 basis_sha256=044d4d17bfdc7e69，24/24 只票\n# 注：命令每次重跑都会重新冻结当时的行情仓，basis_sha256 会随数据变；同一轮里的 before/after 用的是同一份快照。",
   "finding": "回试段可能是窗口右端的 TENTATIVE 线段（pivot.py 文档已注明），买点会在「回试还没走完」时发出；加一道「离开段与回试段都必须 CONFIRMED」的门后 44 → 43（b3 27 → 25）",
   "kind": "theory",
-  "notes": "24x7 回访：补丁内容不变，重新量一次当前数据。\n[口径] 冻结快照 basis_sha256=ccab866d219620d1，24/24 只票\n[机制] before={\"pivots_with_next\": 56, \"exit_entirely_outside\": 42, \"exit_dir_matches_position\": 0, \"exit_dir_opposite_position\": 42, \"trend_groups\": 17, \"trend_group_leave_dir_ok\": 13, \"trend_group_prev_ok\": 0, \"trend_group_both_ok\": 0, \"b3_trunk\": 0, \"b3_positional\": 42, \"pivot_max_segments\": 14, \"pivot_over_9\": 8, \"pivot_segment_total\": 300}\n[机制] after={\"pivots_with_next\": 56, \"exit_entirely_outside\": 42, \"exit_dir_matches_position\": 0, \"exit_dir_opposite_position\": 42, \"trend_groups\": 17, \"trend_group_leave_dir_ok\": 13, \"trend_group_prev_ok\": 0, \"trend_group_both_ok\": 0, \"b3_trunk\": 0, \"b3_positional\": 42, \"pivot_max_segments\": 14, \"pivot_over_9\": 8, \"pivot_segment_total\": 300}\n[基准漂移] 补丁头 finding 里的流水线计数写自取证开始那一版口径（24/24 只票、bars 39240）；本条的 before/after 量自本轮冻结快照（见上一行 [口径]）。取证期间全市场同步正在重写 data/day，绝对计数会随行情仓的完整度小幅移动 —— 同一件事在不同快照上不是同一套数；同一快照内的 before/after 差值不受影响。",
+  "notes": "24x7 回访：补丁内容不变，重新量一次当前数据。\n[口径] 冻结快照 basis_sha256=044d4d17bfdc7e69，24/24 只票\n[机制] before={\"pivots_with_next\": 56, \"exit_entirely_outside\": 42, \"exit_dir_matches_position\": 0, \"exit_dir_opposite_position\": 42, \"trend_groups\": 17, \"trend_group_leave_dir_ok\": 13, \"trend_group_prev_ok\": 0, \"trend_group_both_ok\": 0, \"b3_trunk\": 0, \"b3_positional\": 42, \"pivot_max_segments\": 14, \"pivot_over_9\": 8, \"pivot_segment_total\": 300}\n[机制] after={\"pivots_with_next\": 56, \"exit_entirely_outside\": 42, \"exit_dir_matches_position\": 0, \"exit_dir_opposite_position\": 42, \"trend_groups\": 17, \"trend_group_leave_dir_ok\": 13, \"trend_group_prev_ok\": 0, \"trend_group_both_ok\": 0, \"b3_trunk\": 0, \"b3_positional\": 42, \"pivot_max_segments\": 14, \"pivot_over_9\": 8, \"pivot_segment_total\": 300}\n[基准漂移] 补丁头 finding 里的流水线计数写自取证开始那一版口径（24/24 只票、bars 39240）；本条的 before/after 量自本轮冻结快照（见上一行 [口径]）。取证期间全市场同步正在重写 data/day，绝对计数会随行情仓的完整度小幅移动 —— 同一件事在不同快照上不是同一套数；同一快照内的 before/after 差值不受影响。",
   "patch_file": "round-006-G3a.patch",
   "patch_sha256": "3f1068ce5c0f9d5f",
   "probe": "G3a",
   "round": 6,
-  "started_at": "2026-10-01T13:58:03+08:00",
+  "started_at": "2026-10-01T16:47:35+08:00",
   "status": "proposed",
   "tests": {
-    "after": "2 failed, 656 passed, 13 deselected, 1 warning in 13.21s",
-    "before": "659 passed, 12 deselected, 1 warning in 13.02s",
+    "after": "2 failed, 664 passed, 13 deselected, 1 warning in 14.04s",
+    "before": "667 passed, 12 deselected, 1 warning in 13.65s",
     "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
     "failed_tests": [
       "tests/chan/test_signal.py::test_tentative_trigger_segment_yields_tentative_signal",
       "tests/scan/test_scanner.py::test_scan_real_engine_finds_pivot_and_signal_on_crafted_path"
     ],
-    "summary": "round-006-G3a.patch 单独 apply 进主干后跑同一套测试：主干基线「659 passed, 12 deselected, 1 warning in 13.02s」→ 打补丁后「2 failed, 656 passed, 13 deselected, 1 warning in 13.21s」，新增失败 2 个：tests/chan/test_signal.py::test_tentative_trigger_segment_yields_tentative_signal、tests/scan/test_scanner.py::test_scan_real_engine_finds_pivot_and_signal_on_crafted_path。这些用例钉的正是本提案要改的行为，所以采纳时必须连同判据一起改（改判据要引 theory 原文），不能只看 before/after 变好就落地。"
+    "summary": "round-006-G3a.patch 单独 apply 进主干后跑同一套测试：主干基线「667 passed, 12 deselected, 1 warning in 13.65s」→ 打补丁后「2 failed, 664 passed, 13 deselected, 1 warning in 14.04s」，新增失败 2 个：tests/chan/test_signal.py::test_tentative_trigger_segment_yields_tentative_signal、tests/scan/test_scanner.py::test_scan_real_engine_finds_pivot_and_signal_on_crafted_path。这些用例钉的正是本提案要改的行为，所以采纳时必须连同判据一起改（改判据要引 theory 原文），不能只看 before/after 变好就落地。"
   },
   "theory_id": "L20-THIRD-POINT-POSITION"
 }
