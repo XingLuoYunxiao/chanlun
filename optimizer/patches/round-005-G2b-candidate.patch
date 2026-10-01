@@ -1,0 +1,30 @@
+# kind: theory
+# theory: L20-PIVOT-EXTENSION
+# quote: 而在趋势里，同级别的前后缠中说禅走势中枢是不能有任何重叠的
+# source: 缠中说禅《教你炒股票108课》第20课《缠中说禅走势中枢级别扩张及第三类买卖点》
+# finding: trend.py::_direction 只比较相邻中枢的 zd/zg 高低，不检查两个中枢是否重叠，于是区间套在一起的两个中枢也会被当成「上涨/下跌」。本窗口实测无影响：10 涨 / 8 跌 / 6 盘整、signals 全部不变，说明这 18 个趋势组里没有重叠对。
+# evidence: cd chanlun && python optimizer/agent.py --audit   # 主干口径
+#    {"signals": 0, "trends_up": 10, "trends_down": 8, "trends_consolidation": 6, "pivots": 57}
+#    cd chanlun && python optimizer/agent.py --audit --patch optimizer/patches/round-005-G2b.patch   # 应用本提案后
+#    {"signals": 0, "trends_up": 10, "trends_down": 8, "trends_consolidation": 6, "pivots": 57}
+# note: 判定为 inconclusive：候选补丁已生成并实测，但在这 24 只票 5 年日线上是纯 no-op，拿不出「改完更好」的数字，因此**不提议合入**。留档供人工在更长窗口上复核。
+diff --git a/src/chanlun/chan/trend.py b/src/chanlun/chan/trend.py
+--- a/src/chanlun/chan/trend.py
++++ b/src/chanlun/chan/trend.py
+@@ -48,9 +48,15 @@
+     confirmed_at: str | None = None
+ 
+ 
+ def _direction(a: Pivot, b: Pivot) -> int:
+-    """两个相邻中枢的走向：1 依次上升，-1 依次下降，0 不构成趋势。"""
++    """两个相邻中枢的走向：1 依次上升，-1 依次下降，0 不构成趋势。
++
++    第 20 课：在趋势里，同级别的前后走势中枢不能有任何重叠。区间有重叠的
++    两个中枢属于中枢延伸/级别扩张，不能拼成趋势。
++    """
++    if a.zd <= b.zg and a.zg >= b.zd:      # 有重叠 → 不是趋势
++        return 0
+     if b.zd > a.zd and b.zg > a.zg:
+         return 1
+     if b.zd < a.zd and b.zg < a.zg:
+         return -1

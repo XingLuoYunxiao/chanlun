@@ -1,0 +1,134 @@
+# kind: engineering
+# finding: quality_report.json 的 summary 只有 {total, ok, failed}，daily 汇总只印「抽样 40 条，失败 0 条」，于是「跨源校验（要联网取外部源）」和「前复权自洽校验（本地就能算）」被合并成一个数字。外部源整年不可达、跨源校验实际一条没跑成，报表依然显示满分通过，而 __main__.py 里「数据源：baostock 前复权」是一行硬编码字符串，跟实际取过哪些源无关。
+# evidence: cd chanlun && PYTHONPATH=src ../.venv-chanlun/bin/python -m chanlun.optimizer.cli --audit >/dev/null   # 与下面同一份真实报告 data/quality_report.json
+#    # 主干：summary={"total": 40, "ok": 40, "failed": 0}；汇总行=['数据源：baostock 前复权（本地 Parquet）', '校验：抽样 40 条，失败 0 条']
+#    # 报告里 kind 计数：cross_source 20 条 / latest_equals_actual 20 条，全部 ok=true —— 种类这一层被 summary 丢掉了
+#    # 应用本提案后：summary 多出 "kinds": {"cross_source": {"total": 20, "failed": 0}, "latest_equals_actual": {"total": 20, "failed": 0}}
+#    # 应用本提案后：汇总行=['数据源：baostock 前复权（本地 Parquet）；校验用外部源：东财 fqt=1（不可达时回退腾讯 qfq）', '校验：抽样 40 条，失败 0 条（cross_source 20 条失败 0；latest_equals_actual 20 条失败 0）']
+# note: 纯可观测性修复：不动任何判据、不改抽样口径、不改通过/失败标准。改的是「把已经算出来的东西如实写出来」。
+diff --git a/src/chanlun/data/quality.py b/src/chanlun/data/quality.py
+--- a/src/chanlun/data/quality.py
++++ b/src/chanlun/data/quality.py
+@@ -321,8 +321,25 @@
+         problems.append(f"{name}返回空数据")
+     raise ExternalDataError("；".join(problems))
+ 
+ 
++def _kind_breakdown(results: list[CheckResult]) -> dict[str, dict[str, int]]:
++    """按哨兵种类分组统计。
++
++    `summary` 只给总数时，「抽样 40 条，失败 0 条」这句话分不清
++    `cross_source`（要去外部源取数）和 `latest_equals_actual`（本地前复权
++    自洽）各查了多少条。外部源整年不可达、跨源校验实际一条没跑成，
++    报表依然显示满分通过 —— 数量本身没有说谎，是口径被合并掉了。
++    """
++    out: dict[str, dict[str, int]] = {}
++    for r in results:
++        bucket = out.setdefault(r.kind, {"total": 0, "failed": 0})
++        bucket["total"] += 1
++        if not r.ok:
++            bucket["failed"] += 1
++    return dict(sorted(out.items()))
++
++
+ def _write_report(path: Path, results: list[CheckResult]) -> None:
+     path.parent.mkdir(parents=True, exist_ok=True)
+     payload = {
+         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
+@@ -330,8 +347,9 @@
+         "summary": {
+             "total": len(results),
+             "ok": sum(1 for r in results if r.ok),
+             "failed": sum(1 for r in results if not r.ok),
++            "kinds": _kind_breakdown(results),
+         },
+         "results": [asdict(r) for r in results],
+     }
+     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+diff --git a/src/chanlun/__main__.py b/src/chanlun/__main__.py
+--- a/src/chanlun/__main__.py
++++ b/src/chanlun/__main__.py
+@@ -319,8 +319,9 @@
+     sync: tuple[SyncOutcome, ...] = ()
+     quality_total: int = 0
+     quality_failed: int = 0
+     quality_error: str = ""
++    quality_kinds: dict[str, dict[str, int]] = field(default_factory=dict)
+     snapshots: int = 0
+     snapshot_failed: int = 0
+     scan: ScanReport | None = None
+     track_rows: tuple[Any, ...] = ()
+@@ -366,9 +367,10 @@
+     # 先决定「哪些周期敢用」，再算结构：陈旧周期一律不进结构计算
+     rep.active_periods, rep.degrade = _usable_periods(conn, rep.periods)
+ 
+     if not dry:
+-        rep.quality_total, rep.quality_failed, rep.quality_error = _run_quality()
++        (rep.quality_total, rep.quality_failed, rep.quality_error,
++         rep.quality_kinds) = _run_quality()
+ 
+     rep.snapshots, rep.snapshot_failed = _snapshot_all(
+         conn, codes, rep.active_periods, save=not dry)
+     rep.scan = scan_report(
+@@ -412,22 +414,28 @@
+     path = Path(args.notify_path) if args.notify_path else cfg.log_path.parent / "notify.log"
+     return build_notifier(kind, path=path), (str(path) if kind == "file" else kind)
+ 
+ 
+-def _run_quality() -> tuple[int, int, str]:
++def _run_quality() -> tuple[int, int, str, dict[str, dict[str, int]]]:
+     """跨源哨兵校验：抽 20 只票比对外部行情源（`quality.run_all` 的默认口径）。
+ 
+     它要联网，所以失败一律降级成一行说明，绝不让「外部网站不可达」毁掉当天的结构计算。
+     """
+     try:
+         results = quality.run_all()
+     except Exception as exc:  # noqa: BLE001 - 校验失败不阻断流水线
+         log.warning("质量校验失败：%s: %s", type(exc).__name__, exc)
+-        return 0, 0, f"{type(exc).__name__}: {exc}"
++        return 0, 0, f"{type(exc).__name__}: {exc}", {}
+     failed = sum(1 for r in results if not getattr(r, "ok", True))
+     if failed:
+         log.warning("质量校验：%d 条失败（详见 data/quality_report.json）", failed)
+-    return len(results), failed, ""
++    kinds: dict[str, dict[str, int]] = {}
++    for r in results:
++        bucket = kinds.setdefault(getattr(r, "kind", "unknown"), {"total": 0, "failed": 0})
++        bucket["total"] += 1
++        if not getattr(r, "ok", True):
++            bucket["failed"] += 1
++    return len(results), failed, "", dict(sorted(kinds.items()))
+ 
+ 
+ def _median_end(rows: Sequence[Any]) -> dt.date | None:
+     """各票 `sync_state.end_ts` 的中位数。
+@@ -529,18 +537,27 @@
+     if rep.dry_run:
+         lines.append("dry-run：不联网同步、不落库、不推送（只读彩排）")
+     lines.append(f"周期：{','.join(rep.periods) or '（无）'}；"
+                  f"参与结构计算：{','.join(rep.active_periods) or '（无）'}")
+-    lines.append("数据源：baostock 前复权（本地 Parquet）")
++    lines.append(
++        "数据源：baostock 前复权（本地 Parquet）；"
++        "校验用外部源：东财 fqt=1（不可达时回退腾讯 qfq）"
++    )
+     if rep.dry_run:
+         lines.append("同步：dry-run 跳过")
+         lines.append("校验：dry-run 跳过（不联网）")
+     else:
+         lines.append("同步：" + ("；".join(o.summary() for o in rep.sync) or "（无）"))
+         if rep.quality_error:
+             lines.append(f"校验：失败（{rep.quality_error}），不影响后续步骤")
+         else:
+-            lines.append(f"校验：抽样 {rep.quality_total} 条，失败 {rep.quality_failed} 条")
++            line = f"校验：抽样 {rep.quality_total} 条，失败 {rep.quality_failed} 条"
++            if rep.quality_kinds:
++                line += "（" + "；".join(
++                    f"{k} {v['total']} 条失败 {v['failed']}"
++                    for k, v in rep.quality_kinds.items()
++                ) + "）"
++            lines.append(line)
+     lines.append(
+         f"结构快照：可入库 {rep.snapshots} 份（dry-run 未落库，失败 {rep.snapshot_failed} 只）"
+         if rep.dry_run else
+         f"结构快照：入库 {rep.snapshots} 份，失败 {rep.snapshot_failed} 只"

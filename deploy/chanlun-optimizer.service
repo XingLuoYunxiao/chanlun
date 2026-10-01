@@ -1,0 +1,46 @@
+# 缠论 24x7 优化器：systemd 常驻单元
+#
+# 安装（Linux）：
+#   1. 把 __PROJECT_DIR__ 换成 chanlun/ 的绝对路径，__PYTHON__ 换成装了依赖的解释器
+#      sed -e "s#__PROJECT_DIR__#$PWD#g" -e "s#__PYTHON__#$(command -v python3)#g" \
+#          chanlun-optimizer.service > /tmp/chanlun-optimizer.service
+#   2. sudo cp chanlun-optimizer.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload && sudo systemctl enable --now chanlun-optimizer.service
+#   4. systemctl status chanlun-optimizer.service      # 看当前是否在跑
+#   5. tail -f logs/optimizer.log                       # 看每轮结论
+#
+# 为什么是常驻 + Restart=always 而不是 timer：这不是「跑一次就完事」的批处理，
+# 而是一个持续回访同一批问题的循环——每跑完一轮就重新量当前数据、再记一次结论。
+# 所以「退出」在正常路径上就意味着「该再来一轮了」，重启是常态而不是异常。
+#
+# 但有两种退出**必须**停下来，见 RestartPreventExitStatus。
+[Unit]
+Description=缠论 24x7 优化器（只提案：journal + patches，绝不改主干算法）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__PROJECT_DIR__
+Environment=PYTHONPATH=src
+Environment=PYTHONUNBUFFERED=1
+
+# 一轮 = 10 个观测点（G1–G5），每个都在影子目录里真跑「打补丁前 / 打补丁后」，
+# 数字必须是同一把尺子量出来的。没有 --measure 就没有数字，也就没有有效产出 ——
+# 优化器自己会把它记成无产出轮次，所以这里必须给上。
+ExecStart=__PYTHON__ optimizer/agent.py --root __PROJECT_DIR__ --rounds 10 --measure
+
+# 正常跑完（退出码 0）接着跑下一轮。
+Restart=always
+RestartSec=30
+
+# 3 = 熔断：连续 3 轮无有效产出，或单轮里测试由绿转红 ≥2 次。
+# 1 = 自身出错（补丁 apply 不了、测量脚本挂了）。
+# 这两种都不许自动重启：无限重启只会把同一个错误刷满日志，把真正要看的那一行冲掉。
+# 停下来之后 `systemctl --failed` 里能看到它，logs/optimizer.log 里有
+# `!!! 熔断 !!!` 的告警行。人工 review optimizer/journal/ 之后，
+# 用 `--reset-breaker` 恢复；改回自动重启前先问自己：是不是同一个原因又炸了一次。
+RestartPreventExitStatus=1 3
+
+StandardOutput=append:__PROJECT_DIR__/logs/optimizer.log
+StandardError=append:__PROJECT_DIR__/logs/optimizer.log

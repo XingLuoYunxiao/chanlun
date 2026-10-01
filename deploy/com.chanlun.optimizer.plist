@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  缠论 24x7 优化器：macOS launchd 版（本机是 macOS，没有 systemd）
+
+  安装：
+    cp chanlun/deploy/com.chanlun.optimizer.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.chanlun.optimizer.plist
+    # 老系统用：launchctl load -w ~/Library/LaunchAgents/com.chanlun.optimizer.plist
+
+  验证 / 手动触发 / 卸载：
+    launchctl print gui/$(id -u)/com.chanlun.optimizer | head -20
+    tail -f /Users/zzz/workspace/chanlun/logs/optimizer.log
+    launchctl bootout gui/$(id -u)/com.chanlun.optimizer      # 卸载
+
+  熔断（退出码 3）在这边的口径必须说清楚：launchd 的 KeepAlive 只能按
+  「是否成功退出」区分，**没法**按退出码放行某一种。所以这里 KeepAlive=true，
+  重启是常态；真正拦住无限循环的是优化器自己 —— 熔断会把一条
+  `status: circuit_break` 的 journal 记录写进 optimizer/journal/，
+  之后每一次启动都会读到它、立刻以 3 退出并在日志里打
+  `!!! 熔断 !!!`，ThrottleInterval 保证这种「一起来就退出」不会变成忙等。
+  也就是说：systemd 靠 RestartPreventExitStatus=3 停，macOS 靠持久化的熔断记录停，
+  两条路都指向同一个事实——不人工 review 就不干活。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.chanlun.optimizer</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/zzz/workspace/.venv-chanlun/bin/python</string>
+    <string>optimizer/agent.py</string>
+    <string>--root</string>
+    <string>/Users/zzz/workspace/chanlun</string>
+    <string>--rounds</string>
+    <string>10</string>
+    <string>--measure</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/zzz/workspace/chanlun</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key>
+    <string>src</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+
+  <!-- 跑完一轮就再来一轮：正常退出（0）也要重启 -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- 熔断状态下「一起来就退出」的最小间隔，避免刷日志 -->
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/zzz/workspace/chanlun/logs/optimizer.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/zzz/workspace/chanlun/logs/optimizer.log</string>
+</dict>
+</plist>

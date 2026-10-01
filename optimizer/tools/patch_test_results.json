@@ -1,0 +1,152 @@
+{
+ "baseline": {
+  "returncode": 0,
+  "summary": "484 passed, 12 deselected, 1 warning in 13.15s",
+  "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py",
+  "ignored": [
+   "tests/data/test_tdx_parse.py",
+   "tests/data/test_tdx_import.py"
+  ]
+ },
+ "patches": {
+  "round-001-G1a.patch": {
+   "returncode": 0,
+   "summary": "484 passed, 12 deselected, 1 warning in 12.68s",
+   "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py",
+   "ignored": [
+    "tests/data/test_tdx_parse.py",
+    "tests/data/test_tdx_import.py"
+   ],
+   "touched": [
+    "src/chanlun/chan/signal.py"
+   ],
+   "changed_while_applied": [],
+   "restored_after_revert": true,
+   "touched_sha256": {
+    "src/chanlun/chan/signal.py": "eae03fa76fd771a5a397024ad62c3b593d5327a9e59379efdc1aa48a1f479870"
+   }
+  },
+  "round-002-G1b.patch": {
+   "returncode": 0,
+   "summary": "484 passed, 12 deselected, 1 warning in 12.75s",
+   "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py",
+   "ignored": [
+    "tests/data/test_tdx_parse.py",
+    "tests/data/test_tdx_import.py"
+   ],
+   "touched": [
+    "src/chanlun/chan/signal.py"
+   ],
+   "changed_while_applied": [],
+   "restored_after_revert": true,
+   "touched_sha256": {
+    "src/chanlun/chan/signal.py": "eae03fa76fd771a5a397024ad62c3b593d5327a9e59379efdc1aa48a1f479870"
+   }
+  },
+  "round-003-G1c.patch": {
+   "returncode": 0,
+   "summary": "484 passed, 12 deselected, 1 warning in 12.95s",
+   "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py",
+   "ignored": [
+    "tests/data/test_tdx_parse.py",
+    "tests/data/test_tdx_import.py"
+   ],
+   "touched": [
+    "src/chanlun/chan/signal.py"
+   ],
+   "changed_while_applied": [],
+   "restored_after_revert": true,
+   "touched_sha256": {
+    "src/chanlun/chan/signal.py": "eae03fa76fd771a5a397024ad62c3b593d5327a9e59379efdc1aa48a1f479870"
+   }
+  },
+  "round-004-G2a.patch": {
+   "returncode": 0,
+   "summary": "484 passed, 12 deselected, 1 warning in 12.52s",
+   "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py",
+   "ignored": [
+    "tests/data/test_tdx_parse.py",
+    "tests/data/test_tdx_import.py"
+   ],
+   "touched": [
+    "src/chanlun/chan/pivot.py"
+   ],
+   "changed_while_applied": [],
+   "restored_after_revert": true,
+   "touched_sha256": {
+    "src/chanlun/chan/pivot.py": "5b35c7de849c8862a08d11972d07382a59af2f4fb8f06abab1c76b29cd4e669f"
+   }
+  },
+  "round-005-G2b-candidate.patch": {
+   "returncode": 0,
+   "summary": "484 passed, 12 deselected, 1 warning in 12.20s",
+   "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py",
+   "ignored": [
+    "tests/data/test_tdx_parse.py",
+    "tests/data/test_tdx_import.py"
+   ],
+   "touched": [
+    "src/chanlun/chan/trend.py"
+   ],
+   "changed_while_applied": [],
+   "restored_after_revert": true,
+   "touched_sha256": {
+    "src/chanlun/chan/trend.py": "e706b3198926be54c92c40fe1c451271cb641107ed4d8e048dfc012168092230"
+   }
+  },
+  "round-006-G3a.patch": {
+   "returncode": 0,
+   "summary": "484 passed, 12 deselected, 1 warning in 12.16s",
+   "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py",
+   "ignored": [
+    "tests/data/test_tdx_parse.py",
+    "tests/data/test_tdx_import.py"
+   ],
+   "touched": [
+    "src/chanlun/chan/signal.py"
+   ],
+   "changed_while_applied": [],
+   "restored_after_revert": true,
+   "touched_sha256": {
+    "src/chanlun/chan/signal.py": "eae03fa76fd771a5a397024ad62c3b593d5327a9e59379efdc1aa48a1f479870"
+   }
+  },
+  "round-009-G5a.patch": {
+   "returncode": 0,
+   "summary": "484 passed, 12 deselected, 1 warning in 12.15s",
+   "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py",
+   "ignored": [
+    "tests/data/test_tdx_parse.py",
+    "tests/data/test_tdx_import.py"
+   ],
+   "touched": [
+    "src/chanlun/__main__.py",
+    "src/chanlun/data/quality.py"
+   ],
+   "changed_while_applied": [],
+   "restored_after_revert": true,
+   "touched_sha256": {
+    "src/chanlun/__main__.py": "7733fea78403c1bcbdcaa7e31e44db6ec056e6a0d9fd3ed13fc387278ca5be0d",
+    "src/chanlun/data/quality.py": "46b76a6f7af4ce6e50bbb4b36140a0e444de8276218ee955397feb1f71529608"
+   }
+  },
+  "round-010-G5b.patch": {
+   "returncode": 0,
+   "summary": "484 passed, 12 deselected, 1 warning in 12.16s",
+   "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py",
+   "ignored": [
+    "tests/data/test_tdx_parse.py",
+    "tests/data/test_tdx_import.py"
+   ],
+   "touched": [
+    "src/chanlun/data/store.py"
+   ],
+   "changed_while_applied": [],
+   "restored_after_revert": true,
+   "touched_sha256": {
+    "src/chanlun/data/store.py": "cd2214e5f5558e865c39fc409b07be0fd61c0a244414d05ee3a77fc7eacad3ba"
+   }
+  }
+ },
+ "restored": true
+}

@@ -1,0 +1,38 @@
+# kind: theory
+# theory: L29-PIVOT-LEVEL-EXPANSION,L20-PIVOT-EXTENSION
+# quote: 整个下跌，最一般的情况就是a+A+b+B+c，其中的a\b\c，其级别最多就是1分钟级别的
+# source: 缠中说禅《教你炒股票108课》第29课《转折的力度与级别》
+# finding: find_pivots 的延伸循环没有段数上限，一个中枢可以无限吸收重叠线段：实测最大 14 段，57 个中枢里有 7 个超过 9 段。超过九段就不是延伸而是级别扩张（a+A+b+B+c 一共 9 段），继续当同一个中枢会把两个中枢吸成一个，直接压掉 6 个盘整走势（trends_consolidation=6）。
+# evidence: cd chanlun && python optimizer/agent.py --audit   # 主干口径
+#    {"signals": 0, "pivots": 57, "trends_consolidation": 6, "pivot_max_segments": 14, "pivot_over_9": 7, "pivot_segment_total": 304}
+#    cd chanlun && python optimizer/agent.py --audit --patch optimizer/patches/round-004-G2a.patch   # 应用本提案后
+#    {"signals": 0, "pivots": 61, "trends_consolidation": 9, "pivot_max_segments": 9, "pivot_over_9": 0, "pivot_segment_total": 305}
+# note: 这一轮**不改变买卖点数量**（signals 0→0），它是结构性修正：把「中枢」的边界收回到第29课给的九段。实测信号数为 0 是另一个独立问题（见 round-001），本轮不为凑信号而改判据。
+diff --git a/src/chanlun/chan/pivot.py b/src/chanlun/chan/pivot.py
+--- a/src/chanlun/chan/pivot.py
++++ b/src/chanlun/chan/pivot.py
+@@ -47,8 +47,12 @@
+     "week": "month",
+ }
+ 
+ MIN_SEGMENTS = 3
++# 第 29 课：`a+A+b+B+c` 一共 9 个次级别走势类型；一个 30 分钟盘整「至少有 9 个
++# 1 分钟的走势类型」。中枢延伸吸收到 9 段之后已经等价于上一级别的盘整，必须
++# 收口，否则会把「高级别盘整」和「本级别趋势」混成同一个中枢。
++MAX_SEGMENTS = 9
+ 
+ 
+ def next_level(level: str) -> str:
+     """返回上一级别名。未知级别退化为 `"<level>+"`，不做静默猜测。"""
+@@ -120,9 +124,10 @@
+             continue
+ 
+         # 延伸：后续段只要仍与 [zd, zg] 重叠就并入（且不改变 zd/zg）
+         j = i + MIN_SEGMENTS
+-        while j < n and _overlaps(confirmed[j], zd, zg):
++        while (j < n and j - i < MAX_SEGMENTS
++               and _overlaps(confirmed[j], zd, zg)):
+             j += 1
+ 
+         group = confirmed[i:j]
+         leave = leave_of[j - 1]

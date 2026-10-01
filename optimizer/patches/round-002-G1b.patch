@@ -1,0 +1,30 @@
+# kind: theory
+# theory: L27-DIVERGENCE-UNIT,L24-MACD-AREA-ABC
+# quote: 趋势，一定有至少两个同级别中枢，对于背驰来说，肯定不会发生在第一个中枢之后，肯定是至少是第二个中枢之后
+# source: 缠中说禅《教你炒股票108课》第27课《盘整背驰与历史性底部》
+# finding: 第一类买卖点整个失效：_entering_and_leaving 取 segs[p.end_idx + 1] 当作「离开段」，拿到的其实是离开之后的反向回试段。背驰要比较的是同向的两段趋势（A、B、C 里的 A 与 C），用反向段去比，MACD 面积永远不会「同向且更小」，18 个趋势组 trend_group_prev_ok=0。
+# evidence: cd chanlun && python optimizer/agent.py --audit   # 主干口径
+#    {"signals": 0, "b1": 0, "b2": 0, "b3": 0, "s1": 0, "s2": 0, "s3": 0, "zero_signal_codes": 24, "pivots": 57, "trends_consolidation": 6}
+#    cd chanlun && python optimizer/agent.py --audit --patch optimizer/patches/round-002-G1b.patch   # 应用本提案后
+#    {"signals": 1, "b1": 0, "b2": 0, "b3": 0, "s1": 1, "s2": 0, "s3": 0, "zero_signal_codes": 23, "pivots": 57, "trends_consolidation": 6}
+# note: 第27课：背驰的比较单位是「同向的趋势段」；第24课把这三段叫 A、B、C。改动只把取段的偏移从 end_idx+1 改回 end_idx，令被比较的两段与当前段同向。
+diff --git a/src/chanlun/chan/signal.py b/src/chanlun/chan/signal.py
+--- a/src/chanlun/chan/signal.py
++++ b/src/chanlun/chan/signal.py
+@@ -158,14 +158,14 @@
+     out = []
+     for k, p in enumerate(pivots):
+         if p.end_idx + 1 >= len(segs):
+             continue
+-        leave = segs[p.end_idx + 1]
++        leave = segs[p.end_idx]
+         if leave.direction != want:
+             continue
+         prev = None
+         if k > 0 and pivots[k - 1].end_idx + 1 < len(segs):
+-            cand = segs[pivots[k - 1].end_idx + 1]
++            cand = segs[pivots[k - 1].end_idx]
+             if cand.direction == want:
+                 prev = cand
+         out.append((p, leave, prev))
+     return out

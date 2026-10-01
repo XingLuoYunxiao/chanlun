@@ -1,0 +1,37 @@
+{
+  "after": {
+    "000333": 38,
+    "600030": 38,
+    "SH.600030": 38,
+    "SZ.000333": 38,
+    "bj.430047": 0,
+    "sh.600030": 38,
+    "sz.000333": 38
+  },
+  "before": {
+    "000333": 38,
+    "600030": 38,
+    "SH.600030": 0,
+    "SZ.000333": 0,
+    "bj.430047": 0,
+    "sh.600030": 0,
+    "sz.000333": 0
+  },
+  "evidence": "# 尺子：tools/measure_store_codes.py（在影子目录里跑，主干一个字节都不动）\n$ cd chanlun && python -m chanlun.optimizer.cli --root . --audit --probe G5b\nmetrics = {\"000333\": 38, \"600030\": 38, \"SH.600030\": 0, \"SZ.000333\": 0, \"bj.430047\": 0, \"sh.600030\": 0, \"sz.000333\": 0}\n$ cd chanlun && python -m chanlun.optimizer.cli --root . --audit --probe G5b --patch optimizer/patches/round-010-G5b.patch\nmetrics = {\"000333\": 38, \"600030\": 38, \"SH.600030\": 38, \"SZ.000333\": 38, \"bj.430047\": 0, \"sh.600030\": 38, \"sz.000333\": 38}\n[口径] 冻结快照 basis_sha256=d8bad28882f27fdf，22/24 只票（缺 2 只：600000、000001）。缺票不是代码造成的，是行情仓那一刻就没有它们；before/after 读的是同一份快照，所以差值仍然有效，但这一轮的绝对数不能和别轮直接比。\n# 注：命令每次重跑都会重新冻结当时的行情仓，basis_sha256 会随数据变；同一轮里的 before/after 用的是同一份快照。",
+  "finding": "带市场前缀的代码让 store.path_for 拼出不存在的文件名、read 静默返回空表：store.read('sh.600000') 得 0 行而 store.read('600000') 得 38 行，把「代码写法不对」伪装成「这只票没有数据」（0 → 38 行）",
+  "kind": "engineering",
+  "notes": "24x7 回访：补丁内容不变，重新量一次当前数据。\n[口径] 冻结快照 basis_sha256=d8bad28882f27fdf，22/24 只票（缺 2 只：600000、000001）。缺票不是代码造成的，是行情仓那一刻就没有它们；before/after 读的是同一份快照，所以差值仍然有效，但这一轮的绝对数不能和别轮直接比。\n[机制] before={\"path_for('sh.600030')\": \"/private/var/folders/jr/8wpkbfps0gj_g33s4r_drnl40000gn/T/chanlun-shadow-m_roghn1/data/day/sh/sh.600030.parquet\", \"path_exists\": false, \"window\": \"2024-01-01..2024-03-01\", \"probe_codes_in_audit_set\": [\"sh.600030\", \"600030\", \"sz.000333\", \"000333\"]}\n[机制] after={\"path_for('sh.600030')\": \"/private/var/folders/jr/8wpkbfps0gj_g33s4r_drnl40000gn/T/chanlun-shadow-w470yrlv/data/day/sh/600030.parquet\", \"path_exists\": true, \"window\": \"2024-01-01..2024-03-01\", \"probe_codes_in_audit_set\": [\"sh.600030\", \"600030\", \"sz.000333\", \"000333\"]}\n[基准漂移] finding 里的流水线计数写自 24/24 只票那一版口径（bars 39240）；本条的 before/after 量自本轮冻结快照（见上一行 [口径]）。取证期间全市场同步正在重写 data/day，600000 与 000001 暂时不在库里，所以每轮绝对计数少 4 个信号；同一快照内的 before/after 差值不受影响，判据也不依赖缺掉的那两只票。",
+  "patch_file": "round-010-G5b.patch",
+  "patch_sha256": "126dd1329c2b693d",
+  "probe": "G5b",
+  "round": 10,
+  "started_at": "2026-10-01T10:47:33+08:00",
+  "status": "proposed",
+  "tests": {
+    "after": "484 passed, 12 deselected, 1 warning in 12.16s",
+    "before": "484 passed, 12 deselected, 1 warning in 13.15s",
+    "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py",
+    "summary": "round-010-G5b.patch 单独 apply 进主干后跑同一套测试：结果与主干基线逐项一致，无新增失败"
+  },
+  "theory_id": null
+}

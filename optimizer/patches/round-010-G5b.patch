@@ -1,0 +1,39 @@
+# kind: engineering
+# finding: 带市场前缀的代码会让 store.path_for 拼出一个不存在的文件名，read 静默返回空表：store.read('sh.600000') 得 0 行，而 store.read('600000') 得 38 行。行情源、质量报告的 code 一律带前缀（'sh.600000'），本地 parquet 一律用裸代码，两套写法混用时「代码写法不对」会被伪装成「这只票没有数据」。
+# evidence: cd chanlun && PYTHONPATH=src ../.venv-chanlun/bin/python -c "from chanlun.data import store; print({c: len(store.read(c,'day',start='2024-01-01',end='2024-03-01')) for c in ('sh.600000','600000','sz.000001','000001')})"
+#    # 主干：{'sh.600000': 0, '600000': 38, 'sz.000001': 0, '000001': 38}；path_for('sh.600000')=data/day/sh/sh.600000.parquet（不存在）
+#    # 应用本提案后：{'sh.600000': 38, '600000': 38, 'sz.000001': 38, '000001': 38}；path_for('sh.600000')=data/day/sh/600000.parquet（存在）
+#    # 反例保护：'bj.430047' 本地确实没有数据，前后都是 0 行——归一化不会凭空造出数据。
+# note: 归一化只做一件事：把 sh./sz./bj. 前缀去掉。裸代码进去出来还是裸代码，所以既有写入路径的行为一字不变；变的只是原本读空的那一种写法。
+diff --git a/src/chanlun/data/store.py b/src/chanlun/data/store.py
+--- a/src/chanlun/data/store.py
++++ b/src/chanlun/data/store.py
+@@ -44,10 +44,27 @@
+         return "bj"
+     return "sz"
+ 
+ 
++def bare_code(code: str) -> str:
++    """去掉 `sh.` / `sz.` / `bj.` 市场前缀，只留数字代码。
++
++    行情源（baostock、东财、腾讯）和质量报告里的代码都带前缀，本地
++    Parquet 却一律用裸代码存。两套写法混着用的时候，`path_for` 会照着
++    前缀拼出一个不存在的文件名，`read` 于是**静默返回空表**——把
++    「代码写法不对」伪装成「这只票没有数据」。调用方拿到空表会以为
++    数据缺失，而不是去看自己少敲了什么。
++    """
++    c = str(code).strip().lower()
++    if "." in c:
++        head, tail = c.split(".", 1)
++        if head in ("sh", "sz", "bj") and tail:
++            return tail
++    return c
++
++
+ def path_for(code: str, period: str) -> Path:
+-    return data_root() / str(period) / market_of(code) / f"{code}.parquet"
++    return data_root() / str(period) / market_of(code) / f"{bare_code(code)}.parquet"
+ 
+ 
+ def exists(code: str, period: str) -> bool:
+     return path_for(code, period).exists()

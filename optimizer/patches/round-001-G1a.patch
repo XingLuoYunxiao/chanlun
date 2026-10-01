@@ -1,0 +1,45 @@
+# kind: theory
+# theory: L20-THIRD-POINT-POSITION
+# quote: 一个次级别走势类型向上离开缠中说禅走势中枢，然后以一个次级别走势类型回试，其低点不跌破ZG，则构成第三类买点；一个次级别走势类型向下离开缠中说禅走势中枢，然后以一个次级别走势类型回抽，其高点不升破ZD，则构成第三类卖点。
+# source: 缠中说禅《教你炒股票108课》第20课《缠中说禅走势中枢级别扩张及第三类买卖点》
+# finding: 第三类买卖点整个失效：_third_kind 把 end_idx+1 / end_idx+2 当成「离开段 / 回试段」，实测 57 个中枢里 44 个的 end_idx+1 方向与离开方向完全相反（exit_dir_opposite_position=44，exit_dir_matches_position=0），于是 24 只票 5 年日线一个买卖点都不出（zero_signal_codes=24）。
+# evidence: cd chanlun && python optimizer/agent.py --audit   # 主干口径
+#    {"signals": 0, "b1": 0, "b2": 0, "b3": 0, "s1": 0, "s2": 0, "s3": 0, "zero_signal_codes": 24, "pivots": 57, "trends_consolidation": 6}
+#    cd chanlun && python optimizer/agent.py --audit --patch optimizer/patches/round-001-G1a.patch   # 应用本提案后
+#    {"signals": 40, "b1": 0, "b2": 0, "b3": 27, "s1": 0, "s2": 0, "s3": 13, "zero_signal_codes": 2, "pivots": 57, "trends_consolidation": 6}
+# note: 第20课：离开中枢的是「次级别走势类型」，回试是它之后的反向次级别走势类型。find_pivots 的延伸循环只在某根线段完全离开区间时才停，所以 segs[end_idx] 才是离开段，segs[end_idx+1] 是回试段。
+diff --git a/src/chanlun/chan/signal.py b/src/chanlun/chan/signal.py
+--- a/src/chanlun/chan/signal.py
++++ b/src/chanlun/chan/signal.py
+@@ -129,22 +129,24 @@
+ 
+ 
+ def _third_kind(segs: list[Segment], pivots: Sequence[Pivot],
+                 level: str) -> list[Signal]:
+-    """第三类买卖点：离开中枢后回抽不回中枢。"""
++    """第三类买卖点：离开中枢后回抽不回中枢（第 20 课，按位置判定）。
++
++    离开段 = 中枢最后一根线段 `end_idx`；`end_idx + 1` 是离开之后的反向回试段。
++    """
+     out: list[Signal] = []
+     for p in pivots:
+-        leave_i, back_i = p.end_idx + 1, p.end_idx + 2
+-        if back_i >= len(segs):
+-            continue
+-        leave, back = segs[leave_i], segs[back_i]
+-        if leave.direction == 1 and leave.low > p.zg:
++        if p.end_idx + 1 >= len(segs):
++            continue
++        leave, back = segs[p.end_idx], segs[p.end_idx + 1]
++        if leave.high > p.zg:
+             if back.direction == -1 and back.low > p.zg:
+                 out.append(_sig(
+                     SignalKind.B3, back, level, p.idx,
+                     f"向上离开中枢{p.idx}(ZG={p.zg:.3f})后回抽低点 {back.low:.3f} 不回中枢",
+                 ))
+-        elif leave.direction == -1 and leave.high < p.zd:
++        elif leave.low < p.zd:
+             if back.direction == 1 and back.high < p.zd:
+                 out.append(_sig(
+                     SignalKind.S3, back, level, p.idx,
+                     f"向下离开中枢{p.idx}(ZD={p.zd:.3f})后回抽高点 {back.high:.3f} 不回中枢",

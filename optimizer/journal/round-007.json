@@ -1,0 +1,33 @@
+{
+  "after": {
+    "ambiguous_starts": 267,
+    "confirmed_segments": 300,
+    "span_gt9": 65,
+    "span_max": 63,
+    "validate_problems": 0
+  },
+  "before": {
+    "ambiguous_starts": 267,
+    "confirmed_segments": 300,
+    "span_gt9": 65,
+    "span_max": 63,
+    "validate_problems": 0
+  },
+  "evidence": "# 尺子：tools/measure_segments.py（在影子目录里跑，主干一个字节都不动）\n$ cd chanlun && python -m chanlun.optimizer.cli --root . --audit --probe G4a\nmetrics = {\"ambiguous_starts\": 267, \"confirmed_segments\": 300, \"span_gt9\": 65, \"span_max\": 63, \"validate_problems\": 0}\n# 本轮无提案补丁：只量主干一次，after 与 before 相同\n[口径] 冻结快照 basis_sha256=aff0e5afa53d0e4d，22/24 只票（缺 2 只：600000、000001）。缺票不是代码造成的，是行情仓那一刻就没有它们；before/after 读的是同一份快照，所以差值仍然有效，但这一轮的绝对数不能和别轮直接比。\n# 注：命令每次重跑都会重新冻结当时的行情仓，basis_sha256 会随数据变；同一轮里的 before/after 用的是同一份快照。",
+  "finding": "线段划分的不变量：328 根确认线段里 72 根跨 9 笔以上（最长 63 笔）、123 根走缺口确认路径（validate_problems=0）。划分标准本身没坏，但线段偏粗，缺少「背驰段在图上的位置」这一独立证据前不该动它 → inconclusive",
+  "kind": "theory",
+  "notes": "24x7 回访：补丁内容不变，重新量一次当前数据。\n[口径] 冻结快照 basis_sha256=aff0e5afa53d0e4d，22/24 只票（缺 2 只：600000、000001）。缺票不是代码造成的，是行情仓那一刻就没有它们；before/after 读的是同一份快照，所以差值仍然有效，但这一轮的绝对数不能和别轮直接比。\n[机制] before={\"span_median\": 5.0, \"span_gt21\": 14, \"gaps\": {\"case1_no_gap\": 189, \"case2_gap\": 111}, \"sample_problems\": [], \"starts_with_multi_candidates\": 357, \"ambiguous_codes\": 22}\n[机制] after={\"span_median\": 5.0, \"span_gt21\": 14, \"gaps\": {\"case1_no_gap\": 189, \"case2_gap\": 111}, \"sample_problems\": [], \"starts_with_multi_candidates\": 357, \"ambiguous_codes\": 22}\n[基准漂移] finding 里的流水线计数写自 24/24 只票那一版口径（bars 39240）；本条的 before/after 量自本轮冻结快照（见上一行 [口径]）。取证期间全市场同步正在重写 data/day，600000 与 000001 暂时不在库里，所以每轮绝对计数少 4 个信号；同一快照内的 before/after 差值不受影响，判据也不依赖缺掉的那两只票。",
+  "patch_file": null,
+  "patch_sha256": "",
+  "probe": "G4a",
+  "round": 7,
+  "started_at": "2026-10-01T10:47:30+08:00",
+  "status": "inconclusive",
+  "tests": {
+    "after": "484 passed, 12 deselected, 1 warning in 13.15s",
+    "before": "484 passed, 12 deselected, 1 warning in 13.15s",
+    "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py",
+    "summary": "本轮无提案补丁，未打任何补丁；主干测试基线见 before"
+  },
+  "theory_id": "L67-SEGMENT-CHAR-SEQ"
+}
