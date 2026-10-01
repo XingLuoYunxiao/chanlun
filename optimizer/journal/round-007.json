@@ -21,12 +21,12 @@
   "patch_sha256": "",
   "probe": "G4a",
   "round": 7,
-  "started_at": "2026-10-01T16:47:36+08:00",
+  "started_at": "2026-10-01T16:52:50+08:00",
   "status": "inconclusive",
   "tests": {
-    "after": "667 passed, 12 deselected, 1 warning in 13.65s",
-    "before": "667 passed, 12 deselected, 1 warning in 13.65s",
-    "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py",
+    "after": "696 passed, 12 deselected, 1 warning in 14.48s",
+    "before": "696 passed, 12 deselected, 1 warning in 14.48s",
+    "cmd": "pytest -q",
     "summary": "本轮无提案补丁，未打任何补丁；主干测试基线见 before"
   },
   "theory_id": "L67-SEGMENT-CHAR-SEQ"

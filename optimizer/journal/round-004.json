@@ -47,12 +47,12 @@
   "patch_sha256": "8447d33466d771fe",
   "probe": "G2a",
   "round": 4,
-  "started_at": "2026-10-01T16:47:33+08:00",
+  "started_at": "2026-10-01T16:52:46+08:00",
   "status": "proposed",
   "tests": {
-    "after": "666 passed, 13 deselected, 1 warning in 13.84s",
-    "before": "667 passed, 12 deselected, 1 warning in 13.65s",
-    "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
+    "after": "695 passed, 13 deselected, 1 warning in 15.17s",
+    "before": "696 passed, 12 deselected, 1 warning in 14.48s",
+    "cmd": "pytest -q --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
     "failed_tests": [],
     "summary": "round-004-G2a.patch 单独 apply 进主干后跑同一套测试：结果与主干基线逐项一致，无新增失败"
   },

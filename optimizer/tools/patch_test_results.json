@@ -1,13 +1,10 @@
 {
  "baseline": {
   "returncode": 0,
-  "summary": "667 passed, 12 deselected, 1 warning in 13.65s",
+  "summary": "696 passed, 12 deselected, 1 warning in 14.48s",
   "failed_tests": [],
-  "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py",
-  "ignored": [
-   "tests/data/test_tdx_parse.py",
-   "tests/data/test_tdx_import.py"
-  ]
+  "cmd": "pytest -q",
+  "ignored": []
  },
  "patches": {
   "round-001-G1a.patch": {
@@ -18,13 +15,10 @@
   },
   "round-003-G1c.patch": {
    "returncode": 0,
-   "summary": "666 passed, 13 deselected, 1 warning in 13.52s",
+   "summary": "695 passed, 13 deselected, 1 warning in 15.46s",
    "failed_tests": [],
-   "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
-   "ignored": [
-    "tests/data/test_tdx_parse.py",
-    "tests/data/test_tdx_import.py"
-   ],
+   "cmd": "pytest -q --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
+   "ignored": [],
    "touched": [
     "src/chanlun/chan/signal.py"
    ],
@@ -38,13 +32,10 @@
   },
   "round-004-G2a.patch": {
    "returncode": 0,
-   "summary": "666 passed, 13 deselected, 1 warning in 13.84s",
+   "summary": "695 passed, 13 deselected, 1 warning in 15.17s",
    "failed_tests": [],
-   "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
-   "ignored": [
-    "tests/data/test_tdx_parse.py",
-    "tests/data/test_tdx_import.py"
-   ],
+   "cmd": "pytest -q --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
+   "ignored": [],
    "touched": [
     "src/chanlun/chan/pivot.py"
    ],
@@ -58,15 +49,12 @@
   },
   "round-005-G2b-candidate.patch": {
    "returncode": 1,
-   "summary": "1 failed, 665 passed, 13 deselected, 1 warning in 14.28s",
+   "summary": "1 failed, 694 passed, 13 deselected, 1 warning in 15.35s",
    "failed_tests": [
     "tests/chan/test_trend.py::test_two_separate_trends"
    ],
-   "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
-   "ignored": [
-    "tests/data/test_tdx_parse.py",
-    "tests/data/test_tdx_import.py"
-   ],
+   "cmd": "pytest -q --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
+   "ignored": [],
    "touched": [
     "src/chanlun/chan/trend.py"
    ],
@@ -80,16 +68,13 @@
   },
   "round-006-G3a.patch": {
    "returncode": 1,
-   "summary": "2 failed, 664 passed, 13 deselected, 1 warning in 14.04s",
+   "summary": "2 failed, 693 passed, 13 deselected, 1 warning in 15.21s",
    "failed_tests": [
     "tests/chan/test_signal.py::test_tentative_trigger_segment_yields_tentative_signal",
     "tests/scan/test_scanner.py::test_scan_real_engine_finds_pivot_and_signal_on_crafted_path"
    ],
-   "cmd": "pytest -q --ignore=tests/data/test_tdx_parse.py --ignore=tests/data/test_tdx_import.py --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
-   "ignored": [
-    "tests/data/test_tdx_parse.py",
-    "tests/data/test_tdx_import.py"
-   ],
+   "cmd": "pytest -q --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
+   "ignored": [],
    "touched": [
     "src/chanlun/chan/signal.py"
    ],

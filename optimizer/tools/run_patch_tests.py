@@ -5,9 +5,9 @@
 
 三处口径必须说明（否则数字会被误读）：
 
-- ``tests/data/test_tdx_*`` 是并行 agent 正在写的 TDX 导入/解析测试（未跟踪或
-  正在改动的文件），本优化器不碰它，所以 ``--ignore`` 排除；它自己的失败不算在
-  本轮头上。排除后的基线是 474 passed / 0 failed。
+- 早期排除过 ``tests/data/test_tdx_*``（当时是并行 agent 在建的 TDX 导入/解析测试）。
+  那两个文件现已提交且全绿（29 passed），排除的理由消失了 —— 现在**不排除任何文件**，
+  基线就等于全量套件，``--deselect`` 只在量补丁时摘掉那个自己会 apply 补丁的用例。
 - 「碰没碰主干」只认**补丁触及的那些文件**：apply 前记下它们的 sha256，
   反 apply 后再记一次，必须逐个相同。不用整棵树比 —— 并行 agent 随时在改
   ``data/meta.py`` 这类文件，整棵树比会得到「别人改了 ⇒ 我碰了主干」的假结论。
@@ -24,11 +24,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))  # 判据（parse_header/ADOPTED）与主干同一份实现
 PYTEST = str(Path(sys.executable).parent / "pytest")
-#: 并行 agent 的在建工程，与本优化器无关，排除在判据之外。
-FOREIGN_IGNORES = (
-    "tests/data/test_tdx_parse.py",
-    "tests/data/test_tdx_import.py",
-)
+#: 曾经要排除的在建工程；现已提交且全绿，留空 = 基线跑全量。
+FOREIGN_IGNORES: tuple[str, ...] = ()
 PATCHES = sorted((ROOT / "optimizer" / "patches").glob("*.patch"))
 #: 补丁里 ``+++ b/<路径>`` 的目标文件，也就是 diff 真正会改的那些。
 TOUCHED_RE = re.compile(r"^\+\+\+ b/(.+)$", re.MULTILINE)
