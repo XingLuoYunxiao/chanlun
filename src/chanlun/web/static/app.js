@@ -1,4 +1,4 @@
-/* 缠论盘后结构复盘台 —— 绘图、交互、自选池
+/* 缠论盘后结构复盘台 —— 绘图、交互、自选股
  *
  * 图上的每一层都对应一个"能不能信"的判断：
  *   笔 / 线段  —— 方向（红涨绿跌），虚线与半透明表示**未确认**，会被后面的K线改写；
@@ -6,9 +6,14 @@
  *   买卖点     —— 一/二/三类买卖点，实心=已确认，空心=未确认；
  *   确认刻度   —— 本页的签名：结构**在哪一根K线上才可被看见**。
  *                 结构终点和确认点常常差很多根K线，回测能不能用就看后者。
+ *   均线       —— 六档开关，短均线暖色/长均线冷色（颜色编码快慢，不占用涨跌色与中枢色）。
  *
- * 所有数字都来自后端 /api/structure（含 MACD），前端不做第二次计算：两边口径一旦
- * 分叉，页面上就会拿一条和买卖点无关的 MACD 去解释背驰。
+ * 所有数字都来自后端 /api/structure（含 MACD、均线、复权后的价格），前端不做第二次计算：
+ * 两边口径一旦分叉，页面上就会拿一条和买卖点无关的 MACD 去解释背驰，
+ * 或者拿不复权的收盘价去算一条跨越除权日的均线。
+ *
+ * 复权是"整张图的前提"，不是某只票的属性：它和均线开关一样放在图正上方的工具条里，
+ * 切换后行情、均线、结构（笔/段/中枢）一起换口径 —— 结构必须画在同一口径上。
  */
 (() => {
   "use strict";
@@ -29,10 +34,46 @@
     return String(v);
   }
 
+  // 复权三态。按钮上写的是**请求**的口径；实际生效口径与之不符时（例如这只票没有
+  // 除权记录，前复权与不复权价格完全相同）由按钮旁的说明讲清楚，不让按钮替数据撒谎。
+  const ADJUST_ORDER = ["qfq", "hfq", "raw"];
+  const ADJUST_LABEL = { qfq: "前复权", hfq: "后复权", raw: "不复权" };
+  // 均线六档：后端一次算全，前端只决定画哪几条。开关只是重画，不重新取数 ——
+  // 重新取数会把用户刚放大的那段K线弹回默认窗口。
+  const MA_PERIODS = [5, 10, 20, 60, 120, 250];
+  const MA_COLORS = {
+    5: "#e8c46a", 10: "#d2a052", 20: "#b8823f",
+    60: "#8aa9a0", 120: "#6d8fa3", 250: "#5b7d94",
+  };
+  const MA_DEFAULT = [5, 10, 20, 60];
+  const LS_MA = "chanlun.ma", LS_ADJUST = "chanlun.adjust";
+
+  // 存的是看图习惯，不是"上次服务端返回了什么"：换票、换级别都该保持。
+  function readChoice(key, allowed, fallback) {
+    let v = null;
+    try { v = localStorage.getItem(key); } catch { v = null; }
+    return allowed.includes(v) ? v : fallback;
+  }
+  function readMaChoice() {
+    let raw = null;
+    try { raw = localStorage.getItem(LS_MA); } catch { raw = null; }
+    if (raw === null) return MA_DEFAULT.slice();
+    // 空串 = 六条全关，是合法状态，必须和"没存过"区分开
+    return raw.split(",").map((s) => parseInt(s, 10)).filter((p) => MA_PERIODS.includes(p));
+  }
+  function remember(key, value) {
+    try { localStorage.setItem(key, value); } catch { /* 无痕模式：记不住就记不住 */ }
+  }
+  // 一次要全六档：开关切换时手边就有数据，不必再等一次请求。
+  const maQuery = () => MA_PERIODS.join(",");
+
   const state = {
     code: "600000",
     period: "day",
     limit: null,
+    adjust: readChoice(LS_ADJUST, ADJUST_ORDER, "qfq"),
+    ma: new Set(readMaChoice()),
+    watch: [],
     data: null,
     layers: { strokes: true, segments: true, pivots: true, signals: true, margin: true },
   };
@@ -50,6 +91,8 @@
   async function load() {
     const qs = new URLSearchParams({ code: state.code, period: state.period });
     if (state.limit) qs.set("limit", String(state.limit)); // 未指定时用后端默认窗口（1200）
+    qs.set("adjust", state.adjust);
+    qs.set("ma", maQuery());
     setStamp("加载中…");
     let resp;
     try {
@@ -62,14 +105,36 @@
       return showNotice(httpTitle(resp.status), body.detail || "接口返回了无法解析的内容。", null);
     }
     state.data = body;
+    applyAdjustUI(body);
     hideNotice();
     draw();
     renderLedger();
+    renderWatch(); // 高亮"图上是哪一只"：换票后自选栏要跟着动
     const c = body.counts;
     setStamp(
       `${body.code} · ${PERIOD_CN[body.period] || body.period} · 截至 ${body.as_of}\n` +
       `线段 ${c.segments}（确认 ${c.confirmed_segments} / 未确认 ${c.tentative_segments}） · 中枢 ${c.pivots} · 买卖点 ${c.signals}`
     );
+  }
+
+  // 工具条上的口径：按钮写"请求"的口径，实际生效口径不一致时用一句话说清原因。
+  // 例：这只票没有除权记录 → 请求前复权，实际就是原始价，按钮仍显示"前复权"，
+  // 旁边的说明写明"无除权记录（三态相同）"，否则用户会以为复权算错了。
+  function applyAdjustUI(body) {
+    const btn = $("#adjust-btn");
+    btn.textContent = `复权 · ${ADJUST_LABEL[state.adjust] || state.adjust}`;
+    btn.title = `点击切换复权口径：${ADJUST_ORDER.map((m) => ADJUST_LABEL[m]).join(" → ")}`;
+    const note = $("#adjust-note");
+    const eff = body && body.adjust_effective;
+    const text = (body && body.adjust_note) || "";
+    if (!text) {
+      note.textContent = "";
+      note.hidden = true;
+      return;
+    }
+    note.textContent = text;
+    note.hidden = false;
+    note.classList.toggle("is-warn", Boolean(eff) && eff !== state.adjust);
   }
 
   function httpTitle(status) {
@@ -101,6 +166,23 @@
   function setStamp(text) { $("#stamp").textContent = text; }
 
   // ------------------------------------------------------------------ 绘图
+  // 重画时把当前缩放窗口带过去：开关均线、开关图层都只是重画，
+  // 不该把用户刚放大的那一段K线弹回默认窗口（那是"看一眼细节"之后最恼人的事）。
+  function currentZoom() {
+    const z = ((chart.getOption() || {}).dataZoom || [])[0];
+    if (!z) return null;
+    if (z.startValue != null && z.endValue != null) {
+      const ts = state.data ? state.data.bars.map((b) => b.ts) : [];
+      if (ts.includes(z.startValue) && ts.includes(z.endValue)) {
+        return { startValue: z.startValue, endValue: z.endValue };
+      }
+    }
+    if (typeof z.start === "number" && typeof z.end === "number") {
+      return { start: z.start, end: z.end };
+    }
+    return null;
+  }
+
   function draw() {
     const d = state.data;
     const bars = d.bars;
@@ -109,6 +191,7 @@
     const up = cssVar("--cinnabar"), down = cssVar("--bamboo");
     const indigo = cssVar("--indigo"), mohui = cssVar("--mohui"), amber = cssVar("--amber");
     const rice = cssVar("--rice"), dim = cssVar("--rice-dim"), line = cssVar("--line");
+    const keepZoom = currentZoom();
 
     const nb = bars.length;
     const win = Math.min(nb, Math.max(120, Math.min(250, nb)));
@@ -273,6 +356,29 @@
       itemStyle: { color: v >= 0 ? up : down, opacity: 0.7 },
     }));
 
+    // --- 均线：数值由后端在**当前复权口径**下算好（/api/structure 的 ma）。
+    //     前端只决定画哪几条 —— 若在这里用 bars 自己 rolling，不复权窗口下算出的
+    //     MA60 会横跨除权缺口，图上就会多出一条谁也没见过的均线。
+    const ma = d.ma || {};
+    const maSeries = [];
+    for (const p of MA_PERIODS) {
+      const vals = ma[String(p)];
+      if (!vals || !state.ma.has(p)) continue;
+      maSeries.push({
+        name: `MA${p}`,
+        type: "line",
+        xAxisIndex: 0,
+        yAxisIndex: 0,
+        // null 必须原样保留：补成 0 会让均线从坐标原点拉一条假线下来
+        data: vals.map((v) => (v == null ? null : v)),
+        showSymbol: false,
+        connectNulls: false,
+        silent: true,
+        z: 4, // 压在K线之上、结构线（markLine z=5）之下
+        lineStyle: { color: MA_COLORS[p], width: p <= 20 ? 1.2 : 1, opacity: p <= 20 ? 0.95 : 0.7 },
+      });
+    }
+
     const axisBase = {
       type: "category",
       data: ts,
@@ -336,9 +442,9 @@
         { gridIndex: 3, min: 0, max: 1, show: false },
       ],
       dataZoom: [
-        { type: "inside", xAxisIndex: [0, 1, 2, 3], start: startPct, end: 100, zoomOnMouseWheel: true },
+        { type: "inside", xAxisIndex: [0, 1, 2, 3], ...(keepZoom || { start: startPct, end: 100 }), zoomOnMouseWheel: true },
         {
-          type: "slider", xAxisIndex: [0, 1, 2, 3], start: startPct, end: 100,
+          type: "slider", xAxisIndex: [0, 1, 2, 3], ...(keepZoom || { start: startPct, end: 100 }),
           bottom: 4, height: 16, borderColor: line, fillerColor: "rgba(124,156,196,0.12)",
           handleStyle: { color: dim }, textStyle: { color: dim, fontSize: 10 },
           dataBackground: { lineStyle: { color: line }, areaStyle: { color: line, opacity: 0.2 } },
@@ -349,6 +455,7 @@
           name: "K线", type: "candlestick", xAxisIndex: 0, yAxisIndex: 0, data: bars.map((b) => [b.open, b.close, b.low, b.high]),
           itemStyle: { color: up, color0: down, borderColor: up, borderColor0: down },
         },
+        ...maSeries,
         {
           // 结构叠加层：本身不画数据，只承载 markLine（笔/线段/GG-DD）与 markArea（中枢）
           name: "结构", type: "line", xAxisIndex: 0, yAxisIndex: 0, data: [], silent: true,
@@ -521,103 +628,184 @@
     });
   }
 
-  // ------------------------------------------------------------------ 自选池
+  // ------------------------------------------------------------------ 自选股栏
+  // 一栏只回答三件事：是哪只票、现在什么价、结构走到哪一步。点一下就换图。
+  // 价格与涨跌幅由后端在**和图表同一个复权口径**下算好（api._change_payload）：
+  // 不复权帧在除权日有一根几十个点的缺口，拿它算涨跌幅会在自选栏里报出一根
+  // 根本不存在的跌停，而图上那根K线看起来是平的。
   async function loadWatch() {
-    const box = $("#watch-cards");
+    const box = $("#watch-rows");
+    let url = `/api/watchlist/structure?period=${state.period}&adjust=${state.adjust}`;
+    if (state.limit) url += `&limit=${state.limit}`;
     let body;
     try {
-      body = await (await fetch(`/api/watchlist/structure?period=${state.period}`)).json();
-    } catch {
-      box.innerHTML = '<div class="watch-empty">自选池读取失败。</div>';
+      body = await (await fetch(url)).json();
+    } catch (err) {
+      box.innerHTML = '<div class="watch-empty">自选股读取失败：连不上本地服务（8888 端口）。</div>';
       return;
     }
-    if (!body.items || !body.items.length) {
-      box.innerHTML = '<div class="watch-empty">自选池是空的。把常看的票加进来，每次打开页面都能看到它们的线段方向、中枢区间和买卖点。</div>';
+    if (!body.items) {
+      box.innerHTML = `<div class="watch-empty">自选股读取失败：${body.detail || "接口返回了无法解析的内容。"}</div>`;
       return;
     }
+    state.watch = body.items;
+    renderWatch();
+  }
+
+  function renderWatch() {
+    const box = $("#watch-rows");
+    const items = state.watch || [];
+    $("#watch-count").textContent = String(items.length);
     box.innerHTML = "";
-    for (const it of body.items) {
-      const card = document.createElement("div");
-      const cls = ["watch-card"];
-      if (it.missing) cls.push("is-missing");
-      if (!it.missing && it.signals && it.signals.length) cls.push("has-signal");
-      card.className = cls.join(" ");
-
-      const head = document.createElement("div");
-      head.className = "watch-card-head";
-      const code = document.createElement("span");
-      code.className = "watch-code";
-      code.textContent = it.code;
-      const name = document.createElement("span");
-      name.className = "watch-name";
-      name.textContent = it.name || "";
-      const rm = document.createElement("button");
-      rm.type = "button";
-      rm.className = "watch-rm";
-      rm.title = "移出自选";
-      rm.textContent = "×";
-      rm.addEventListener("click", async (ev) => {
-        ev.stopPropagation();
-        await fetch(`/api/watchlist?code=${it.code}`, { method: "DELETE" });
-        loadWatch();
-      });
-      head.append(code, name, rm);
-      card.append(head);
-
-      if (it.missing) {
-        const tag = document.createElement("span");
-        tag.className = "watch-tag";
-        tag.textContent = it.error || "缺少数据";
-        card.append(tag);
-      } else {
-        const line1 = document.createElement("div");
-        line1.className = "watch-line";
-        line1.textContent = `截至 ${it.as_of} · 线段 ${it.counts.segments}（未确认 ${it.counts.tentative_segments}）`;
-        const line2 = document.createElement("div");
-        line2.className = "watch-line";
-        const p = it.pivots[it.pivots.length - 1];
-        line2.textContent = p ? `末中枢 ${p.status === "tentative" ? "未确认 " : ""}${f2(p.zd)}–${f2(p.zg)}` : "无中枢";
-        const line3 = document.createElement("div");
-        line3.className = "watch-line";
-        const seg = it.last_segment;
-        line3.textContent = seg
-          ? `末段 ${seg.direction > 0 ? "向上" : "向下"} ${seg.low}–${seg.high}${seg.status === "tentative" ? "（未确认）" : ""}`
-          : "无线段";
-        card.append(line1, line2, line3);
-        if (it.signals && it.signals.length) {
-          const tag = document.createElement("span");
-          tag.className = "watch-tag";
-          tag.textContent = it.signals.map((s) => `${KIND_CN[s.kind] || s.kind} ${s.ts}`).join(" · ");
-          card.append(tag);
-        }
-      }
-
-      card.addEventListener("click", () => {
-        if (it.missing) return;
-        setCode(it.code);
-        load();
-      });
-      box.append(card);
+    if (!items.length) {
+      const p = document.createElement("div");
+      p.className = "watch-empty";
+      p.textContent = "自选股是空的。把常看的票加进来，点一下就能看它的笔、线段、中枢和买卖点。";
+      box.append(p);
+      return;
     }
+    for (const it of items) box.append(watchRow(it));
+  }
+
+  function span(cls, text) {
+    const s = document.createElement("span");
+    s.className = cls;
+    s.textContent = text;
+    return s;
+  }
+
+  function watchRow(it) {
+    const row = document.createElement("div");
+    row.className = "watch-row";
+    // 代码挂在 dataset 上：无头浏览器 dump-dom 也能读到"这一栏有哪几只票"
+    row.dataset.code = it.code;
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
+    if (it.code === state.code) row.classList.add("is-current");
+
+    const top = document.createElement("div");
+    top.className = "watch-row-top";
+    top.append(span("watch-code", it.code), span("watch-price", it.missing ? "—" : f2(it.close)));
+
+    const mid = document.createElement("div");
+    mid.className = "watch-row-mid";
+    const chg = span("watch-chg", "—");
+    if (!it.missing && it.change_pct != null) {
+      const v = Number(it.change_pct);
+      chg.textContent = `${v > 0 ? "+" : ""}${v.toFixed(2)}%`;
+      // A股习惯：红涨绿跌（和K线同色），平盘用灰
+      chg.classList.add(v > 0 ? "up" : v < 0 ? "down" : "flat");
+    } else {
+      chg.classList.add("flat");
+    }
+    mid.append(span("watch-name", it.name || ""), chg);
+
+    const meta = document.createElement("span");
+    meta.className = "watch-meta";
+    if (it.missing) {
+      row.classList.add("is-missing");
+      meta.textContent = it.error || "缺少本地数据";
+    } else {
+      const piv = (it.pivots || [])[it.pivots.length - 1];
+      const seg = it.last_segment;
+      const bits = [
+        piv ? `中枢 ${piv.status === "tentative" ? "未确认 " : ""}${f2(piv.zd)}–${f2(piv.zg)}` : "无中枢",
+      ];
+      if (seg) bits.push(`末段${seg.direction > 0 ? "上" : "下"}${seg.status === "tentative" ? "（未确认）" : ""}`);
+      meta.textContent = bits.join(" · ");
+      const sigs = it.signals || [];
+      if (sigs.length) {
+        row.classList.add("has-signal");
+        const last = sigs[sigs.length - 1];
+        const tag = span("watch-sig", `${KIND_CN[last.kind] || last.kind} ${last.ts}`);
+        row.append(top, mid, meta, tag);
+        return finishWatchRow(row, it);
+      }
+    }
+    row.append(top, mid, meta);
+    return finishWatchRow(row, it);
+  }
+
+  function finishWatchRow(row, it) {
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "watch-rm";
+    rm.title = "移出自选";
+    rm.textContent = "×";
+    rm.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      await fetch(`/api/watchlist?code=${encodeURIComponent(it.code)}`, { method: "DELETE" });
+      loadWatch();
+    });
+    row.append(rm);
+    if (!it.missing) {
+      const open = () => { setCode(it.code); load(); };
+      row.addEventListener("click", open);
+      row.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); }
+      });
+    }
+    return row;
+  }
+
+  function watchError(text) {
+    const box = $("#watch-add-error");
+    if (!text) { box.hidden = true; box.textContent = ""; return; }
+    box.textContent = text;
+    box.hidden = false;
   }
 
   async function addWatch() {
     const input = $("#watch-code");
     const raw = input.value.trim();
     if (!raw) return;
-    const resp = await fetch("/api/watchlist", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code: raw }),
-    });
+    // 允许"600000 浦发银行"：名称跟在代码后面一起存，自选栏里才认得出是哪只票。
+    // 名称不是必填 —— 输代码也能加，名字缺了就用库里已有的。
+    const m = raw.match(/^([0-9]{6}|[a-zA-Z]{2}\.[0-9]{6})\s*(.*)$/);
+    if (!m) {
+      watchError(`看不懂「${raw}」。写 6 位代码（600000），或带市场前缀（sh.000300），名称可以跟在后面。`);
+      return;
+    }
+    const code = m[1], name = m[2].trim();
+    let resp;
+    try {
+      resp = await fetch("/api/watchlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(name ? { code, name } : { code }),
+      });
+    } catch (err) {
+      watchError(`加自选失败：连不上本地服务（${err}）。`);
+      return;
+    }
     if (!resp.ok) {
       const body = await resp.json().catch(() => ({}));
-      showNotice("加自选失败", body.detail || `HTTP ${resp.status}`, null);
+      watchError(body.detail || `加自选失败：HTTP ${resp.status}`);
       return;
     }
     input.value = "";
+    watchError("");
     hideNotice();
     loadWatch();
+  }
+
+  // 输入即搜：候选列表用浏览器原生 datalist，不自己造下拉框。
+  // 只有"记住选择"这件事需要自己做，所以输入框里的字始终是用户写的。
+  let searchTimer = null;
+  async function fillUniverse(q) {
+    let body;
+    try {
+      body = await (await fetch(`/api/universe?q=${encodeURIComponent(q)}&limit=20`)).json();
+    } catch (err) {
+      return;
+    }
+    const list = $("#universe-options");
+    list.innerHTML = "";
+    for (const it of body.items || []) {
+      const opt = document.createElement("option");
+      opt.value = `${it.code} ${it.name || ""}`.trim();
+      list.append(opt);
+    }
   }
 
   // ------------------------------------------------------------------ 交互绑定
@@ -657,14 +845,43 @@
     });
   }
 
-  $("#watch-add").addEventListener("click", addWatch);
-  $("#watch-code").addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter") { ev.preventDefault(); addWatch(); }
+  $("#watch-add-form").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    addWatch();
+  });
+  $("#watch-code").addEventListener("input", () => {
+    const q = $("#watch-code").value.trim();
+    clearTimeout(searchTimer);
+    if (!q) return;
+    searchTimer = setTimeout(() => fillUniverse(q), 150);
   });
 
-  // 初始加载：URL 可带 ?code=&period=，方便把常看的票做成书签
+  // 复权：一个按钮循环三态。切换后行情、均线、结构一起换口径 ——
+  // 结构必须画在同一口径上，否则"前复权的K线 + 不复权的笔"是两张图的叠加。
+  $("#adjust-btn").addEventListener("click", () => {
+    const i = ADJUST_ORDER.indexOf(state.adjust);
+    state.adjust = ADJUST_ORDER[(i + 1) % ADJUST_ORDER.length];
+    remember(LS_ADJUST, state.adjust);
+    applyAdjustUI({ adjust_effective: state.adjust, adjust_note: "" });
+    load();
+    loadWatch();
+  });
+
+  for (const box of document.querySelectorAll(".ma-toggle")) {
+    const period = parseInt(box.dataset.period, 10);
+    const input = box.querySelector("input");
+    input.checked = state.ma.has(period); // 勾选状态来自本地记忆，不是写死在 HTML 里
+    input.addEventListener("change", () => {
+      if (input.checked) state.ma.add(period); else state.ma.delete(period);
+      remember(LS_MA, MA_PERIODS.filter((p) => state.ma.has(p)).join(","));
+      if (state.data) draw(); // 只重画：不重新取数，缩放窗口因此保住
+    });
+  }
+
+  // 初始加载：URL 可带 ?code=&period=&adjust=，方便把常看的票做成书签
   const sp = new URLSearchParams(location.search);
   if (sp.get("code")) setCode(sp.get("code"));
+  if (ADJUST_ORDER.includes(sp.get("adjust"))) state.adjust = sp.get("adjust");
   if (sp.get("period") && PERIOD_CN[sp.get("period")]) {
     state.period = sp.get("period");
     for (const b of document.querySelectorAll(".period")) {
@@ -673,6 +890,7 @@
       b.setAttribute("aria-selected", on ? "true" : "false");
     }
   }
+  applyAdjustUI({ adjust_effective: state.adjust, adjust_note: "" });
   // 初始加载：URL 可带 ?code=&period=，方便把常看的票做成书签。
   // 取数不等渲染：requestAnimationFrame 在后台标签页会停摆（无头浏览器 + 虚拟时间下
   // 亦同），把它放在加载路径上会导致页面永远停在"尚未加载"。尺寸校准另走兜底回调。

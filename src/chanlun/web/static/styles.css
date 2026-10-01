@@ -149,7 +149,9 @@ button, input { font: inherit; color: inherit; }
 /* ---------------- 工作区 ---------------- */
 .work {
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr) 336px;
+  /* 图层开关 | 自选股 | 图 | 结构清单：自选股紧挨着图，
+     因为「换一只票再看一遍」是这个页面最高频的动作。 */
+  grid-template-columns: 46px 264px minmax(0, 1fr) 336px;
   min-height: 0;
   border-bottom: 1px solid var(--line);
 }
@@ -180,12 +182,67 @@ button, input { font: inherit; color: inherit; }
 .rail-tab.is-on { color: var(--rice); border-left-color: var(--indigo); background: var(--panel-2); }
 .rail-tab:hover { color: var(--rice); }
 
-.stage { position: relative; min-width: 0; min-height: 0; display: flex; }
+.stage { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .chart { flex: 1; min-height: 420px; }
+
+/* 工具条：口径与均线都是"整张图的前提"，所以放在图的正上方，
+   而不是塞进顶栏的代码表单里 —— 换代码时它们不该跟着动。 */
+.tools {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 7px 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.tools-label { font-size: 11px; color: var(--mohui); letter-spacing: 0.2em; }
+.adjust {
+  padding: 4px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--indigo);
+  border-radius: var(--r);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.adjust:hover { border-color: var(--indigo); }
+/* 口径不一致时（例如请求前复权但该票没有除权记录）在这里说清，
+   不能让按钮上的字替数据撒谎。 */
+.adjust-note { font-size: 11px; color: var(--mohui); }
+.adjust-note.is-warn { color: var(--amber); }
+
+.ma-toggles { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.ma-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--mohui);
+  cursor: pointer;
+  user-select: none;
+}
+.ma-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+.ma-toggle i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--mohui);
+}
+.ma-toggle input:checked ~ i { background: var(--c); box-shadow: none; }
+.ma-toggle:has(input:checked) { color: var(--rice); border-color: var(--mohui); }
+.ma-toggle input:focus-visible ~ span { outline: 2px solid var(--indigo); outline-offset: 3px; }
 
 .notice {
   position: absolute;
-  inset: 24px;
+  inset: 56px 24px 24px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -281,89 +338,161 @@ button, input { font: inherit; color: inherit; }
 .chip.confirmed { color: var(--indigo); border-color: #2c3a4a; }
 .conf-time { font-family: var(--mono); font-size: 10px; color: var(--mohui); }
 
-/* ---------------- 自选池 ---------------- */
-.watchstrip { padding: 12px 20px 18px; background: var(--panel); }
-.watchstrip-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
-.watchstrip-head h2 {
-  margin: 0;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--rice-dim);
-  letter-spacing: 0.28em;
+/* ---------------- 自选股左栏 ----------------
+   常驻左栏，不是页底的一条带子：看盘的动作是「换一只票再看一遍结构」，
+   换票不该先滚到页面底部。一栏只回答三件事 —— 是哪只票、现在什么价、
+   结构走到哪一步；点一下就换图。
+
+   价格与涨跌幅由后端在**和图表同一个复权帧**里算好（api._change_payload）：
+   不复权帧在除权日有一根几十个点的缺口，直接拿来算涨跌幅就会在自选栏里
+   报出一根不存在的跌停。
+*/
+.watch-rail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
 }
-.watch-add { display: flex; gap: 8px; }
+.watch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 14px 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.watch-head h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.24em;
+  color: var(--rice-dim);
+}
+.watch-count { font-family: var(--mono); font-size: 11px; color: var(--mohui); }
+
+.watch-add { display: flex; gap: 6px; padding: 9px 12px; }
 .watch-add input {
-  width: 150px;
-  padding: 6px 9px;
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
   background: var(--ink);
   border: 1px solid var(--line);
   border-radius: var(--r);
   font-family: var(--mono);
+  font-size: 12px;
 }
+.watch-add input::placeholder { color: var(--mohui); }
 .watch-add button {
-  padding: 6px 14px;
+  padding: 5px 10px;
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: var(--r);
+  font-size: 12px;
   cursor: pointer;
 }
 .watch-add button:hover { border-color: var(--indigo); }
+/* 加自选出错时就地说，别去清空整张图：错的是这一格输入，不是行情 */
+.watch-err {
+  margin: 0;
+  padding: 0 14px 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--amber);
+}
 
-.watch-cards {
-  display: flex;
-  gap: 10px;
-  margin-top: 12px;
-  overflow-x: auto;
-  padding-bottom: 4px;
-}
-.watch-card {
-  flex: 0 0 232px;
-  padding: 10px 12px;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-left: 2px solid var(--mohui);
+.watch-rows { flex: 1; min-height: 0; overflow-y: auto; padding: 0 8px 8px; }
+.watch-row {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 7px 22px 7px 11px;
+  margin-bottom: 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-left: 2px solid var(--line);
   border-radius: var(--r);
-  cursor: pointer;
+  color: inherit;
   text-align: left;
+  cursor: pointer;
 }
-.watch-card:hover { border-color: var(--indigo); }
-.watch-card.is-missing { border-left-color: var(--amber); cursor: default; }
-.watch-card.has-signal { border-left-color: var(--cinnabar); }
-.watch-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.watch-code { font-family: var(--mono); font-size: 14px; letter-spacing: 0.06em; }
-.watch-name { font-size: 12px; color: var(--rice-dim); }
-.watch-line {
-  margin-top: 6px;
-  font-family: var(--mono);
+.watch-row:hover { background: var(--panel-2); border-left-color: var(--mohui); }
+/* 正在看的那一只：靛青竖条，和图上中枢同色，一眼知道"图上是它" */
+.watch-row.is-current { background: var(--panel-2); border-left-color: var(--indigo); }
+.watch-row.has-signal { border-left-color: var(--cinnabar); }
+.watch-row.is-current.has-signal { border-left-color: var(--cinnabar); }
+.watch-row.is-missing { border-left-color: var(--amber); cursor: default; }
+.watch-row-top, .watch-row-mid {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.watch-row-mid { margin-top: 2px; }
+.watch-code { font-family: var(--mono); font-size: 13px; letter-spacing: 0.06em; }
+.watch-price { font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+.watch-name {
   font-size: 11px;
   color: var(--rice-dim);
-  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.watch-rm {
-  background: transparent;
-  border: 0;
+.watch-chg { font-family: var(--mono); font-size: 11px; font-variant-numeric: tabular-nums; }
+.watch-chg.up { color: var(--cinnabar); }
+.watch-chg.down { color: var(--bamboo); }
+.watch-chg.flat { color: var(--mohui); }
+.watch-meta {
+  display: block;
+  margin-top: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.5;
   color: var(--mohui);
-  cursor: pointer;
-  font-size: 15px;
-  line-height: 1;
-  padding: 0 2px;
 }
-.watch-rm:hover { color: var(--cinnabar); }
-.watch-tag {
+.watch-sig {
   display: inline-block;
-  margin-top: 6px;
+  margin-top: 4px;
   padding: 1px 6px;
   border: 1px solid #4a3c22;
   border-radius: 999px;
   font-size: 10px;
   color: var(--amber);
 }
+/* 移出自选：平时让位给价格，悬停/聚焦才浮出来 */
+.watch-rm {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  transform: translateY(-50%);
+  padding: 0 3px;
+  background: transparent;
+  border: 0;
+  color: transparent;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.watch-row:hover .watch-rm, .watch-rm:focus-visible { color: var(--mohui); }
+.watch-rm:hover { color: var(--cinnabar); }
+.watch-empty { padding: 10px 12px; }
+.watch-foot {
+  margin: 0;
+  padding: 7px 14px 9px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--mohui);
+}
 
 /* ---------------- 窄屏 ---------------- */
-@media (max-width: 1100px) {
-  .work { grid-template-columns: 46px minmax(0, 1fr); }
+@media (max-width: 1400px) {
+  .work { grid-template-columns: 46px 240px minmax(0, 1fr); }
   .ledger { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); max-height: 320px; }
-  .watch-card { flex-basis: 200px; }
+}
+
+@media (max-width: 980px) {
+  .work { grid-template-columns: 46px minmax(0, 1fr); }
+  .watch-rail { grid-column: 1 / -1; border-right: 0; border-bottom: 1px solid var(--line); max-height: 240px; }
 }
 
 @media (max-width: 760px) {

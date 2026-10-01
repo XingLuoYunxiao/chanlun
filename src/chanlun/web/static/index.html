@@ -49,8 +49,57 @@
     <button type="button" class="rail-tab is-on" data-layer="margin"   aria-pressed="true" title="确认刻度：结构在哪一根K线上才可被看见"><span>确认刻度</span></button>
   </nav>
 
+  <aside class="watch-rail" id="watchlist" aria-label="自选股">
+    <div class="watch-head">
+      <h2>自选股</h2>
+      <span class="watch-count" id="watch-count">0</span>
+    </div>
+
+    <form class="watch-add" id="watch-add-form" autocomplete="off">
+      <input id="watch-code" type="text" list="universe-options" placeholder="代码 / 名称"
+             aria-label="加自选：代码或名称">
+      <datalist id="universe-options"></datalist>
+      <button type="submit" id="watch-add">加入</button>
+    </form>
+    <p class="watch-err" id="watch-add-error" role="alert" hidden></p>
+
+    <div class="watch-rows" id="watch-rows">
+      <div class="watch-empty">自选股是空的。把常看的票加进来，点一下就能看它的笔、线段、中枢和买卖点。</div>
+    </div>
+
+    <p class="watch-foot">数据为本地已同步的日线；缺数据的票会标出来。</p>
+  </aside>
+
   <main class="stage">
-    <div id="chart" class="chart" role="img" aria-label="K线、成交量和 MACD，叠加笔、线段、中枢与买卖点"></div>
+    <div class="tools">
+      <button type="button" class="adjust" id="adjust-btn"
+              title="点击切换复权口径：前复权 → 后复权 → 不复权"
+              aria-label="复权口径，点击切换">复权 · 前复权</button>
+      <span class="adjust-note" id="adjust-note" hidden></span>
+      <div class="ma-toggles" id="ma-toggles" role="group" aria-label="均线开关">
+        <span class="tools-label">均线</span>
+        <label class="ma-toggle" data-period="5" title="MA5">
+          <input type="checkbox" checked><i style="--c:#e8c46a"></i><span>MA5</span>
+        </label>
+        <label class="ma-toggle" data-period="10" title="MA10">
+          <input type="checkbox" checked><i style="--c:#d2a052"></i><span>MA10</span>
+        </label>
+        <label class="ma-toggle" data-period="20" title="MA20">
+          <input type="checkbox" checked><i style="--c:#b8823f"></i><span>MA20</span>
+        </label>
+        <label class="ma-toggle" data-period="60" title="MA60">
+          <input type="checkbox" checked><i style="--c:#8aa9a0"></i><span>MA60</span>
+        </label>
+        <label class="ma-toggle" data-period="120" title="MA120">
+          <input type="checkbox"><i style="--c:#6d8fa3"></i><span>MA120</span>
+        </label>
+        <label class="ma-toggle" data-period="250" title="MA250">
+          <input type="checkbox"><i style="--c:#5b7d94"></i><span>MA250</span>
+        </label>
+      </div>
+    </div>
+
+    <div id="chart" class="chart" role="img" aria-label="K线、成交量和 MACD，叠加均线、笔、线段、中枢与买卖点"></div>
     <div id="notice" class="notice" hidden></div>
   </main>
 
@@ -58,19 +107,6 @@
     <div class="ledger-empty">输入代码后，这里列出该级别的线段、中枢与买卖点，以及每个结构的确认时间。</div>
   </aside>
 </div>
-
-<footer class="watchstrip">
-  <div class="watchstrip-head">
-    <h2>自选池结构跟踪</h2>
-    <div class="watch-add">
-      <input id="watch-code" type="text" placeholder="加自选：代码" aria-label="加自选的代码">
-      <button type="button" id="watch-add">加入</button>
-    </div>
-  </div>
-  <div class="watch-cards" id="watch-cards">
-    <div class="watch-empty">自选池是空的。把常看的票加进来，每次打开页面都能看到它们的线段方向、中枢区间和买卖点。</div>
-  </div>
-</footer>
 
 <script src="/static/vendor/echarts.min.js"></script>
 <script src="/static/app.js"></script>
