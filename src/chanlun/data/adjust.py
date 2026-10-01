@@ -83,6 +83,29 @@ def apply_adjust(df: pd.DataFrame, factors: pd.DataFrame | None, mode: str) -> p
     return out
 
 
+def unapply_adjust(df: pd.DataFrame, factors: pd.DataFrame | None, mode: str) -> pd.DataFrame:
+    """把**前复权落库**的行情还原成三态（一期 baostock 的 `day` 就是这个口径）。
+
+    库内是 `q_t = raw_t × k_t`，于是：
+
+    - `raw_t = q_t / k_t`
+    - `hfq_t = raw_t × k_t / k_0 = q_t / k_0`
+    - `qfq_t` 原样返回
+
+    与 `apply_adjust` 是**两条相反的公式**：同一个因子表、不同的落库口径，拿错一条
+    不会报错，只会把价格二次复权 —— 除权日反而长出一根假的跳空缺口。
+    """
+    mode = normalize_adjust(mode)
+    out = df.copy()
+    if factors is None or len(factors) == 0 or mode == "qfq":
+        return out
+    k = _k_series(df, factors)
+    scale = 1.0 / k if mode == "raw" else 1.0 / float(k.iloc[0])
+    for col in PRICE_COLUMNS:
+        out[col] = (out[col].astype("float64") * scale).round(PRICE_DECIMALS)
+    return out
+
+
 def infer_factors(raw: pd.DataFrame, qfq: pd.DataFrame) -> pd.DataFrame:
     """从「不复权 / 前复权」两份同区间数据反推因子阶梯。
 

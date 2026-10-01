@@ -242,3 +242,138 @@ def test_normalize_code_keeps_prefix_only_when_needed():
     assert normalize_code("920017") == "920017"  # 北交所新号段
     with pytest.raises(Exception):
         normalize_code("sh.300059")  # 前缀与号段矛盾
+
+
+# ---------------- 自选栏摘要 ----------------
+def _watch(cfg, code="600000"):
+    conn = meta.init(cfg.data.meta_db)
+    try:
+        meta.upsert_universe(conn, [("600000", "sh.600000", "浦发银行", "sh", "1999-11-10", 0)])
+        meta.add_watch(conn, code)
+    finally:
+        conn.close()
+
+
+def test_watchlist_summary_carries_price_for_the_rail(cfg):
+    """左侧自选栏要显示最新价与涨跌幅，否则「自选股」就只是六个数字的清单。
+
+    价格必须取自**同一个复权帧**（和图表同口径），涨跌幅由该帧相邻两根收盘价算出：
+    横跨除权日时，不复权口径会凭空多出一根假跌停。
+    """
+    _watch(cfg)
+    _add_factors(cfg, rows=(("2024-01-02", 0.5),))  # 整段行情同一个因子
+    with TestClient(create_app(cfg)) as client:
+        body = client.get("/api/watchlist/structure", params={"period": "day"}).json()
+        raw = client.get("/api/watchlist/structure",
+                         params={"period": "day", "adjust": "raw"}).json()
+
+    it = body["items"][0]
+    close = _bars()["close"]
+    assert it["name"] == "浦发银行", "名称要能从 universe 表兜底取到"
+    assert it["ts"] == _bars()["ts"].iloc[-1]
+    assert it["close"] == pytest.approx(float(close.iloc[-1]) * 0.5, abs=1e-3)
+    assert it["adjust"] == "qfq" and it["adjust_effective"] == "qfq"
+    # 单一因子整段不变时，涨跌幅与不复权一致（因子在比值里约掉）—— 复权不该把涨跌幅也缩放
+    assert it["change_pct"] == pytest.approx(raw["items"][0]["change_pct"], abs=1e-6)
+    assert raw["items"][0]["close"] == pytest.approx(float(close.iloc[-1]), abs=1e-3)
+
+
+def test_watchlist_change_pct_survives_a_factor_change_inside_the_window(cfg):
+    """除权日就在最新一根上：不复权会算出一根假跌，前复权不会。
+
+    自选栏报的是**最新一根**的涨跌幅，所以除权日必须落在最后一根上才谈得上这件事
+    （除权日在窗口中间时，最新涨跌幅与它无关）。
+    真实数据里**不复权才是带缺口的那一条**（前复权就是把这个缺口补平的结果），
+    所以这里把除权日之前的价格抬成 2 倍，再让因子表把它乘回 0.5：
+    前复权帧连续，不复权帧在最新一根上有一根 -50% 的假跌。
+    """
+    bars = _bars()
+    ex = str(bars["ts"].iloc[-1])
+    bars.loc[bars["ts"] < ex, ["open", "high", "low", "close"]] *= 2
+    store.write("600000", "day", bars)
+    _watch(cfg)
+    _add_factors(cfg, rows=((str(bars["ts"].iloc[0]), 0.5), (ex, 1.0)))
+    with TestClient(create_app(cfg)) as client:
+        raw = client.get("/api/watchlist/structure",
+                         params={"period": "day", "adjust": "raw"}).json()["items"][0]
+        qfq = client.get("/api/watchlist/structure",
+                         params={"period": "day", "adjust": "qfq"}).json()["items"][0]
+
+    assert raw["change_pct"] < -20, "不复权口径在除权日会算出一根假跌（本用例的前提）"
+    assert abs(qfq["change_pct"]) < 10, f"前复权后的涨跌幅不该被除权砸出坑：{qfq['change_pct']}"
+
+
+# ---------------- 落库口径（一期 day 是 baostock 前复权） ----------------
+def _set_stored(cfg, adjust, code="600000", period="day"):
+    """把该票该周期的落库口径写进 sync_state —— 真实同步流水线每次都写这一行。"""
+    conn = meta.init(cfg.data.meta_db)
+    try:
+        meta.set_sync(conn, code, period, None, None, 0, adjust)
+    finally:
+        conn.close()
+
+
+def test_baostock_stored_prices_are_not_reported_as_raw(client, cfg):
+    """一期库里的 day 是 baostock **前复权**（`sync_state.adjust="2"`）。
+
+    没有因子表时三态确实切不动，但生效口径是前复权，不是"不复权原始价"：
+    把前复权价标成不复权，用户会以为除权日的跳空是行情本身，而库里那份早就补平了。
+    """
+    _set_stored(cfg, "2")
+    body = client.get("/api/bars", params={"code": "600000", "period": "day",
+                                           "adjust": "raw"}).json()
+    assert body["adjust"] == "raw" and body["adjust_effective"] == "qfq"
+    assert "前复权" in body["adjust_note"]
+    assert "原始价" not in body["adjust_note"]
+    assert body["bars"][0]["close"] == pytest.approx(float(_bars()["close"].iloc[0]))
+
+
+def test_stored_qfq_answers_qfq_and_names_the_stored_mode(client, cfg):
+    _set_stored(cfg, "2")
+    body = client.get("/api/bars", params={"code": "600000", "period": "day",
+                                           "adjust": "qfq"}).json()
+    assert body["adjust_effective"] == "qfq"
+    assert "前复权" in body["adjust_note"]
+
+
+def test_stored_raw_keeps_the_raw_formula(client, cfg):
+    """`sync_state.adjust="3"`（通达信落库）走原来的公式：qfq = raw × k_t。"""
+    _set_stored(cfg, "3")
+    _add_factors(cfg)
+    qfq = client.get("/api/bars", params={"code": "600000", "period": "day",
+                                          "adjust": "qfq"}).json()
+    assert qfq["adjust_effective"] == "qfq"
+    assert qfq["bars"][0]["close"] == pytest.approx(float(_bars()["close"].iloc[0]) * 0.5)
+
+
+def test_stored_qfq_with_factors_derives_raw_and_hfq(client, cfg):
+    """库内是前复权 `q_t` 且因子表已补齐时：`raw = q_t / k_t`，`hfq = q_t / k_0`。
+
+    这是 baostock 落库 + 因子补全之后的真实状态。照不复权的公式再乘一遍 `k_t`，
+    前复权价会被**二次复权**，除权日反而长出一根假跳空 —— 方向恰好反了。
+    """
+    _set_stored(cfg, "2")
+    _add_factors(cfg)  # k: 2024-01-02 → 0.5，2024-07-01 → 1.0
+    first = float(_bars()["close"].iloc[0])
+    raw = client.get("/api/bars", params={"code": "600000", "period": "day", "adjust": "raw"}).json()
+    qfq = client.get("/api/bars", params={"code": "600000", "period": "day", "adjust": "qfq"}).json()
+    hfq = client.get("/api/bars", params={"code": "600000", "period": "day", "adjust": "hfq"}).json()
+
+    assert qfq["bars"][0]["close"] == pytest.approx(first)
+    assert raw["bars"][0]["close"] == pytest.approx(first / 0.5)
+    assert raw["bars"][-1]["close"] == pytest.approx(qfq["bars"][-1]["close"])
+    assert hfq["bars"][0]["close"] == pytest.approx(first / 0.5)
+    assert hfq["bars"][-1]["close"] == pytest.approx(qfq["bars"][-1]["close"] / 0.5)
+    assert raw["adjust_effective"] == "raw" and hfq["adjust_effective"] == "hfq"
+    assert "除权" in hfq["adjust_note"]
+
+
+def test_watchlist_summary_reports_the_stored_mode(cfg):
+    """自选栏与图表必须报同一个生效口径，否则两处价格看起来"对不上"。"""
+    _set_stored(cfg, "2")
+    _watch(cfg)
+    with TestClient(create_app(cfg)) as client:
+        it = client.get("/api/watchlist/structure",
+                        params={"period": "day", "adjust": "hfq"}).json()["items"][0]
+    assert it["adjust"] == "hfq" and it["adjust_effective"] == "qfq"
+    assert it["close"] == pytest.approx(float(_bars()["close"].iloc[-1]))

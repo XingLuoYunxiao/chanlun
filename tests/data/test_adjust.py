@@ -187,3 +187,46 @@ def test_adjust_factors_record_source(tmp_path):
     meta.save_adjust_factors(conn, "600000", [("2026-01-05", 0.5)], source="inferred")
     row = conn.execute("SELECT source FROM adjust_factor WHERE code='600000'").fetchone()
     assert row["source"] == "inferred"
+
+
+# ---------------- 前复权落库的还原（一期 baostock 的 day 就是这个口径） ----------------
+def test_unapply_raw_inverts_apply_qfq():
+    """往返恒等：`apply` 算出的前复权价，`unapply` 必须能还原回原始价。
+
+    这是两条公式互为逆运算的直接证据 —— 库里落的是前复权价时，
+    只有走 `unapply` 才拿得到不复权，走 `apply` 会把价格乘第二遍。
+    """
+    df = _frame([7.0, 8.0, 9.0])
+    f = _factors(["2026-01-05", "2026-01-06"], [0.5, 1.0])
+    q = adjust.apply_adjust(df, f, "qfq")
+    back = adjust.unapply_adjust(q, f, "raw")
+    assert list(back["close"]) == list(df["close"])
+
+
+def test_unapply_hfq_equals_apply_hfq():
+    """后复权与落库口径无关：`q_t / k_0` 与 `raw_t × k_t / k_0` 是同一个数。"""
+    df = _frame([7.0, 8.0, 9.0])
+    f = _factors(["2026-01-05", "2026-01-06"], [0.5, 1.0])
+    q = adjust.apply_adjust(df, f, "qfq")
+    assert list(adjust.unapply_adjust(q, f, "hfq")["close"]) == list(adjust.apply_adjust(df, f, "hfq")["close"])
+
+
+def test_unapply_qfq_is_identity_and_keeps_volume():
+    df = _frame([7.0, 8.0, 9.0])
+    f = _factors(["2026-01-05", "2026-01-06"], [0.5, 1.0])
+    out = adjust.unapply_adjust(df, f, "qfq")
+    assert list(out["close"]) == [7.0, 8.0, 9.0]
+    assert list(out["volume"]) == [100.0] * 3 and list(out["amount"]) == [1e5] * 3
+
+
+def test_unapply_without_factors_is_identity():
+    df = _frame([7.0, 8.0])
+    assert list(adjust.unapply_adjust(df, None, "raw")["close"]) == [7.0, 8.0]
+    assert list(adjust.unapply_adjust(df, _factors([], []), "hfq")["close"]) == [7.0, 8.0]
+
+
+def test_unapply_does_not_mutate_input():
+    df = _frame([7.0, 8.0, 9.0])
+    f = _factors(["2026-01-05", "2026-01-06"], [0.5, 1.0])
+    adjust.unapply_adjust(df, f, "raw")
+    assert list(df["close"]) == [7.0, 8.0, 9.0]

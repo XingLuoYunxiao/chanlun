@@ -142,11 +142,50 @@ def factors_for(meta_db, code: str) -> pd.DataFrame:
         conn.close()
 
 
-def _apply_factors(df: pd.DataFrame, factors: pd.DataFrame, mode: str) -> tuple[pd.DataFrame, str, str]:
-    """按因子表把行情切成三态之一，并如实报告**实际生效**的口径。"""
-    if len(factors) == 0:
-        return df, "raw", "无除权记录（三态相同，价格即不复权原始价）"
+def _stored_adjust(meta_db, code: str, period: str) -> str:
+    """这批数据**落库时**的口径：`sync_state.adjust`（`"2"`→前复权、`"3"`→不复权）。
+
+    为什么非要知道这个：库里一期 baostock 落的是前复权、二期通达信整包落的是不复权，
+    同一个因子表要用两条相反的公式。查不到记录时按不复权处理 —— 生产数据的每一行都由
+    同步流水线写进 `sync_state`，查不到只可能是测试夹具或手工放进库的文件。
+    """
+    if meta_db is None:
+        return "raw"
+    conn = meta.init(meta_db)
+    try:
+        row = meta.get_sync(conn, code, period)
+    finally:
+        conn.close()
+    if row is None or not row["adjust"]:
+        return "raw"
+    try:
+        return adjust_mod.normalize_adjust(row["adjust"])
+    except ValueError:
+        return "raw"
+
+
+def _apply_factors(df: pd.DataFrame, factors: pd.DataFrame, mode: str,
+                   stored: str = "raw") -> tuple[pd.DataFrame, str, str]:
+    """按因子表把行情切成三态之一，并如实报告**实际生效**的口径。
+
+    `stored` 是落库口径（见 `_stored_adjust`）。它决定用哪条公式：落库是不复权
+    → `qfq = raw × k_t`；落库是前复权 → `raw = q_t / k_t`。两条公式用反了不会报错，
+    只会把价格二次复权，除权日反而长出一根假缺口。
+    """
+    stored = adjust_mod.normalize_adjust(stored)
     segments = len(factors)
+    if segments == 0:
+        # 没有因子表时能给的只有落库口径本身，别的口径要靠因子反算，不能假装切得动
+        if stored == "qfq":
+            if mode == "qfq":
+                return df, "qfq", "本票为前复权落库（baostock），无独立除权因子：前复权即当前价格"
+            name = {"raw": "不复权", "hfq": "后复权"}[mode]
+            return df, "qfq", f"本票为前复权落库（baostock），且无除权因子，无法还原{name}：当前显示前复权"
+        return df, "raw", "无除权记录（三态相同，价格即不复权原始价）"
+    if stored == "qfq":
+        name = {"raw": "不复权", "qfq": "前复权", "hfq": "后复权"}[mode]
+        adjusted = adjust_mod.unapply_adjust(df, factors, mode)
+        return adjusted, mode, f"{name}：由库内前复权价按 {segments} 段除权因子反算（成交量/成交额不复权）"
     if mode == "raw":
         return df, "raw", f"不复权：原始价（本票有 {segments} 段除权因子，可切前/后复权）"
     name = {"qfq": "前复权", "hfq": "后复权"}[mode]
@@ -224,7 +263,7 @@ def snapshot_of(code: str, period: str, limit: int, *, adjust: str = "qfq",
     """
     df = _read_bars(code, period, limit)
     factors = pd.DataFrame() if meta_db is None else factors_for(meta_db, code)
-    df, effective, note = _apply_factors(df, factors, adjust)
+    df, effective, note = _apply_factors(df, factors, adjust, _stored_adjust(meta_db, code, period))
     last_ts = str(df["ts"].iloc[-1])
     key = (code, period, limit, effective, last_ts, _factor_fingerprint(factors))
     with _CACHE_LOCK:
@@ -241,6 +280,25 @@ def snapshot_of(code: str, period: str, limit: int, *, adjust: str = "qfq",
 def clear_cache() -> None:
     with _CACHE_LOCK:
         _CACHE.clear()
+
+
+def _change_payload(df: pd.DataFrame) -> dict[str, Any]:
+    """最新价与涨跌幅：**必须用同一个复权帧的相邻两根**算。
+
+    自选栏是「扫一眼」的地方，最容易出的错就是口径混用：不复权帧在除权日有一根
+    几十个点的缺口，直接拿来算涨跌幅就会报出一根不存在的跌停。
+    """
+    close = df["close"].astype("float64")
+    if len(close) < 2:
+        return {"prev_close": None, "change": None, "change_pct": None}
+    last, prev = float(close.iloc[-1]), float(close.iloc[-2])
+    if prev == 0:
+        return {"prev_close": None, "change": None, "change_pct": None}
+    return {
+        "prev_close": round(prev, 4),
+        "change": round(last - prev, 4),
+        "change_pct": round((last - prev) / prev * 100, 2),
+    }
 
 
 def _counts(snap: Snapshot) -> dict[str, int]:
@@ -308,7 +366,8 @@ def bars(request: Request, code: str, period: str = "day",
     mode = normalize_adjust_or_400(adjust)
     periods = parse_ma(ma)
     df = _read_bars(key, period, limit)
-    df, effective, note = _apply_factors(df, factors_for(cfg.data.meta_db, key), mode)
+    df, effective, note = _apply_factors(df, factors_for(cfg.data.meta_db, key), mode,
+                                       _stored_adjust(cfg.data.meta_db, key, period))
     return {
         "code": key, "period": period, "count": len(df), "bars": _bars_payload(df),
         "adjust": mode, "adjust_effective": effective, "adjust_note": note,
@@ -400,13 +459,16 @@ def watchlist_structure(request: Request, period: str = "day", limit: int = DEFA
     conn = meta.init(cfg.data.meta_db)
     try:
         rows = [dict(r) for r in meta.get_watchlist(conn)]
+        # 自选池只记代码（加自选时懒得输名字），名称从 universe 表兜底：
+        # 左侧栏里一排光秃秃的数字，看盘时根本认不出是哪只票。
+        names = {str(r["code"]): str(r["name"] or "") for r in meta.get_universe(conn)}
     finally:
         conn.close()
 
     items: list[dict[str, Any]] = []
     for row in rows:
         code = str(row["code"])
-        base = {"code": code, "name": row.get("name") or "", "period": period,
+        base = {"code": code, "name": row.get("name") or names.get(code, ""), "period": period,
                 "note": row.get("note") or "", "adjust": mode}
         if not store.exists(code, period):
             items.append({**base, "missing": True, "error": f"{period} 周期未同步"})
@@ -424,6 +486,9 @@ def watchlist_structure(request: Request, period: str = "day", limit: int = DEFA
             "adjust_effective": effective,
             "adjust_note": note,
             "as_of": snap.as_of,
+            "ts": str(df["ts"].iloc[-1]),
+            "close": round(float(df["close"].iloc[-1]), 4),
+            **_change_payload(df),
             "counts": _counts(snap),
             "pivots": [
                 {"zg": p.zg, "zd": p.zd, "level": p.level, "status": p.status.value,
