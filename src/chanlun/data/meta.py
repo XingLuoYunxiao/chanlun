@@ -8,6 +8,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+import pandas as pd
+
 from ..config import load_config
 
 SCHEMA = """
@@ -84,6 +86,14 @@ CREATE TABLE IF NOT EXISTS symbol_alias (
     market     TEXT,
     evidence   TEXT,
     created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS adjust_factor (
+    code   TEXT NOT NULL,
+    ts     TEXT NOT NULL,
+    k      REAL NOT NULL,
+    source TEXT,
+    PRIMARY KEY (code, ts)
 );
 """
 
@@ -291,3 +301,37 @@ def get_alias(conn: sqlite3.Connection, old_code: str) -> str | None:
 
 def all_aliases(conn: sqlite3.Connection) -> dict[str, str]:
     return {r["old_code"]: r["new_code"] for r in conn.execute("SELECT * FROM symbol_alias")}
+
+
+# ---------------- 除权因子阶梯 ----------------
+def save_adjust_factors(
+    conn: sqlite3.Connection,
+    code: str,
+    rows: Iterable[Sequence[Any]],
+    source: str = "baostock",
+) -> int:
+    """写除权因子阶梯（`(ts, k)` 逐段起始日）。
+
+    幂等：同一 `(code, ts)` 重复写入是更新而不是追加 —— 行情同步会反复跑，
+    重复导入若追加出重复段，因子阶梯就会在段边界上抖动。
+    """
+    data = [(code, str(ts), float(k), source) for ts, k in rows]
+    if not data:
+        return 0
+    conn.executemany(
+        """INSERT INTO adjust_factor (code, ts, k, source) VALUES (?, ?, ?, ?)
+           ON CONFLICT(code, ts) DO UPDATE SET k=excluded.k, source=excluded.source""",
+        data,
+    )
+    conn.commit()
+    return len(data)
+
+
+def get_adjust_factors(conn: sqlite3.Connection, code: str) -> pd.DataFrame:
+    """读某只票的因子阶梯，按日期升序；没有记录时返回**空表**（不是 None）。"""
+    cur = conn.execute("SELECT ts, k FROM adjust_factor WHERE code=? ORDER BY ts", (code,))
+    return pd.DataFrame(cur.fetchall(), columns=["ts", "k"])
+
+
+def all_adjust_codes(conn: sqlite3.Connection) -> list[str]:
+    return [r["code"] for r in conn.execute("SELECT DISTINCT code FROM adjust_factor ORDER BY code")]
