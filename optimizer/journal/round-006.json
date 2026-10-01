@@ -47,17 +47,17 @@
   "patch_sha256": "3f1068ce5c0f9d5f",
   "probe": "G3a",
   "round": 6,
-  "started_at": "2026-10-01T16:52:49+08:00",
+  "started_at": "2026-10-01T17:33:24+08:00",
   "status": "proposed",
   "tests": {
-    "after": "2 failed, 693 passed, 13 deselected, 1 warning in 15.21s",
-    "before": "696 passed, 12 deselected, 1 warning in 14.48s",
+    "after": "2 failed, 693 passed, 13 deselected, 1 warning in 14.74s",
+    "before": "696 passed, 12 deselected, 1 warning in 16.05s",
     "cmd": "pytest -q --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
     "failed_tests": [
       "tests/chan/test_signal.py::test_tentative_trigger_segment_yields_tentative_signal",
       "tests/scan/test_scanner.py::test_scan_real_engine_finds_pivot_and_signal_on_crafted_path"
     ],
-    "summary": "round-006-G3a.patch 单独 apply 进主干后跑同一套测试：主干基线「696 passed, 12 deselected, 1 warning in 14.48s」→ 打补丁后「2 failed, 693 passed, 13 deselected, 1 warning in 15.21s」，新增失败 2 个：tests/chan/test_signal.py::test_tentative_trigger_segment_yields_tentative_signal、tests/scan/test_scanner.py::test_scan_real_engine_finds_pivot_and_signal_on_crafted_path。这些用例钉的正是本提案要改的行为，所以采纳时必须连同判据一起改（改判据要引 theory 原文），不能只看 before/after 变好就落地。"
+    "summary": "round-006-G3a.patch 单独 apply 进主干后跑同一套测试：主干基线「696 passed, 12 deselected, 1 warning in 16.05s」→ 打补丁后「2 failed, 693 passed, 13 deselected, 1 warning in 14.74s」，新增失败 2 个：tests/chan/test_signal.py::test_tentative_trigger_segment_yields_tentative_signal、tests/scan/test_scanner.py::test_scan_real_engine_finds_pivot_and_signal_on_crafted_path。这些用例钉的正是本提案要改的行为，所以采纳时必须连同判据一起改（改判据要引 theory 原文），不能只看 before/after 变好就落地。"
   },
   "theory_id": "L20-THIRD-POINT-POSITION"
 }

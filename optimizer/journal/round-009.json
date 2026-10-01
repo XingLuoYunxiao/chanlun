@@ -23,8 +23,8 @@
   "started_at": "2026-10-01T10:47:32+08:00",
   "status": "adopted",
   "tests": {
-    "after": "696 passed, 12 deselected, 1 warning in 14.48s",
-    "before": "696 passed, 12 deselected, 1 warning in 14.48s",
+    "after": "696 passed, 12 deselected, 1 warning in 16.05s",
+    "before": "696 passed, 12 deselected, 1 warning in 16.05s",
     "cmd": "pytest -q",
     "summary": "已采纳：补丁已是主干的一部分，本工具不再重复 apply（git 会静默跳过），判据在常驻回归里"
   },

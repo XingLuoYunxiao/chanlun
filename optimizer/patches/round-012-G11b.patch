@@ -1,0 +1,37 @@
+# kind: theory
+# theory: L33-PIVOT-EXTENSION-LIMIT
+# quote: 例如，5分钟级别的中枢不断延伸，出现9段以上的1分钟次级别走势。站在30分钟级别的中枢角度，3个5分钟级别的走势重合就形成了，而9段以上的1分钟次级别走势，每3段构成一个5分钟的中枢，这样也就可以解释成这是一个30分钟的中枢。这种情况，只要对中枢延伸的数量进行限制，就可以消除多义性，一般来说，中枢的延伸不能超过5段，也就是一旦出现6段的延伸，加上形成中枢本身那三段，就构成更大级别的中枢了。
+# source: 缠中说禅《教你炒股票108课》第33课《走势的多义性》
+# finding: find_pivots 的延伸循环没有段数上限（实测最大 14 段，56 个中枢里 8 个超过 9 段）。第33课原文把收口数字直接写出来了，而且把「形成中枢本身那三段」与「延伸段」分开计数：延伸不超过 5 段，延伸一到 6 段（6+3=9）就构成更大级别的中枢。所以本级别中枢上限是 8 段，不是 9 段（与第 4 轮 G2a 的 9 段提案冲突，本轮按原文取 8）。
+# evidence: cd chanlun && PYTHONPATH=src ../.venv-chanlun/bin/python -m chanlun.optimizer.cli --root . --audit --patch optimizer/patches/round-012-G11b.patch  # pivot_max_segments 14->8, pivot_over_9 8->0, pivot_segment_total 300->297, pivots 56->61, trends_consolidation 6->11, signals 43->44, b1 0->2, b2 0->2, b3 26->24, s3 16->15
+diff --git a/src/chanlun/chan/pivot.py b/src/chanlun/chan/pivot.py
+--- a/src/chanlun/chan/pivot.py
++++ b/src/chanlun/chan/pivot.py
+@@ -47,8 +47,15 @@
+     "week": "month",
+ }
+ 
+ MIN_SEGMENTS = 3
++# 第 33 课《走势的多义性》原文：「一般来说，中枢的延伸不能超过5段，也就是一旦
++# 出现6段的延伸，加上形成中枢本身那三段，就构成更大级别的中枢了。」——形成中枢
++# 的 3 段与延伸段是分开计数的，所以**本级别**中枢的上限是 3+5=8 段；凑满 9 段
++# 时它已经是上一级别的中枢，不能再当同一个中枢继续延伸。
++# （第 29 课的 9 是「升级后的最小内容量」，不是本级别上限；round-004-G2a 取 9 是
++#   把这两个数当成了同一个数。）
++MAX_SEGMENTS = 8
+ 
+ 
+ def next_level(level: str) -> str:
+     """返回上一级别名。未知级别退化为 `"<level>+"`，不做静默猜测。"""
+@@ -128,9 +135,10 @@
+             continue
+ 
+         # 延伸：后续段只要仍与 [zd, zg] 重叠就并入（且不改变 zd/zg）
+         j = i + MIN_SEGMENTS
+-        while j < n and _overlaps(confirmed[j], zd, zg):
++        while (j < n and j - i < MAX_SEGMENTS
++               and _overlaps(confirmed[j], zd, zg)):
+             j += 1
+ 
+         group = confirmed[i:j]
+         back = back_of[j - 1]

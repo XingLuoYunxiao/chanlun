@@ -1,0 +1,38 @@
+# kind: theory
+# theory: L20-TREND-NO-OVERLAP,L17-TREND-DEF
+# quote: 而在趋势里，同级别的前后缠中说禅走势中枢是不能有任何重叠的，这包括任何围绕走势中枢产生的任何瞬间波动之间的重叠。
+# source: 缠中说禅《教你炒股票108课》第20课《缠中说禅走势中枢级别扩张及第三类买卖点》
+# finding: 趋势判据用的是中枢区间 [ZD,ZG] 的单调，第20课定理二用的是波动区间 [DD,GG]：上涨要求 后DD>前GG，下跌要求 后GG<前DD，原文明确「包括任何围绕走势中枢产生的任何瞬间波动之间的重叠」都不许有。窄判据把波动仍重叠的两个中枢也算成趋势。
+# evidence: cd chanlun && PYTHONPATH=src ../.venv-chanlun/bin/python optimizer/tools/measure_g11_trend_overlap.py  # 19/19 相邻确认中枢对：主干判趋势、第20课定理二判级别扩张；up 10->0, down 7->0, consolidation 6->40, signals 43->42, s1 1->0。另 19/19 对的中枢区间 [ZD,ZG] 本来就不重叠，说明主干缺的只是「波动区间 [DD,GG]」这一层
+diff --git a/src/chanlun/chan/trend.py b/src/chanlun/chan/trend.py
+--- a/src/chanlun/chan/trend.py
++++ b/src/chanlun/chan/trend.py
+@@ -48,12 +48,25 @@
+     confirmed_at: str | None = None
+ 
+ 
+ def _direction(a: Pivot, b: Pivot) -> int:
+-    """两个相邻中枢的走向：1 依次上升，-1 依次下降，0 不构成趋势。"""
+-    if b.zd > a.zd and b.zg > a.zg:
++    """两个相邻中枢的走向：1 依次上升，-1 依次下降，0 不构成趋势。
++
++    第 20 课「走势中枢中心定理二」把判据写在**波动区间** `[DD, GG]` 上，而不是
++    中枢区间 `[ZD, ZG]` 上：
++
++        后GG〈前DD等价于下跌及其延续；后DD〉前GG等价于上涨及其延续。
++
++    同课前文还强调「同级别的前后走势中枢是不能有任何重叠的，这包括任何围绕走势
++    中枢产生的任何**瞬间波动**之间的重叠」。`[DD, GG]` 正是围绕中枢产生的全部
++    波动区间（`GG=max(gn)`、`DD=min(dn)` 遍历中枢内所有 Z 走势段），它比
++    `[ZD, ZG]` 宽。只看 `[ZD, ZG]` 单调抬升/下移，会把「中枢区间已经分开、但波动
++    区间仍然重叠」的两个中枢也算成趋势；而按原文那属于「形成高级别的走势中枢」，
++    即同级别的一段盘整。
++    """
++    if b.dd > a.gg:
+         return 1
+-    if b.zd < a.zd and b.zg < a.zg:
++    if b.gg < a.dd:
+         return -1
+     return 0
+ 
+ 
