@@ -66,6 +66,18 @@ def _k_series(df: pd.DataFrame, factors: pd.DataFrame) -> pd.Series:
     return pd.Series(f["k"].to_numpy()[pos], index=df.index, dtype="float64")
 
 
+def _k0(factors: pd.DataFrame) -> float:
+    """因子表**首段**的系数 —— 后复权的锚点。
+
+    必须是因子表的首段，不是当前窗口首根的 `k`：后复权价是**日期**的属性，拿窗口首根
+    做锚点会让同一天在 1200 根和 400 根的图里显示两个不同的价格，拖动窗口整张图平移，
+    中枢的 ZG/ZD 也跟着跳。
+    """
+    f = factors[list(FACTOR_COLUMNS)].copy()
+    f["ts"] = f["ts"].astype(str)
+    return float(f.sort_values("ts", kind="stable")["k"].iloc[0])
+
+
 def apply_adjust(df: pd.DataFrame, factors: pd.DataFrame | None, mode: str) -> pd.DataFrame:
     """按口径返回价格视图。**不改原表**，调用方拿到的是一份新表。
 
@@ -77,7 +89,7 @@ def apply_adjust(df: pd.DataFrame, factors: pd.DataFrame | None, mode: str) -> p
     if factors is None or len(factors) == 0 or mode == "raw":
         return out
     k = _k_series(df, factors)
-    scale = k if mode == "qfq" else k / float(k.iloc[0])
+    scale = k if mode == "qfq" else k / _k0(factors)
     for col in PRICE_COLUMNS:
         out[col] = (out[col].astype("float64") * scale).round(PRICE_DECIMALS)
     return out
@@ -89,7 +101,7 @@ def unapply_adjust(df: pd.DataFrame, factors: pd.DataFrame | None, mode: str) ->
     库内是 `q_t = raw_t × k_t`，于是：
 
     - `raw_t = q_t / k_t`
-    - `hfq_t = raw_t × k_t / k_0 = q_t / k_0`
+    - `hfq_t = raw_t × k_t / k_0 = q_t / k_0`（`k_0` = 因子表首段，见 `_k0`）
     - `qfq_t` 原样返回
 
     与 `apply_adjust` 是**两条相反的公式**：同一个因子表、不同的落库口径，拿错一条
@@ -100,7 +112,7 @@ def unapply_adjust(df: pd.DataFrame, factors: pd.DataFrame | None, mode: str) ->
     if factors is None or len(factors) == 0 or mode == "qfq":
         return out
     k = _k_series(df, factors)
-    scale = 1.0 / k if mode == "raw" else 1.0 / float(k.iloc[0])
+    scale = 1.0 / k if mode == "raw" else 1.0 / _k0(factors)
     for col in PRICE_COLUMNS:
         out[col] = (out[col].astype("float64") * scale).round(PRICE_DECIMALS)
     return out

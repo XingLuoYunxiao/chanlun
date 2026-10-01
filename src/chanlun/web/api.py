@@ -164,6 +164,23 @@ def _stored_adjust(meta_db, code: str, period: str) -> str:
         return "raw"
 
 
+def _extrapolation_note(df: pd.DataFrame, factors: pd.DataFrame) -> str:
+    """窗口起点早于因子表首日时，如实说明前面那段是外推。
+
+    `adjust._k_series` 对首个因子段之前的 K 线沿用 `k[0]`（Task 20 的既定设计：没有观测时
+    保持最近一次已知值）。这在窗口落在因子区间内时是对的，但 `day` 一旦切到通达信整包，
+    原始价会回溯到 2003 年，而反推出来的因子只覆盖有前复权参照的那几年 —— 前面那段前复权价
+    是拿今天的因子外推的，比真值偏高。与其安静地画出来，不如把区间写清楚。
+    """
+    if len(factors) == 0 or len(df) == 0:
+        return ""
+    first = str(factors["ts"].min())[:10]
+    start = str(df["ts"].iloc[0])[:10]
+    if start >= first:
+        return ""
+    return f"（因子表自 {first} 起，{start} ~ {first} 为外推值）"
+
+
 def _apply_factors(df: pd.DataFrame, factors: pd.DataFrame, mode: str,
                    stored: str = "raw") -> tuple[pd.DataFrame, str, str]:
     """按因子表把行情切成三态之一，并如实报告**实际生效**的口径。
@@ -174,6 +191,7 @@ def _apply_factors(df: pd.DataFrame, factors: pd.DataFrame, mode: str,
     """
     stored = adjust_mod.normalize_adjust(stored)
     segments = len(factors)
+    extrapolated = _extrapolation_note(df, factors)
     if segments == 0:
         # 没有因子表时能给的只有落库口径本身，别的口径要靠因子反算，不能假装切得动
         if stored == "qfq":
@@ -185,12 +203,16 @@ def _apply_factors(df: pd.DataFrame, factors: pd.DataFrame, mode: str,
     if stored == "qfq":
         name = {"raw": "不复权", "qfq": "前复权", "hfq": "后复权"}[mode]
         adjusted = adjust_mod.unapply_adjust(df, factors, mode)
-        return adjusted, mode, f"{name}：由库内前复权价按 {segments} 段除权因子反算（成交量/成交额不复权）"
+        return adjusted, mode, (
+            f"{name}：由库内前复权价按 {segments} 段除权因子反算（成交量/成交额不复权）{extrapolated}"
+        )
     if mode == "raw":
         return df, "raw", f"不复权：原始价（本票有 {segments} 段除权因子，可切前/后复权）"
     name = {"qfq": "前复权", "hfq": "后复权"}[mode]
     adjusted = adjust_mod.apply_adjust(df, factors, mode)
-    return adjusted, mode, f"{name}：按 {segments} 段除权因子缩放开高低收（成交量/成交额不复权）"
+    return adjusted, mode, (
+        f"{name}：按 {segments} 段除权因子缩放开高低收（成交量/成交额不复权）{extrapolated}"
+    )
 
 
 def _factor_fingerprint(factors: pd.DataFrame) -> tuple:
@@ -280,6 +302,32 @@ def snapshot_of(code: str, period: str, limit: int, *, adjust: str = "qfq",
 def clear_cache() -> None:
     with _CACHE_LOCK:
         _CACHE.clear()
+
+
+def _rail_payload(code: str, period: str, limit: int, *, meta_db=None) -> dict[str, Any]:
+    """自选栏那一格：**不复权真实成交价** + **交易所口径涨跌幅**。
+
+    这一格回答的是「我的票现在多少钱」，所以价格必须是不复权成交价 —— 后复权价是拿因子
+    重算出来的分析序列（中信证券 25.86 会显示成 31.82），券商与同花顺在这一栏给的都不是它。
+    涨跌幅则要跟着交易所走：交易所用的是**除权参考价**做分母，等价于前复权帧的相邻两根；
+    拿不复权前收盘去除，每只票除权日都会凭空多出一根跌停。
+
+    代价是每行多读一次 parquet（不算缠论、不进 `_CACHE`），换来自选栏与券商对得上账。
+    """
+    stored_df = _read_bars(code, period, limit)
+    factors = pd.DataFrame() if meta_db is None else factors_for(meta_db, code)
+    stored = _stored_adjust(meta_db, code, period)
+    # 不复权落库时库里就是原始价，前复权落库时要除回去 —— 拿反了会二次复权。
+    # 注意反算用的是**该根 K 线当时**的因子：库里断更、因子表却已经走到下一段时，
+    # 库内价仍是旧的复权价，不能直接当成交价用。
+    if stored == "qfq":
+        raw = adjust_mod.unapply_adjust(stored_df, factors, "raw")
+    else:
+        raw = adjust_mod.apply_adjust(stored_df, factors, "raw")
+    qfq, _, _ = _apply_factors(stored_df, factors, "qfq", stored)
+    payload = _change_payload(qfq)
+    payload["close"] = round(float(raw["close"].iloc[-1]), 4)
+    return payload
 
 
 def _change_payload(df: pd.DataFrame) -> dict[str, Any]:
@@ -480,6 +528,11 @@ def watchlist_structure(request: Request, period: str = "day", limit: int = DEFA
             items.append({**base, "missing": True, "error": str(exc)})
             continue
         last = snap.segments[-1] if snap.segments else None
+        try:
+            rail = _rail_payload(code, period, limit, meta_db=cfg.data.meta_db)
+        except (DataSourceError, HTTPException, ValueError) as exc:
+            items.append({**base, "missing": True, "error": str(exc)})
+            continue
         items.append({
             **base,
             "missing": False,
@@ -487,8 +540,13 @@ def watchlist_structure(request: Request, period: str = "day", limit: int = DEFA
             "adjust_note": note,
             "as_of": snap.as_of,
             "ts": str(df["ts"].iloc[-1]),
+            # `close`/`change_pct` 是**图表口径**的价（和图上最后一根 K 线对得上）；
+            # `rail_*` 是自选栏那一格要显示的真实成交价与交易所口径涨跌幅。
             "close": round(float(df["close"].iloc[-1]), 4),
             **_change_payload(df),
+            "rail_close": rail["close"],
+            "rail_change": rail["change"],
+            "rail_change_pct": rail["change_pct"],
             "counts": _counts(snap),
             "pivots": [
                 {"zg": p.zg, "zd": p.zd, "level": p.level, "status": p.status.value,

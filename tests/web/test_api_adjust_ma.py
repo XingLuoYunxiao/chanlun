@@ -377,3 +377,132 @@ def test_watchlist_summary_reports_the_stored_mode(cfg):
                         params={"period": "day", "adjust": "hfq"}).json()["items"][0]
     assert it["adjust"] == "hfq" and it["adjust_effective"] == "qfq"
     assert it["close"] == pytest.approx(float(_bars()["close"].iloc[-1]))
+
+
+def test_note_flags_extrapolation_before_the_first_factor(cfg):
+    """窗口起点早于因子表首日时，前面那段是拿 `k[0]` 外推的，必须写在说明里。
+
+    `day` 切到通达信整包后原始价会回溯到 2003 年，而反推出来的因子只覆盖有前复权参照的
+    那几年 —— 外推段的前复权价偏高，安静地画出来就是把「算不出来」伪装成「算出来了」。
+    """
+    _set_stored(cfg, "2")
+    _add_factors(cfg, rows=(("2024-07-01", 1.0),))  # 首日晚于窗口首日 2024-01-02
+    with TestClient(create_app(cfg)) as client:
+        body = client.get("/api/bars", params={"code": "600000", "period": "day",
+                                               "adjust": "raw"}).json()
+    assert "外推" in body["adjust_note"]
+    assert "2024-07-01" in body["adjust_note"] and "2024-01-02" in body["adjust_note"]
+
+
+def test_note_has_no_extrapolation_when_window_starts_at_the_first_factor(cfg, client):
+    """因子覆盖整个窗口时不该出现外推提示 —— 提示一旦常驻，用户就不再看它了。"""
+    _add_factors(cfg)  # 首日 2024-01-02 == 窗口首日
+    body = client.get("/api/bars", params={"code": "600000", "period": "day",
+                                           "adjust": "qfq"}).json()
+    assert "外推" not in body["adjust_note"]
+
+
+def test_note_flags_extrapolation_on_the_raw_stored_path_too(cfg):
+    """不复权落库走的是另一条公式（`qfq = raw × k_t`），外推提示同样要出现。"""
+    _add_factors(cfg, rows=(("2024-07-01", 1.0),))
+    with TestClient(create_app(cfg)) as client:
+        body = client.get("/api/bars", params={"code": "600000", "period": "day",
+                                               "adjust": "hfq"}).json()
+    assert body["adjust_effective"] == "hfq" and "外推" in body["adjust_note"]
+
+
+# ---------------- 自选栏的现价：永远是不复权真实成交价 ----------------
+def test_rail_shows_the_real_price_even_in_hfq_mode(cfg):
+    """自选栏是「我的票现在多少钱」的地方，不能摆一个合成价。
+
+    后复权价是拿因子重算出来的分析序列（中信证券 25.86 会显示成 31.82），
+    券商、同花顺、东方财富在这一栏给的都是**不复权成交价**。用户拿它对账，
+    对不上就会以为数据错了。图表该用什么口径还用什么口径，两者互不干扰。
+    """
+    _watch(cfg)
+    _add_factors(cfg, rows=(("2024-01-02", 0.5),))
+    with TestClient(create_app(cfg)) as client:
+        hfq = client.get("/api/watchlist/structure",
+                         params={"period": "day", "adjust": "hfq"}).json()["items"][0]
+        qfq = client.get("/api/watchlist/structure",
+                         params={"period": "day", "adjust": "qfq"}).json()["items"][0]
+    # 库内是不复权价，因子 0.5 恒为一段：前复权帧被压到一半（6.93），后复权帧回到原价
+    raw_close = float(_bars()["close"].iloc[-1])
+    assert hfq["adjust_effective"] == "hfq" and qfq["adjust_effective"] == "qfq"
+    assert qfq["close"] == pytest.approx(raw_close / 2, abs=1e-3), "接口仍在按口径给图表价"
+    assert hfq["close"] == pytest.approx(raw_close, abs=1e-3)
+    # 自选栏那一格给的是真实成交价，两个口径下都是同一个数
+    assert qfq["rail_close"] == pytest.approx(raw_close, abs=1e-3)
+    assert hfq["rail_close"] == pytest.approx(raw_close, abs=1e-3)
+
+
+def test_rail_change_pct_is_the_exchange_convention_in_hfq_mode(cfg):
+    """除权日落在最新一根：涨跌幅要按**交易所口径**（除权参考价）算。
+
+    交易所公布的涨跌幅不是拿不复权前收盘除的，否则每只票除权日都会报一根假跌停。
+    自选栏跟着交易所走；后复权帧与前复权帧的涨跌幅本来就相同（因子在比值里约掉），
+    所以这条在后复权模式下也必须成立。
+    """
+    bars = _bars()
+    ex = str(bars["ts"].iloc[-1])
+    bars.loc[bars["ts"] < ex, ["open", "high", "low", "close"]] *= 2
+    store.write("600000", "day", bars)
+    _watch(cfg)
+    _add_factors(cfg, rows=((str(bars["ts"].iloc[0]), 0.5), (ex, 1.0)))
+    with TestClient(create_app(cfg)) as client:
+        hfq = client.get("/api/watchlist/structure",
+                         params={"period": "day", "adjust": "hfq"}).json()["items"][0]
+        qfq = client.get("/api/watchlist/structure",
+                         params={"period": "day", "adjust": "qfq"}).json()["items"][0]
+        raw = client.get("/api/watchlist/structure",
+                         params={"period": "day", "adjust": "raw"}).json()["items"][0]
+    assert hfq["change_pct"] == pytest.approx(qfq["change_pct"], abs=1e-6)
+    assert hfq["change_pct"] > -1.0, "除权日不该报出假跌停"
+    assert hfq["rail_close"] == pytest.approx(float(bars["close"].iloc[-1]), abs=1e-3)
+    # 自选栏那一格：三个口径下都是同一个（交易所）涨跌幅，不复权也不例外
+    assert hfq["rail_change_pct"] == pytest.approx(qfq["rail_change_pct"], abs=1e-6)
+    assert raw["rail_change_pct"] == pytest.approx(qfq["rail_change_pct"], abs=1e-6)
+    assert raw["rail_change_pct"] > -1.0, "不复权口径下自选栏也不该报假跌停"
+    assert raw["change_pct"] < -0.4, "而图表口径仍如实给出不复权的那根缺口"
+
+
+def test_rail_price_survives_a_qfq_stored_series(cfg):
+    """库内是**前复权**（一期 baostock 的真实情况）：自选栏仍要给不复权真实价。
+
+    这一条与上一条的区别是「落库口径」：上一条库内就是原始价，反算与否看不出差别；
+    这里库内是前复权，必须除回因子才是真实成交价。取错帧时后复权图表价是真实价的 2 倍，
+    自选栏就会跟着翻倍 —— 而它看起来只是个"价格"，没有任何迹象说明它是合成的。
+    """
+    _watch(cfg)
+    _set_stored(cfg, "2")  # 库内前复权
+    _add_factors(cfg, rows=(("2024-01-02", 0.5), ("2024-07-01", 1.0)))
+    with TestClient(create_app(cfg)) as client:
+        hfq = client.get("/api/watchlist/structure",
+                         params={"period": "day", "adjust": "hfq"}).json()["items"][0]
+        qfq = client.get("/api/watchlist/structure",
+                         params={"period": "day", "adjust": "qfq"}).json()["items"][0]
+    stored_close = float(_bars()["close"].iloc[-1])  # 库内前复权价，末段因子为 1
+    assert hfq["close"] == pytest.approx(stored_close * 2, abs=1e-2), "图表价按后复权翻倍"
+    assert qfq["close"] == pytest.approx(stored_close, abs=1e-3)
+    assert hfq["rail_close"] == pytest.approx(stored_close, abs=1e-3)
+    assert qfq["rail_close"] == pytest.approx(stored_close, abs=1e-3)
+
+
+def test_rail_price_when_the_store_is_staler_than_the_factor_table(cfg):
+    """库里最后一根落在**旧因子段**上（断更、或因子表已走到下一段）：仍要除回当时那个因子。
+
+    这一条把「不复权价」和「库内价」彻底分开：库内是前复权，末根 K 线所属因子段是 0.5，
+    所以真实成交价是库内价的 2 倍。若图省事直接把库内价当成交价，自选栏会少一半 ——
+    而它看起来仍然像个正常的价格。
+    """
+    _watch(cfg)
+    _set_stored(cfg, "2")
+    # 第二段起始日远在最后一根 K 线之后：末根所属段仍是 k=0.5
+    _add_factors(cfg, rows=(("2024-01-02", 0.5), ("2030-01-01", 1.0)))
+    with TestClient(create_app(cfg)) as client:
+        body = client.get("/api/watchlist/structure", params={"period": "day"}).json()
+    it = body["items"][0]
+    stored_close = float(_bars()["close"].iloc[-1])
+    assert it["adjust_effective"] == "qfq"
+    assert it["close"] == pytest.approx(stored_close, abs=1e-3), "图表口径仍是库内前复权价"
+    assert it["rail_close"] == pytest.approx(stored_close * 2, abs=1e-2), "自选栏是不复权真实价"

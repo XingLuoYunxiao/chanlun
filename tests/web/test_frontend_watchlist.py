@@ -161,3 +161,14 @@ def test_app_js_parses():
     proc = subprocess.run(["node", "--check", str(STATIC / "app.js")],
                           capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
+
+
+def test_watchlist_rail_renders_the_unadjusted_price():
+    """自选栏那一格用 `rail_close`（不复权成交价），不是图表口径的 `close`。
+
+    两个字段名字很像，前端一旦取错，用户在后复权模式下会看到中信证券报 31.82 ——
+    和券商里的 25.86 对不上，且没有任何提示。
+    """
+    js = _js()
+    assert "it.rail_close" in js
+    assert "it.rail_change_pct" in js

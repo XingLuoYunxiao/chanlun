@@ -7,6 +7,7 @@
     python -m chanlun scan [--period day] [--codes ...]
     python -m chanlun backtest [--period day] [--codes ...]
     python -m chanlun tdx [--download] [--src DIR] [--period day] [--dry-run]
+    python -m chanlun factors [--codes ... | --all] [--src DIR] [--dry-run]
     python -m chanlun serve [--host 127.0.0.1] [--port 8888]
 
 约定：
@@ -45,6 +46,7 @@ from .chan.macd import macd
 from .config import PROJECT_ROOT, Config, load_config
 from .data import markets, meta, quality, store
 from .data.baostock_source import fetch_bars, strip_bs_code, to_bs_code
+from .data.factors import MIN_OVERLAP
 from .data.universe import build_universe
 from .notify import build_notifier, notify_scan, notify_track
 from .scan import (
@@ -84,6 +86,8 @@ def main(argv: list[str] | None = None) -> int:
         return int(backtest_cli.run_command(args, cfg))
     if args.command == "tdx":
         return _cmd_tdx(args, cfg)
+    if args.command == "factors":
+        return _cmd_factors(args, cfg)
     if args.command == "serve":
         return _cmd_serve(args, cfg)
     _build_parser().print_help()
@@ -147,6 +151,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     _add_daily_parser(sub)
     _add_tdx_parser(sub)
+    _add_factors_parser(sub)
 
     # Task 14/15 的子命令由各自模块提供参数定义，父分发器只负责挂上去：
     # 参数长在谁身上，谁的 CLI 测试就覆盖得到，不会出现「父命令与子命令两套参数」。
@@ -219,6 +224,25 @@ def _add_tdx_parser(sub) -> argparse.ArgumentParser:
     )
     p.add_argument("--codes", default=None, help="逗号分隔代码，缺省为目录内全部")
     p.add_argument("--dry-run", action="store_true", help="只统计不落库")
+    return p
+
+
+def _add_factors_parser(sub) -> argparse.ArgumentParser:
+    """除权因子入库：从通达信原始价 + 库内前复权价反推因子阶梯。"""
+    p = sub.add_parser("factors", help="反推除权因子并入库（三态复权的前提）")
+    p.add_argument("--codes", default=None, help="逗号分隔代码，缺省为自选池")
+    p.add_argument("--all", action="store_true", help="走品种表全市场（5471 只，几分钟）")
+    p.add_argument(
+        "--source", default="infer", choices=("infer",),
+        help="因子来源；目前只有 infer（反推）。baostock query_adjust_factor 尚未实现",
+    )
+    p.add_argument(
+        "--src", default=str(PROJECT_ROOT / "data" / "tdx_raw"),
+        help="通达信 vipdoc 目录（原始价来源）",
+    )
+    p.add_argument("--period", default="day", help="反推所依据的行情周期，目前只有 day")
+    p.add_argument("--min-overlap", type=int, default=MIN_OVERLAP, help="两份数据最少重叠根数")
+    p.add_argument("--dry-run", action="store_true", help="只反推不落库")
     return p
 
 
@@ -424,6 +448,54 @@ def _cmd_tdx(args, cfg: Config) -> int:
     for code, err in stats.errors:
         print(f"  失败 {code}: {err}", file=sys.stderr)
     return 0
+
+
+def _cmd_factors(args, cfg: Config) -> int:
+    """反推除权因子。逐只失败不中断，最后按状态汇总 —— 全市场跑几分钟，得知道跳过了什么。"""
+    from .data import factors
+
+    if args.period != "day":
+        print(f"因子反推目前只支持日线：{args.period} 的前复权参照不在库里", file=sys.stderr)
+        return 2
+    if args.codes:
+        codes = _csv(args.codes)
+    elif args.all:
+        codes = [s.code for s in build_universe()]
+    else:
+        conn0 = meta.init()
+        try:
+            codes = tuple(r["code"] for r in meta.get_watchlist(conn0))
+        finally:
+            conn0.close()
+        if not codes:
+            print("自选池是空的：用 --codes 指定代码，或用 --all 跑全市场", file=sys.stderr)
+            return 2
+
+    conn = meta.init()
+    try:
+        results = factors.build_many(
+            conn, codes, tdx_root=args.src, period=args.period,
+            dry_run=args.dry_run, min_overlap=args.min_overlap,
+        )
+    finally:
+        conn.close()
+
+    counts = factors.summarize(results)
+    for status, n in counts.items():
+        print(f"  {status}: {n}")
+    written = [r for r in results if r.status in ("written", "dry_run")]
+    if written:
+        segs = sum(r.segments for r in written)
+        print(
+            f"因子反推({args.period}{'，dry-run' if args.dry_run else ''}): "
+            f"{len(written)}/{len(results)} 只有因子，共 {segs} 段"
+        )
+    else:
+        print("因子反推：没有一只票反推出因子", file=sys.stderr)
+    for res in results:
+        if res.status not in ("written", "dry_run"):
+            print(f"  {res.status} {res.code}: {res.note}", file=sys.stderr)
+    return 0 if written or args.dry_run else 1
 
 
 def _cmd_daily(args, cfg: Config) -> int:

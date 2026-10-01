@@ -230,3 +230,55 @@ def test_unapply_does_not_mutate_input():
     f = _factors(["2026-01-05", "2026-01-06"], [0.5, 1.0])
     adjust.unapply_adjust(df, f, "raw")
     assert list(df["close"]) == [7.0, 8.0, 9.0]
+
+
+# ---------------- 后复权锚点：必须是因子表首段，不是窗口首根 ----------------
+def test_hfq_anchor_is_the_first_factor_segment_not_the_window_start():
+    """后复权价是**日期**的属性，不该随看图窗口变化。
+
+    同一天在一张 1200 根和一张 400 根的图里必须显示同一个后复权价；否则左右拖动窗口
+    整张图的价位都会平移，中枢的 ZG/ZD 也跟着跳 —— 用户会以为自己看错了票。
+    锚点是因子表**首段**的 `k`（= 库里那份序列起点的因子），不是窗口首根的 `k`。
+    """
+    df = _frame([20.0, 10.0, 10.0, 10.0])
+    f = _factors(["2026-01-05", "2026-01-06"], [0.5, 1.0])
+    full = adjust.apply_adjust(df, f, "hfq")
+    # 首段 k=0.5 → hfq = raw × k_t ÷ 0.5；除权日之后 k_t=1 → 价格翻倍
+    assert list(full["close"]) == [20.0, 20.0, 20.0, 20.0]
+    window = adjust.apply_adjust(df.iloc[2:].reset_index(drop=True), f, "hfq")
+    assert list(window["close"]) == [20.0, 20.0]
+
+
+def test_unapply_hfq_anchor_is_the_first_factor_segment():
+    """前复权落库那条路径同理：`hfq = q_t ÷ k_0`，`k_0` 取因子表首段。"""
+    df = _frame([10.0, 10.0, 10.0, 10.0])
+    f = _factors(["2026-01-05", "2026-01-06"], [0.5, 1.0])
+    assert list(adjust.unapply_adjust(df, f, "hfq")["close"]) == [20.0, 20.0, 20.0, 20.0]
+    window = adjust.unapply_adjust(df.iloc[2:].reset_index(drop=True), f, "hfq")
+    assert list(window["close"]) == [20.0, 20.0]
+
+
+def test_hfq_of_a_bar_is_the_same_in_every_window():
+    """直接断言「同一天、两个窗口、同一个价」—— 上面两条是它的数值化写法。"""
+    closes = [20.0, 10.0, 10.0, 12.0, 12.0, 12.0]
+    df = _frame(closes)
+    f = _factors(["2026-01-05", "2026-01-07"], [0.5, 1.0])
+    full = adjust.apply_adjust(df, f, "hfq").set_index("ts")["close"]
+    tail = adjust.apply_adjust(df.iloc[3:].reset_index(drop=True), f, "hfq").set_index("ts")["close"]
+    for ts in tail.index:
+        assert tail[ts] == full[ts], f"{ts} 的后复权价随窗口变了"
+
+
+def test_hfq_anchor_survives_an_unsorted_factor_table():
+    """`_k0` 与 `_k_series` 必须对「谁是最早那段」给出同一个答案。
+
+    读库那条路带 `ORDER BY ts`，但 `apply_adjust` 是公开函数，手工构造/拼接出来的因子表
+    未必有序。`_k_series` 内部排了序，`_k0` 若只取 `iloc[0]`，同一张乱序表会算出
+    「k 序列对、锚点错」的后复权价 —— 这种半对的结果最难发现。
+    """
+    df = _frame([10.0, 10.0, 10.0])
+    f = _factors(["2026-01-07", "2026-01-05"], [1.0, 0.5])  # 故意乱序
+    # 不复权落库：hfq = raw × k_t ÷ 0.5 —— 除权前 10 元、除权日起翻倍
+    assert list(adjust.apply_adjust(df, f, "hfq")["close"]) == [10.0, 10.0, 20.0]
+    # 前复权落库：hfq = q_t ÷ 0.5 —— 整段 20 元
+    assert list(adjust.unapply_adjust(df, f, "hfq")["close"]) == [20.0, 20.0, 20.0]

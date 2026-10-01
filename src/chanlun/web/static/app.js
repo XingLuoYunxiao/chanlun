@@ -685,13 +685,17 @@
 
     const top = document.createElement("div");
     top.className = "watch-row-top";
-    top.append(span("watch-code", it.code), span("watch-price", it.missing ? "—" : f2(it.close)));
+    // 自选栏显示**不复权真实成交价**：后复权价是合成序列，摆在这里会被当成市价（和券商对不上账）
+    const price = it.rail_close != null ? it.rail_close : it.close;
+    top.append(span("watch-code", it.code), span("watch-price", it.missing ? "—" : f2(price)));
 
     const mid = document.createElement("div");
     mid.className = "watch-row-mid";
     const chg = span("watch-chg", "—");
-    if (!it.missing && it.change_pct != null) {
-      const v = Number(it.change_pct);
+    // 涨跌幅跟交易所口径（除权参考价做分母），与上面的真实成交价配套
+    const pct = it.rail_change_pct != null ? it.rail_change_pct : it.change_pct;
+    if (!it.missing && pct != null) {
+      const v = Number(pct);
       chg.textContent = `${v > 0 ? "+" : ""}${v.toFixed(2)}%`;
       // A股习惯：红涨绿跌（和K线同色），平盘用灰
       chg.classList.add(v > 0 ? "up" : v < 0 ? "down" : "flat");
