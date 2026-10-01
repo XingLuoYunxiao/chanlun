@@ -50,11 +50,10 @@
   "started_at": "2026-10-01T13:04:13+08:00",
   "status": "rejected",
   "tests": {
-    "after": "695 passed, 13 deselected, 1 warning in 15.97s",
-    "before": "696 passed, 12 deselected, 1 warning in 16.05s",
-    "cmd": "pytest -q --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
-    "failed_tests": [],
-    "summary": "round-003-G1c.patch 单独 apply 进主干后跑同一套测试：结果与主干基线逐项一致，无新增失败"
+    "after": "698 passed, 12 deselected, 1 warning in 14.12s",
+    "before": "698 passed, 12 deselected, 1 warning in 14.12s",
+    "cmd": "pytest -q",
+    "summary": "已证伪：本提案的前提被实测证伪，补丁只作证据留档；主干已往前走，本工具不再 apply 它"
   },
   "theory_id": "L20-THIRD-POINT-POSITION"
 }

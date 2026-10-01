@@ -1,7 +1,7 @@
 {
  "baseline": {
   "returncode": 0,
-  "summary": "696 passed, 12 deselected, 1 warning in 16.05s",
+  "summary": "698 passed, 12 deselected, 1 warning in 14.12s",
   "failed_tests": [],
   "cmd": "pytest -q",
   "ignored": []
@@ -14,42 +14,14 @@
    "skipped": "adopted"
   },
   "round-003-G1c.patch": {
-   "returncode": 0,
-   "summary": "695 passed, 13 deselected, 1 warning in 15.97s",
-   "failed_tests": [],
-   "cmd": "pytest -q --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
-   "ignored": [],
-   "touched": [
-    "src/chanlun/chan/signal.py"
-   ],
-   "changed_while_applied": [
-    "src/chanlun/chan/signal.py"
-   ],
-   "restored_after_revert": true,
-   "touched_sha256": {
-    "src/chanlun/chan/signal.py": "4af201d0ebc3fc27d10c3a32def8d1124cc27103e7b473ab226bbf1d7c5832fd"
-   }
+   "skipped": "retired"
   },
   "round-004-G2a.patch": {
-   "returncode": 0,
-   "summary": "695 passed, 13 deselected, 1 warning in 15.03s",
-   "failed_tests": [],
-   "cmd": "pytest -q --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
-   "ignored": [],
-   "touched": [
-    "src/chanlun/chan/pivot.py"
-   ],
-   "changed_while_applied": [
-    "src/chanlun/chan/pivot.py"
-   ],
-   "restored_after_revert": true,
-   "touched_sha256": {
-    "src/chanlun/chan/pivot.py": "fad25238a7518873fb42050ad5725adbd789073d154e9d2d132c63acffede252"
-   }
+   "skipped": "retired"
   },
   "round-005-G2b-candidate.patch": {
    "returncode": 1,
-   "summary": "1 failed, 694 passed, 13 deselected, 1 warning in 14.78s",
+   "summary": "1 failed, 696 passed, 13 deselected, 1 warning in 14.48s",
    "failed_tests": [
     "tests/chan/test_trend.py::test_two_separate_trends"
    ],
@@ -68,7 +40,7 @@
   },
   "round-006-G3a.patch": {
    "returncode": 1,
-   "summary": "2 failed, 693 passed, 13 deselected, 1 warning in 14.74s",
+   "summary": "2 failed, 695 passed, 13 deselected, 1 warning in 14.67s",
    "failed_tests": [
     "tests/chan/test_signal.py::test_tentative_trigger_segment_yields_tentative_signal",
     "tests/scan/test_scanner.py::test_scan_real_engine_finds_pivot_and_signal_on_crafted_path"
@@ -94,7 +66,7 @@
   },
   "round-011-G11a.patch": {
    "returncode": 1,
-   "summary": "10 failed, 685 passed, 13 deselected, 1 warning in 14.87s",
+   "summary": "10 failed, 687 passed, 13 deselected, 1 warning in 14.43s",
    "failed_tests": [
     "tests/chan/test_signal.py::test_first_buy_point_requires_shrinking_macd_area",
     "tests/chan/test_signal.py::test_first_sell_point_requires_new_high_and_shrinking_area",
@@ -121,25 +93,11 @@
    }
   },
   "round-012-G11b.patch": {
-   "returncode": 0,
-   "summary": "695 passed, 13 deselected, 1 warning in 14.76s",
-   "failed_tests": [],
-   "cmd": "pytest -q --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
-   "ignored": [],
-   "touched": [
-    "src/chanlun/chan/pivot.py"
-   ],
-   "changed_while_applied": [
-    "src/chanlun/chan/pivot.py"
-   ],
-   "restored_after_revert": true,
-   "touched_sha256": {
-    "src/chanlun/chan/pivot.py": "fad25238a7518873fb42050ad5725adbd789073d154e9d2d132c63acffede252"
-   }
+   "skipped": "adopted"
   },
   "round-013-G11c.patch": {
    "returncode": 1,
-   "summary": "4 failed, 691 passed, 13 deselected, 1 warning in 14.83s",
+   "summary": "4 failed, 693 passed, 13 deselected, 1 warning in 14.36s",
    "failed_tests": [
     "tests/chan/test_pivot.py::test_gg_dd_are_the_full_range",
     "tests/chan/test_pivot.py::test_tentative_tail_does_not_join_an_existing_pivot",
@@ -156,7 +114,7 @@
    ],
    "restored_after_revert": true,
    "touched_sha256": {
-    "src/chanlun/chan/pivot.py": "fad25238a7518873fb42050ad5725adbd789073d154e9d2d132c63acffede252"
+    "src/chanlun/chan/pivot.py": "f8fe2d6d1881af83de922c6e69215102e488663ca76835e63a1d8fea822da897"
    }
   },
   "round-014-G11d.patch": {
@@ -164,7 +122,7 @@
   },
   "round-015-G11e.patch": {
    "returncode": 0,
-   "summary": "695 passed, 13 deselected, 1 warning in 14.76s",
+   "summary": "697 passed, 13 deselected, 1 warning in 15.42s",
    "failed_tests": [],
    "cmd": "pytest -q --deselect=tests/optimizer/test_optimizer.py::test_real_patches_apply_and_revert_cleanly",
    "ignored": [],
