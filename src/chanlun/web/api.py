@@ -395,7 +395,7 @@ def snapshot_of(code: str, period: str, limit: int, *, adjust: str = "qfq",
     if snap is None:
         # `find_signals` 是裸函数时默认严格（`signal.py:171`），`partial` 才能把 `mode`
         # 带进去；引擎按**位置**传 `(bars, segments, pivots, self.level)`，`mode` 走关键字。
-        # `divergence_fn` 不接的话 `engine.py:189` 的判空不成立，
+        # `divergence_fn` 不接的话 `engine.py:188` 的判空不成立，
         # `Snapshot.divergences` 恒为 `()` —— 线上背驰列表会一直是空的。
         m = SignalMode(mode)
         snap = ChanEngine(
@@ -731,14 +731,24 @@ def watchlist_remove(request: Request, code: str) -> dict[str, Any]:
 
 @router.get("/api/watchlist/structure")
 def watchlist_structure(request: Request, period: str = "day", limit: int = DEFAULT_LIMIT,
-                        adjust: str = "qfq") -> dict[str, Any]:
+                        adjust: str = "qfq",
+                        mode: str = Query("strict", pattern="^(strict|loose)$")) -> dict[str, Any]:
     """自选池结构摘要：一次请求给全，字段足以做「结构跟踪表」。
 
     这里也接受 `adjust`：摘要里的中枢 ZG/ZD 是**价位**，口径与看盘页不一致的话，
     同一只票在自选栏卡片和图表上会显示两个不同的中枢区间。
+
+    也接受 `mode`（买卖点口径，与 `/api/structure` 同义）：自选栏每一行会打印
+    **最新一个买卖点**（`app.js:918-924`），不跟着主图切口径的话，同一只票两块界面
+    会互相矛盾 —— 图上有 `pb`，那一行既不高亮也不显示它。默认 `"strict"`，
+    不传 `mode` 的既有调用路径**逐字节不变**；非法值由 `Query(pattern=...)` 挡成 422。
+
+    **别把它和 `adjust`（复权口径）搞混**：函数体里那个复权值原先也叫 `mode`，
+    同名会互相覆盖（查询参数一进来就被复权值顶掉，`SignalMode("qfq")` 直接 500），
+    所以复权值改叫 `adj` —— 与 `/api/structure` 的写法一致。
     """
     cfg = _cfg(request)
-    mode = normalize_adjust_or_400(adjust)
+    adj = normalize_adjust_or_400(adjust)
     conn = meta.init(cfg.data.meta_db)
     try:
         rows = [dict(r) for r in meta.get_watchlist(conn)]
@@ -754,14 +764,15 @@ def watchlist_structure(request: Request, period: str = "day", limit: int = DEFA
     for row in rows:
         code = str(row["code"])
         base = {"code": code, "name": row.get("name") or names.get(code, ""), "period": period,
-                "note": row.get("note") or "", "adjust": mode}
+                "note": row.get("note") or "", "adjust": adj, "mode": mode}
         # 存在性判据用**落库周期**：周/月没有自己的 parquet，`store.exists(code, "week")`
         # 永远为假，整栏会被标成「未同步」—— 明明日线就在本地。
         if not store.exists(code, periods_mod.base_period(period)):
             items.append({**base, "missing": True, "error": f"{period} 周期未同步"})
             continue
         try:
-            view = snapshot_of(code, period, limit, adjust=mode, meta_db=cfg.data.meta_db)
+            view = snapshot_of(code, period, limit, adjust=adj, mode=mode,
+                               meta_db=cfg.data.meta_db)
         except (DataSourceError, HTTPException, ValueError) as exc:
             items.append({**base, "missing": True, "error": str(exc)})
             continue
@@ -803,7 +814,9 @@ def watchlist_structure(request: Request, period: str = "day", limit: int = DEFA
                 for s in snap.signals
             ],
         })
-    return {"period": period, "count": len(items), "items": items}
+    # 顶层也回显口径，与 `/api/structure` 的响应形状一致（那边 `mode` 也在顶层）：
+    # 这一栏的响应必须**自描述**，否则前端和测试都无法断言「这份数据是哪个口径的」。
+    return {"period": period, "mode": mode, "count": len(items), "items": items}
 
 
 # ---------------- 「同步这个周期」（Task 31） ----------------

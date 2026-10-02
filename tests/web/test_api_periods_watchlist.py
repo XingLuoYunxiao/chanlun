@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 
 from chanlun.config import load_config
 from chanlun.data import meta, store
+from chanlun.web.api import _CACHE, _CACHE_LOCK
 from chanlun.web.app import create_app
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -233,3 +234,79 @@ def test_watchlist_add_remove_roundtrip_still_works(client):
     assert client.get("/api/watchlist").json()["items"][-1]["code"] == "600000", "新加的票在末尾"
     assert client.delete("/api/watchlist?code=600000").status_code == 200
     assert "600000" not in [i["code"] for i in client.get("/api/watchlist").json()["items"]]
+
+
+# ---------------- 自选池结构摘要：mode 口径（Task 7b） ----------------
+def _clear_cache() -> None:
+    """显式清 `_CACHE`。
+
+    **本模块的本地 `client` fixture 遮蔽了 `tests/web/conftest.py` 里的同名 fixture**，
+    所以 conftest 那份清理**不会**作用到这里。缓存键含 `mode`，理论上不会串，
+    但显式清掉更省事。
+    """
+    with _CACHE_LOCK:
+        _CACHE.clear()
+
+
+def _watch_item(client, code: str, **params) -> dict:
+    """按 `code` 找自选池里的那一项。
+
+    **不许假设 `items[0]`**：默认池是 7 个指数，本模块的夹具只给其中 `sh.000001`
+    落了合成日线，其余全是 `missing: True`；顺序也由用户排过。
+    """
+    r = client.get("/api/watchlist/structure", params={"period": "day", **params})
+    assert r.status_code == 200, r.text
+    hit = [i for i in r.json()["items"] if i["code"] == code]
+    assert len(hit) == 1, f"{code} 在自选池里应恰好出现一次，实测 {len(hit)} 次"
+    return hit[0]
+
+
+def test_watchlist_structure_accepts_mode_and_loose_has_more_signals(client):
+    """自选栏那一行**会打印最新一个买卖点**（`app.js:918-924`），所以它必须和主图同口径。
+
+    Task 7 给 `/api/structure` 加了 `mode`，这里没加 ⇒ 自选栏恒按严格口径算：
+    非严格模式下主图上有一只 `pb`，那一行**既不高亮也不显示它**，显示的是严格口径下的
+    另一个信号（或者什么都没有）—— 同一只票两块界面互相矛盾，和用户报过的
+    「界面上只显示一个向下的线段」是同一类问题。
+    """
+    _clear_cache()
+    client.post("/api/watchlist", json={"code": "600000", "name": "浦发银行"})
+    strict = _watch_item(client, "600000", mode="strict")
+    loose = _watch_item(client, "600000", mode="loose")
+    assert len(loose["signals"]) > len(strict["signals"]), (
+        f"自选栏的 signals 必须按 mode 口径算：实测 strict={len(strict['signals'])} "
+        f"loose={len(loose['signals'])}（相等 ⇒ mode 没透传给 snapshot_of，恒按严格算）"
+    )
+    assert strict["mode"] == "strict" and loose["mode"] == "loose", (
+        "响应体必须自描述口径：前端与测试要靠它断言「这份数据是哪个口径的」，"
+        "否则将来再出同类问题时没有可查的证据"
+    )
+
+
+def test_watchlist_structure_strict_is_byte_identical_without_the_param(client):
+    """`?mode=strict` 与**完全不传** `mode` 的响应逐字节相同（默认口径不变）。
+
+    **这是护栏，不是证明**：BASE（未改 `api.py`）上它同样通过 —— 老代码根本没有
+    `mode` 参数，两次请求都走严格口径。它守的是**将来**：新参数一旦默认成 `None`
+    或 `loose`，现在只拼 `period`/`adjust` 的页面（`app.js:791`）拿到的口径就悄悄换了。
+    """
+    _clear_cache()
+    client.post("/api/watchlist", json={"code": "600000", "name": "浦发银行"})
+    default = client.get("/api/watchlist/structure", params={"period": "day"})
+    explicit = client.get("/api/watchlist/structure", params={"period": "day", "mode": "strict"})
+    assert default.status_code == 200, default.text
+    assert explicit.status_code == 200, explicit.text
+    assert explicit.content == default.content, (
+        "带 ?mode=strict 与不传 mode 的响应必须逐字节相同，否则默认口径被悄悄改了"
+    )
+
+
+def test_watchlist_structure_invalid_mode_is_422(client):
+    """非法口径必须 **422**（FastAPI 的 `Query(pattern=...)`），不是 400、更不是 500。
+
+    签名若写成裸 `str`：`mode=wild` 会被**静默忽略**（200），或者一路走到
+    `SignalMode("wild")` 抛 `ValueError`（500）—— 两种都不是 422。
+    """
+    _clear_cache()
+    r = client.get("/api/watchlist/structure", params={"period": "day", "mode": "wild"})
+    assert r.status_code == 422, f"非法 mode 必须 422，实测 {r.status_code}: {r.text[:200]}"

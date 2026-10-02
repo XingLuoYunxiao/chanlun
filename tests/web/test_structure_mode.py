@@ -2,7 +2,7 @@
 
 三件事必须钉住，否则「严格 / 非严格」这个开关会**静默变成假功能**：
 
-1. **缓存键必须含 `mode`**（`api.py:381`）。`_CACHE` 的键原本是
+1. **缓存键必须含 `mode`**（`api.py:392`）。`_CACHE` 的键原本是
    `(code, period, effective, last_ts, fingerprint)` —— 用户先看严格模式、再切非严格，
    键完全相同 ⇒ 直接命中严格模式的旧快照 ⇒ 图上什么都没变。**不报错、不崩溃，
    只是按钮无效**，用户会以为功能没做。`test_cache_key_includes_mode` 就是那条会红的线。
@@ -11,7 +11,7 @@
    让 `mode is SignalMode.LOOSE` 对字符串恒为 `False`。这个 bug 本仓库刚修过
    （`signal.py:185`）。只测「能解析参数」「不报错」是**无价值**的。
 3. **背驰必须真的出得来，且趋势背驰与盘整背驰可区分**。改动前 `api.py:385` 没接
-   `divergence_fn` ⇒ `engine.py:189` 的判空不成立 ⇒ `Snapshot.divergences` **恒为 `()`**，
+   `divergence_fn` ⇒ `engine.py:188` 的判空不成立 ⇒ `Snapshot.divergences` **恒为 `()`**，
    线上背驰列表一直是空的。`kind` 是 `"trend"` / `"consolidation"`，人读的中文名只有
    `DivergenceKind.name_cn`（`divergence.py:64`）**一处**实现，payload 里的 `kind_cn`
    必须与它一致 —— 第 015 / 060 课要求盘整背驰不许简写成「背驰」。
@@ -19,8 +19,7 @@
 夹具（`tests/chan/fixtures/bars.parquet` 的 `sh.600000`）是 **1212 根**的窗口，
 实测 `strict` 1 个买卖点、`loose` 9 个、背驰两种口径都是 5 个（**全是盘整背驰**）；
 真实数据里 `sh.600000` 全史 6 个背驰也**全是盘整背驰**。趋势背驰要稀得多 ——
-有日线数据的 5439 只票里只有 230 只有、且多数只有 1 个 —— 所以夹具端到端凑不出
-`TREND` 那一支：`kind_cn` 对两种 `kind` 的映射用
+夹具里**一个都没有** —— 所以夹具端到端凑不出 `TREND` 那一支：`kind_cn` 对两种 `kind` 的映射用
 `test_divergence_kind_name_cn_pins_both_members` **直接构造**覆盖，**不 skip**。
 """
 
@@ -135,7 +134,7 @@ def test_divergences_are_present_and_kind_cn_matches_kind(client):
 def test_divergence_kind_name_cn_pins_both_members():
     """直接构造两种 `DivergenceKind`，钉住中文名的**唯一实现**（`divergence.py:64`）。
 
-    真实数据上趋势背驰很稀（5439 只票里 230 只有，夹具窗口里**一个都没有**），
+    真实数据上趋势背驰很稀（夹具窗口里**一个都没有**），
     所以这条映射不可能靠夹具端到端凑出来 —— 也**不许 `pytest.skip` 掉**：
     第 15 课「没有趋势，没有背驰」与第 37 课「最多就是盘整背驰」把两者分了界，
     盘整背驰单独命名、不许简写成「背驰」，这条措辞约束只能这样守。
