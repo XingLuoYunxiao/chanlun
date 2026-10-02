@@ -90,7 +90,7 @@ class Divergence:
     in_pivot: bool
     pivot_idx: int | None = None
     #: 人读的说明文案。**与 `signal.py::Signal.reason` 有意不同**：这里不带
-    #: 极值价格（`signal.py:238-239` 的 `创{where} {price:.3f}`），因为
+    #: 极值价格（`signal.py` 的 `_first_kind` 里那条 `创{where} {price:.3f}` 文案），因为
     #: `Divergence.price` 已经单独带了那个价，且没有任何代码比较这两串文本；
     #: 两者的**判据**仍逐条相同（见 `_trend` docstring），差的只是文案。
     reason: str = ""
