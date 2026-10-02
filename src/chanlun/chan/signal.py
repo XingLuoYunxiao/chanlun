@@ -4,7 +4,9 @@
 --------------------
 - **第一类买点**：下跌趋势中出现**背驰**，即趋势的最后一个中枢之后再创新低，
   但这一波下跌的力度（MACD 面积）比前一波同向走势小。第 24 课把「趋势背驰」
-  与「盘整背驰」分开，本实现只做**趋势背驰**（至少两个中枢依次下降）。
+  与「盘整背驰」分开，本实现的第一类买卖点只做**趋势背驰**（至少两个中枢依次
+  下降）；盘整背驰另设 `pb`/`ps` —— 第 60 课：
+  「严格来说，盘整背驰无所谓第一类买点，只是这样来类比」。
 - **第二类买点**：第一类买点之后，次级别回抽**不破**第一类买点的低点。
 - **第三类买点**：向上**离开中枢**后，次级别回抽**不回到中枢区间**（低点 > ZG）。
   卖点全部对称。「离开」是**位置**：把价格带出区间的那一段是中枢组的最后一段
@@ -17,7 +19,9 @@
 - 所有力度比较只用 MACD（通达信口径，见 `macd.py`），不做「看起来像」的近似。
 
 已知的进一步细化空间（留给优化师按原文重新推导）：
-1. 第 24 课的**盘整背驰**（一个中枢前后两段比较）没有实现；
+1. 第 39 课口径的**盘整背驰**（`divergence.py`，同向的 `Ai` 与 `Ai+2` 比力度）
+   只在非严格模式（`SignalMode.LOOSE`）下产出 `pb`/`ps`；严格模式不产出
+   （D-32 / D-33）。第 24 课的「一个中枢前后两段」口径仍未单独实现；
 2. 第二类买卖点原文要求「次级别回抽」，本实现用**本级别下一段**近似，
    严格做法是下钻到次级别（30 分钟）去看回抽内部结构；
 3. 第 27、28 课讲的第一类买卖点区间套定位（多级别联立）没有实现。
@@ -27,15 +31,43 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Sequence
+from typing import Any, Sequence
 
 import pandas as pd
 
+from .divergence import DivergenceKind, find_divergences
 from .macd import hist_area, macd
 from .pivot import Pivot
 from .segment import Segment
 from .trend import TrendType, classify_trends
 from .types import Status
+
+
+class SignalMode(str, Enum):
+    """买卖点口径。
+
+    **只影响买卖点与背驰标注**，不影响笔 / 线段 / 中枢的划分（D-32）。
+    禅师对划分没有「宽松版」（第 67/71/78/79 课），对判读则有分层 ——
+    第 60 课：「站在最严格意义上」……
+    同课：「当然，这是按最严格的，并没有太大操作意义的分析。」
+    """
+
+    STRICT = "strict"
+    LOOSE = "loose"
+
+    @property
+    def name_cn(self) -> str:
+        return "严格" if self is SignalMode.STRICT else "非严格"
+
+
+#: 第三类买卖点的回试容忍度，取中枢高度 `(ZG - ZD)` 的比例。
+#:
+#: **工程口径，无原文依据。** 第 20 课「其低点不跌破ZG」、第 32 课「不回到中枢里」、
+#: 第 24 课「并不重新回到前面的中枢里」、第 33 课「不重新回到中枢里」——
+#: 四课一致且严格，没有任何容忍度措辞。
+#: 见 `optimizer/theory/L20-THIRD-TOLERANCE.md` 与 ARCHITECTURE.md D-35。
+#: 只在 `SignalMode.LOOSE` 下生效。
+THIRD_TOL = 0.1
 
 
 class SignalKind(str, Enum):
@@ -47,13 +79,22 @@ class SignalKind(str, Enum):
     S1 = "s1"
     S2 = "s2"
     S3 = "s3"
+    #: 盘整背驰买点。第 60 课：「严格来说，盘整背驰无所谓第一类买点，只是这样来类比」
+    #: ⇒ 独立类型，不得并入 b1（第 60 课说的是「无所谓第一类买点」，见 D-33）。
+    PB = "pb"
+    #: 盘整背驰卖点。
+    PS = "ps"
 
     @property
     def is_buy(self) -> bool:
-        return self.value.startswith("b")
+        return self.value in ("b1", "b2", "b3", "pb")
 
     @property
     def name_cn(self) -> str:
+        if self is SignalKind.PB:
+            return "盘整背驰买点（类第二类）"
+        if self is SignalKind.PS:
+            return "盘整背驰卖点（类第二类）"
         n = {"1": "一", "2": "二", "3": "三"}[self.value[1]]
         return f"第{n}类买点" if self.is_buy else f"第{n}类卖点"
 
@@ -125,27 +166,37 @@ def find_signals(
     pivots: Sequence[Pivot],
     level: str = "day",
     macd_df: pd.DataFrame | None = None,
+    mode: SignalMode = SignalMode.STRICT,
 ) -> list[Signal]:
-    """按结构 + 力度找出全部三类买卖点，按时间排序后统一编号。
+    """按结构 + 力度找出全部买卖点，按时间排序后统一编号。
 
     `segments` 必须与传给 `find_pivots` 的是**同一个列表**：`Pivot.end_idx`
     是那个列表的下标，少一段都会让离开段/回试段整体错位。
+
+    `mode` 只放宽买卖点判据，不改结构划分（D-32）。严格模式的结果与不传
+    `mode` 时逐项相同。
     """
     segs = list(segments)
     if macd_df is None and bars is not None and len(bars) > 0:
         macd_df = macd(bars["close"])
 
     out: list[Signal] = []
-    out.extend(_third_kind(segs, pivots, level))
+    out.extend(_third_kind(segs, pivots, level, mode))
     out.extend(_first_kind(segs, pivots, level, macd_df))
-    out.extend(_second_kind(out, segs, level))
+    divs: tuple[Any, ...] = ()
+    if mode is SignalMode.LOOSE:
+        # 引擎会另算一份给 `Snapshot.divergences` 用；这里自己算是为了让
+        # `find_signals` 保持可独立调用（测试、扫描器都不经过引擎）。
+        divs = find_divergences(bars, segs, pivots, level, macd_df)
+        out.extend(_consolidation_kind(divs, segs, level))
+    out.extend(_second_kind(out, segs, level, mode, divs))
 
     out.sort(key=lambda s: (s.ts, s.kind.value))
     return [replace(s, idx=i) for i, s in enumerate(out)]
 
 
-def _third_kind(segs: list[Segment], pivots: Sequence[Pivot],
-                level: str) -> list[Signal]:
+def _third_kind(segs: list[Segment], pivots: Sequence[Pivot], level: str,
+                mode: SignalMode = SignalMode.STRICT) -> list[Signal]:
     """第三类买卖点：离开中枢后回抽不回中枢（第 20 课，判据是**位置**）。
 
     第 20 课原文：「一个次级别走势类型向上离开缠中说禅走势中枢，然后以一个
@@ -170,17 +221,22 @@ def _third_kind(segs: list[Segment], pivots: Sequence[Pivot],
         leave, back = segs[leave_i], segs[back_i]
         if _dead(leave) or _dead(back):
             continue
+        # 容忍度：允许回试段小幅回到中枢内。**工程口径，无原文依据**（D-35）。
+        # 严格模式 `tol = 0.0`，`p.zg - 0.0` 与原判据逐字节等价。
+        tol = THIRD_TOL * (p.zg - p.zd) if mode is SignalMode.LOOSE else 0.0
         if leave.direction == 1 and leave.high > p.zg:
-            if back.direction == -1 and back.low > p.zg:
+            if back.direction == -1 and back.low > p.zg - tol:
                 out.append(_sig(
                     SignalKind.B3, back, level, p.idx,
-                    f"向上离开中枢{p.idx}(ZG={p.zg:.3f})后回抽低点 {back.low:.3f} 不回中枢",
+                    f"向上离开中枢{p.idx}(ZG={p.zg:.3f})后回抽低点 {back.low:.3f} 不回中枢"
+                    + (f"（非严格：回试容忍 {tol:.4f}）" if tol else ""),
                 ))
         elif leave.direction == -1 and leave.low < p.zd:
-            if back.direction == 1 and back.high < p.zd:
+            if back.direction == 1 and back.high < p.zd + tol:
                 out.append(_sig(
                     SignalKind.S3, back, level, p.idx,
-                    f"向下离开中枢{p.idx}(ZD={p.zd:.3f})后回抽高点 {back.high:.3f} 不回中枢",
+                    f"向下离开中枢{p.idx}(ZD={p.zd:.3f})后回抽高点 {back.high:.3f} 不回中枢"
+                    + (f"（非严格：回试容忍 {tol:.4f}）" if tol else ""),
                 ))
     return out
 
@@ -241,8 +297,33 @@ def _first_kind(segs: list[Segment], pivots: Sequence[Pivot], level: str,
     return out
 
 
-def _second_kind(existing: list[Signal], segs: list[Segment],
-                 level: str) -> list[Signal]:
+def _consolidation_kind(divs: Sequence[Any], segs: list[Segment],
+                        level: str) -> list[Signal]:
+    """盘整背驰买卖点（第 39 课）。
+
+    第 60 课硬约束：「严格来说，盘整背驰无所谓第一类买点，只是这样来类比」
+    ⇒ 独立类型 `pb`/`ps`，绝不并入 `b1`/`s1`。
+
+    第 39 课的判据是「只理会一点，就是Ai与Ai+2之间是否盘整背驰」——盘整背驰
+    不需要先有趋势，所以它是**独立入口**，不是第一类买卖点的放宽（第 15 课
+    「在盘整中是无所谓“背驰”的」：不带定语的「背驰」专指趋势背驰）。
+    """
+    out: list[Signal] = []
+    for d in divs:
+        if d.kind is not DivergenceKind.CONSOLIDATION:
+            continue
+        if not (0 <= d.seg_idx < len(segs)):
+            continue
+        kind = SignalKind.PB if d.direction == -1 else SignalKind.PS
+        out.append(_sig(kind, segs[d.seg_idx], level, d.pivot_idx,
+                        f"盘整背驰：{d.ts} MACD 面积 {d.area_now:.4f} < "
+                        f"同向前段 {d.area_prev:.4f}"))
+    return out
+
+
+def _second_kind(existing: list[Signal], segs: list[Segment], level: str,
+                 mode: SignalMode = SignalMode.STRICT,
+                 divs: Sequence[Any] = ()) -> list[Signal]:
     """第二类买卖点：第一类买卖点之后的次级别回抽不破前极值。"""
     out: list[Signal] = []
     for first in existing:
@@ -265,6 +346,30 @@ def _second_kind(existing: list[Signal], segs: list[Segment],
                 out.append(_sig(
                     SignalKind.S2, back, level, first.pivot_idx,
                     f"第一类卖点 {first.ts} 后回抽高点 {back.high:.3f} 不破 {first.price:.3f}",
+                ))
+    if mode is SignalMode.LOOSE:
+        # 第 27 课《盘整背驰与历史性底部》：
+        # 「类似的，在大级别里，如果不出现新低，但可以构成类似第二类买点的买点」
+        # ⇒ 盘整背驰可以**不经过第一类**直接给出类第二类买点。这是原文自己的
+        # 第二条入口，不是对第 101 课定义的重写。
+        for d in divs:
+            if d.kind is not DivergenceKind.CONSOLIDATION:
+                continue
+            k = d.seg_idx
+            if k + 2 >= len(segs):
+                continue
+            bounce, back = segs[k + 1], segs[k + 2]
+            if (d.direction == -1 and bounce.direction == 1
+                    and back.direction == -1 and back.low > d.price):
+                out.append(_sig(
+                    SignalKind.B2, back, level, d.pivot_idx,
+                    f"盘整背驰 {d.ts} 后回抽低点 {back.low:.3f} 不破 {d.price:.3f}",
+                ))
+            elif (d.direction == 1 and bounce.direction == -1
+                    and back.direction == 1 and back.high < d.price):
+                out.append(_sig(
+                    SignalKind.S2, back, level, d.pivot_idx,
+                    f"盘整背驰 {d.ts} 后回抽高点 {back.high:.3f} 不破 {d.price:.3f}",
                 ))
     return out
 
