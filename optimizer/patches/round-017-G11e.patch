@@ -1,0 +1,87 @@
+# kind: theory
+# status: adopted
+# adopted_at: 2026-10-01
+# adopted_note: |
+#   本补丁是**落地后的存档**，不是提案：修复已在主干里（`src/chanlun/chan/macd.py::hist_area`），
+#   所以 `git apply` 在主干上必然失败，这是设计如此（tests/optimizer 的
+#   test_real_patches_apply_and_revert_cleanly 会跳过 status: adopted 的补丁）。
+#   审计出处：docs/evidence/2026-10-01-chanlun-strictness-audit.md §2.9「背驰（MACD 面积）」。
+#   落地内容：`hist_area(macd_df, i0, i1, color)` 的 `color` 由「有默认值的可选参数」
+#   变成**必填**，并在函数体开头拒绝非 ±1 的取值；求和从 `np.sum(np.abs(hist[...]))`
+#   改为 `np.sum(np.clip(hist[...] * color, 0.0, None))`，即**分色**累加。
+#   调用点同步：`chan/signal.py::_area` 传 `seg.direction`、
+#   `scan/scanner.py::segment_divergence` 两处分别传 `prev.direction` / `seg.direction`。
+# theory: L24-MACD-AREA-ABC
+# quote: 而C段的走势类型完成时对应的MACD柱子面积（向上的看红柱子，向下看绿柱子）比A段对应的面积要小，这时候就构成标准的背弛。
+# source: 缠中说禅《教你炒股票108课》第24课《MACD对背弛的辅助判断》
+# finding: |
+#   `hist_area` 旧实现是 `np.sum(np.abs(hist[i0:i1+1]))`，把区间内的红柱和绿柱
+#   **一起相加**。第 24 课原文要求「向上的看红柱子，向下看绿柱子」，即面积必须
+#   **分色**：向上段只累加红柱、向下段只累加绿柱。混色求和把反方向的力度也算进了
+#   同向段的力度里，口径错了。
+# evidence: |
+#   尺子：4 只票日线夹具（tests/chan/fixtures/bars.parquet，各 1212 根），
+#   逐段对比 abs 口径与分色口径。
+#   口径（重要，复现时不要弄错；2026-10-01 补记）：
+#     * 段序号 = `snap.segments` 的**全段**下标，**含前导/尾部 TENTATIVE 段**，
+#       不是「确认段」下标。例：sh.601088 全段 9 根（末尾 1 根 TENTATIVE）、
+#       确认段 8 根，同一根段两种数法相差 1。
+#     * 力度比值 = 本段面积 / **往前最近一根同向段**的面积（同向比较），
+#       分子分母同口径。比值 < 1 即「后一段更弱」= 背驰。
+#   -- 原始面积（43 个线段）--
+#   43/43 全部改变。混色恒 >= 分色，因为一个线段内部几乎必然同时出现红柱和绿柱。
+#   例：sh.601088 seg8 dir=-1 旧(abs) 100.8229 → 新(分色) 49.7062
+#       sz.300750 seg8 dir=-1 旧(abs) 1636.3418 → 新(分色) 868.9087
+#       sh.600000 seg11 dir=+1 旧(abs) 16.0635 → 新(分色) 8.1096
+#   -- 力度比值（后一同向段 / 前一同向段，35 个可比对）--
+#   35/35 全部改变。
+#   -- 背驰/不背驰 分类翻转：5 个 --
+#   sh.600000 seg1 背驰(0.8828) → 不背驰(1.9681)
+#   sh.601088 seg6 不背驰(1.0039) → 背驰(0.4474)
+#   sz.300059 seg7 背驰(0.8775) → 不背驰(1.4372)
+#   sz.300750 seg5 背驰(0.9899) → 不背驰(1.2308)
+#   sz.300750 seg7 不背驰(1.1731) → 背驰(0.7508)
+#   -- 但信号集合没变：4 只票各 1/1/2/2 个信号，与改前一致 --
+#   24 只票的审计样本上 optimizer/tools/audit_chanlun_strictness.py 的
+#   `b1_area_flip_if_sign_only` = 0（用混色口径重算也不会让任何一个 B1/S1 翻转）。
+#   这说明本次是**口径归正**：本样本里没有信号因此改变，但力度数字全部换了，
+#   任何以力度阈值做判定的下游都会受影响。
+# note: |
+#   `color` 是必填参数，不是可选参数 —— 保留默认值就等于给「悄悄退回混色求和」
+#   留了后门，而混色求和的错法是审计确认过的。
+#   未动的地方：`dif_high` / `dif_low` / `dif_extreme` / `is_divergence` 仍是
+#   第 25 课「黄白线回拉0轴」判据的**半成品**（定义齐全但 `src/` 里无人调用），
+#   那是审计 §2.10 的未实现项，不在本补丁范围内。
+--- a/src/chanlun/chan/macd.py
++++ b/src/chanlun/chan/macd.py
+@@ -177,21 +177,27 @@
+ 
+ 
+-def hist_area(macd_df: Any, i0: int, i1: int, color: int = 1) -> float:
+-    """闭区间 `[i0, i1]`（**含两端**）内 MACD 柱的面积（绝对值求和）。
++def hist_area(macd_df: Any, i0: int, i1: int, color: int) -> float:
++    """闭区间 `[i0, i1]`（**含两端**）内**同色** MACD 柱的面积。
+ 
+-    第 24 课要求比较同向的两段走势类型，但旧实现把区间内的红柱和绿柱
+-    **一起相加**（`np.abs`），与原文「向上的看红柱子，向下看绿柱子」相悖。
+-    索引按位置解释，越界或 `i0 > i1` 抛 `ValueError`。
++    第 24 课原文：「这里的面积，指的是MACD柱子所围成的面积……**向上的看红柱子，
++    向下看绿柱子**」。即向上段只累加红柱（`hist > 0`）、向下段只累加绿柱
++    （`hist < 0`）；而且第 24 课要求两个被比较的走势类型**同向**，混色求和会把
++    反方向的力度也算进来，口径就错了。
++
++    `color=+1` 只算红柱（向上段）、`color=-1` 只算绿柱（向下段），返回**绝对值
++    面积**（恒 >= 0）；窗口内没有同色柱时返回 0.0（该区间没有同向力度）。
++    索引按位置解释，越界或 `i0 > i1` 抛 `ValueError`；`color` 只能是 1 或 -1。
++
++    审计记录（`docs/evidence/2026-10-01-chanlun-strictness-audit.md` §2.9）：
++    旧实现是 `sum(abs(hist))`，把 |红| + |绿| **一起相加**，与本课原文相悖，
++    属审计确认的口径偏离。`color` 是**必填**参数，不允许再退回混色求和。
+     """
++    if color not in (1, -1):
++        raise ValueError(f"color 只能是 1（红柱/向上）或 -1（绿柱/向下），收到 {color!r}")
+     hist = _column_values(macd_df, "hist")
+     i0, i1 = _check_range(hist.size, i0, i1)
+-    return float(np.sum(np.abs(hist[i0 : i1 + 1]), dtype=float))
++    signed = hist[i0 : i1 + 1] * color
++    return float(np.sum(np.clip(signed, 0.0, None), dtype=float))

@@ -69,11 +69,17 @@ def _zigzag(points, last_tentative=False):
     return segs
 
 
-def _macd(n: int, areas: dict[int, float] | None = None):
-    """构造指定区间 |hist| 之和的假 MACD：每个 src 位置给单位 hist。"""
+def _macd(n: int, areas: dict[int, float] | None = None, color: int = 1):
+    """构造指定区间 |hist| 之和的假 MACD：每个 src 位置给单位 hist。
+
+    `color` 与 `hist_area` 同义：`+1` 放红柱（向上段的力度）、`-1` 放绿柱
+    （向下段的力度）。买卖点比较的是**同向**两段（第 24 课「向上的看红柱子，
+    向下看绿柱子」），所以第一类买点的向下离开段必须传 `color=-1`；
+    否则两段都量不出面积、背驰恒不成立，测试会「假通过」。
+    """
     hist = [0.0] * n
     for pos, total in (areas or {}).items():
-        hist[pos] = total
+        hist[pos] = color * total
     return pd.DataFrame({"dif": [0.0] * n, "dea": [0.0] * n, "hist": hist})
 
 
@@ -255,7 +261,7 @@ def test_first_buy_point_requires_shrinking_macd_area():
                                                              (9.0, 10.0, 8)]
     # src 36..45 是离开中枢 A 的下跌段，72..81 是离开中枢 B 的下跌段
     sigs = find_signals(pd.DataFrame(), segs, pivots, "day",
-                        macd_df=_macd(100, {36: 10.0, 72: 1.0}))
+                        macd_df=_macd(100, {36: 10.0, 72: 1.0}, color=-1))
     kinds = [s.kind for s in sigs]
     assert SignalKind.B1 in kinds
     b1 = next(s for s in sigs if s.kind is SignalKind.B1)
@@ -267,7 +273,7 @@ def test_first_buy_point_requires_shrinking_macd_area():
 def test_no_first_buy_point_when_area_grows():
     segs = _b1_segments()
     sigs = find_signals(pd.DataFrame(), segs, find_pivots(segs, "day"), "day",
-                        macd_df=_macd(100, {36: 1.0, 72: 10.0}))
+                        macd_df=_macd(100, {36: 1.0, 72: 10.0}, color=-1))
     assert SignalKind.B1 not in [s.kind for s in sigs]
 
 
@@ -285,7 +291,7 @@ def test_no_first_buy_point_without_new_extreme():
     assert [(p.zd, p.zg, p.end_idx) for p in pivots] == [(14.0, 19.0, 4),
                                                          (12.0, 12.8, 8)]
     sigs = find_signals(pd.DataFrame(), segs, pivots, "day",
-                        macd_df=_macd(100, {36: 10.0, 72: 1.0}))
+                        macd_df=_macd(100, {36: 10.0, 72: 1.0}, color=-1))
     assert SignalKind.B1 not in [s.kind for s in sigs]
 
 
@@ -299,28 +305,39 @@ def test_no_first_point_in_a_single_pivot_consolidation():
 
 
 def test_first_sell_point_requires_new_high_and_shrinking_area():
+    """上升趋势里的第一类卖点：创新高 + MACD 面积衰竭。
+
+    夹具的两个中枢必须满足第 20 课**中心定理二**的上涨条件「后DD〉前GG」——
+    比的是**围绕中枢波动的区间 `[DD, GG]`**（只遍历同向 Z 走势段、不含离开段），
+    不是中枢区间 `[ZD, ZG]`。中枢 A 的 `[DD, GG] = [10, 20]`、中枢 B 的
+    `[DD, GG] = [24, 30]`，`24 > 20` 才构成上涨趋势；两个中枢的**离开段**都是
+    向上段（seg4 高点 30、seg8 高点 40），才能比「创新高 + 力度衰竭」。
+    """
     segs = _zigzag([
         10.0,   # 0
-        18.0,   # 1  ↑
-        12.0,   # 2  ↓
-        16.0,   # 3  ↑ 前三段 → 中枢 A [12, 16]
-        13.0,   # 4  ↓ 并入 A
-        21.0,   # 5  ↑ 向上离开 A（高点 21 > ZG 16）
-        17.0,   # 6  ↓ 低点 17 > ZG 16 → 整段在 A 之上，A 结束（end_idx = 4）
-        22.0,   # 7  ↑
-        18.0,   # 8  ↓
-        25.0,   # 9  ↑ 向上离开 B（高点 25 > ZG 21，创新高 25 > 21）
-        23.0,   # 10 ↓ 回抽（低点 23 > ZG 21）
+        20.0,   # 1  ↑ seg0 前三段 seg0~2 → 中枢 A [16, 19]
+        16.0,   # 2  ↓ seg1
+        19.0,   # 3  ↑ seg2
+        15.0,   # 4  ↓ seg3 低点 15 仍与 [16, 19] 重叠 → 并入 A
+        30.0,   # 5  ↑ seg4 向上离开 A（高点 30 > ZG 19）
+        24.0,   # 6  ↓ seg5 低点 24 > ZG 19 → 整段在 A 之上，A 结束（end_idx = 4）
+        27.0,   # 7  ↑ seg6 前三段 seg5~7 → 中枢 B [24, 27]
+        23.0,   # 8  ↓ seg7
+        40.0,   # 9  ↑ seg8 向上离开 B（高点 40 > ZG 27），创新高 40 > 30
+        36.0,   # 10 ↓ seg9 回抽（低点 36 > ZG 27）
     ])
     pivots = find_pivots(segs, "day")
-    assert [(p.zd, p.zg, p.end_idx) for p in pivots[:2]] == [(12.0, 16.0, 4),
-                                                             (18.0, 21.0, 8)]
+    assert [(p.zd, p.zg, p.gg, p.dd, p.end_idx) for p in pivots[:2]] == [
+        (16.0, 19.0, 20.0, 10.0, 4),    # A：Z 走势段 seg0、seg2 → GG 20 / DD 10
+        (24.0, 27.0, 30.0, 24.0, 8),    # B：Z 走势段只有 seg5（离开段 seg8 不算）
+    ]
+    # 中心定理二：「后DD〉前GG等价于上涨及其延续」→ 24 > 20
     sigs = find_signals(pd.DataFrame(), segs, pivots, "day",
                         macd_df=_macd(100, {36: 10.0, 72: 1.0}))
     kinds = [s.kind for s in sigs]
     assert SignalKind.S1 in kinds
     s1 = next(s for s in sigs if s.kind is SignalKind.S1)
-    assert s1.price == 25.0 and s1.ts == "d0081"
+    assert s1.price == 40.0 and s1.ts == "d0081"
 
 
 # ---- 第二类买卖点 ----
@@ -329,7 +346,7 @@ def test_first_sell_point_requires_new_high_and_shrinking_area():
 def test_second_buy_point_after_first_buy_point():
     segs = _b1_segments()
     sigs = find_signals(pd.DataFrame(), segs, find_pivots(segs, "day"), "day",
-                        macd_df=_macd(100, {36: 10.0, 72: 1.0}))
+                        macd_df=_macd(100, {36: 10.0, 72: 1.0}, color=-1))
     b2 = [s for s in sigs if s.kind is SignalKind.B2]
     assert len(b2) == 1
     assert b2[0].price == 7.5 and b2[0].ts == "d0099"
@@ -340,14 +357,14 @@ def test_no_second_buy_point_when_pullback_breaks_the_low():
     segs = _b1_segments()
     segs[10] = _seg(10, -1, 5.5, 8.0, 90, 99)   # 回抽破第一类买点的低点 6
     sigs = find_signals(pd.DataFrame(), segs, find_pivots(segs, "day"), "day",
-                        macd_df=_macd(100, {36: 10.0, 72: 1.0}))
+                        macd_df=_macd(100, {36: 10.0, 72: 1.0}, color=-1))
     assert SignalKind.B2 not in [s.kind for s in sigs]
 
 
 def test_signals_are_sorted_and_renumbered():
     segs = _b1_segments()
     sigs = find_signals(pd.DataFrame(), segs, find_pivots(segs, "day"), "day",
-                        macd_df=_macd(100, {36: 10.0, 72: 1.0}))
+                        macd_df=_macd(100, {36: 10.0, 72: 1.0}, color=-1))
     assert [s.idx for s in sigs] == list(range(len(sigs)))
     assert [s.ts for s in sigs] == sorted(s.ts for s in sigs)
     assert validate_signals(sigs) == []

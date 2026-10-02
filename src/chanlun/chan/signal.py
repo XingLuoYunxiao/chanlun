@@ -80,10 +80,12 @@ class Signal:
 
 
 def _area(macd_df: pd.DataFrame | None, seg: Segment) -> float | None:
+    """触发段的 MACD 面积，颜色取该段自身方向（第 24 课「向上的看红柱子，
+    向下看绿柱子」）：向上段 `+1` 只算红柱、向下段 `-1` 只算绿柱。"""
     if macd_df is None:
         return None
     try:
-        return hist_area(macd_df, seg.src_start, seg.src_end)
+        return hist_area(macd_df, seg.src_start, seg.src_end, seg.direction)
     except ValueError:
         return None
 

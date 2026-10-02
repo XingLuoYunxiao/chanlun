@@ -1,0 +1,80 @@
+# kind: engineering
+# status: adopted
+# adopted_at: 2026-10-01
+# adopted_note: |
+#   本补丁是**落地后的存档**，不是提案：修复已在主干里（`src/chanlun/data/types.py::normalize`），
+#   所以 `git apply` 在主干上必然失败，这是设计如此（tests/optimizer 的
+#   test_real_patches_apply_and_revert_cleanly 会跳过 status: adopted 的补丁）。
+#   审计出处：docs/evidence/2026-10-01-chanlun-strictness-audit.md §A.1「D1 数据层非正价格」。
+#   落地内容：`normalize` 在 `fillna(0.0)` **之前**丢弃 open/high/low/close 任一列 `(x <= 0)`
+#   的整根 K 线（含 NaN），并 `logger.warning` 记录条数；volume/amount 的 0 仍然保留。
+#   判据落在 tests/data/test_store.py：test_normalize_drops_non_positive_price_bars、
+#   test_normalize_negative_price_is_dropped_too、test_normalize_price_filter_is_idempotent。
+#   连带的端到端判据：tests/chan/test_engine.py::test_zero_price_bars_do_not_change_the_segmentation。
+# finding: 0 价 K 线被当成真实极值。数据源里的停市占位/缺值行经 to_numeric(errors='coerce') 变成 NaN，normalize 再 fillna(0.0)，于是 0.0 成了全序列最低点，被包含处理、分型、笔一路当成真实极值。sz.399001 日线因此从 55 段塌成 4 段（其中一个向下线段横跨 592 笔），sh.600759 5 分钟线从 210 段塌成 126 段。用户报告的「深证成指日线只剩一个向下线段、调到 4000 根还是只有一个」、以及「4000 根 K 线还是只有这一个向下线段」，根因就在这里。
+# evidence: # [采纳前] 下面的数字量自采纳之前的口径。保留作为这次修正的缺陷证据。
+#    # 判据回归：PYTHONPATH=src ../.venv-chanlun/bin/python -m pytest -q tests/data/test_store.py -k price
+#    #   修复前（git checkout -- src/chanlun/data/types.py 取回 HEAD 版）：3 failed ——
+#    #     test_normalize_drops_non_positive_price_bars
+#    #     test_normalize_price_filter_is_idempotent
+#    #     test_normalize_negative_price_is_dropped_too
+#    #   修复后：tests/data/test_store.py 全绿；全量 pytest -q -> 823 passed, 12 deselected, 1 warning
+#    #
+#    # 全市场扫描（修复前）：5453 个 parquet（day 5440 / 30min 8 / 5min 5），4.2s；
+#    # 含非正价格的只有 4 个文件 —— sz.300114 1 根、sz.399001 day 5 根、
+#    # sh.600759 30min 22 根、sh.600759 5min 142 根。
+#    #
+#    # 零价注入对照（4 只夹具票，步长 5 逐根注入 5 根 0 价 K 线，取最差）：
+#    #   sh.600000 @475 段数 12 -> 7、最长段 15 -> 41 笔
+#    #   sh.601088 @670 段数 11 -> 6、最长段 25 -> 58 笔
+#    #   sz.300059 @450 段数 11 -> 6、最长段 35 -> 56 笔
+#    #   sz.300750 @385 段数 11 -> 6、最长段 43 -> 74 笔
+#    # 结论：0 价不是行情，必须剔除；volume/amount = 0 仍然合法（停牌日成交量本来就是 0）。
+# note: 只动数据清洗层，不碰任何缠论算法，因此按 engineering 归档（src/chanlun/data/ 不在 ALGO_PREFIXES 里）。
+#    口径：normalize 先 to_numeric(errors='coerce')，再对 open/high/low/close 四列丢弃 (x <= 0) 的整根 K 线
+#    （含 NaN），并 logger.warning 记录「非正价格」。曾考虑只丢 NaN、不丢 0 和负数，但负价同样不是行情，
+#    且 -3.0 会把 min() 拉到序列外，症状与 0 价完全同类，故一并丢弃。
+#    未动的部分：volume/amount 的 0 值不丢（停牌日合法），只做 fillna(0.0)。
+diff --git a/src/chanlun/data/types.py b/src/chanlun/data/types.py
+--- a/src/chanlun/data/types.py
++++ b/src/chanlun/data/types.py
+@@ -7,9 +7,13 @@
+ """
+ 
+ from __future__ import annotations
+ 
++import logging
++
+ import pandas as pd
++
++logger = logging.getLogger(__name__)
+ 
+ COLUMNS: list[str] = ["ts", "open", "high", "low", "close", "volume", "amount"]
+ NUMERIC_COLUMNS: list[str] = ["open", "high", "low", "close", "volume", "amount"]
+ 
+@@ -39,8 +43,25 @@
+     for col in NUMERIC_COLUMNS:
+         out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0).astype("float64")
+ 
+     out = out[out["ts"] != ""]
++
++    # 价格必须为正。上面 `to_numeric(errors="coerce")` 把无法解析的值变成 NaN，
++    # 紧跟的 `fillna(0.0)` 又把它变成 0.0——0 价不是合法行情，却会被分型/笔当成
++    # 真实极值。实测 sz.399001 日线含 5 根全 0 行（1995-02-06~1995-02-10），使
++    # min(low)=0.0 成为全序列最低点，把 1991 年以来的整段走势压成一根向下的笔；
++    # sh.600759 的 5 分钟线含 142 根同类行（126 段/20 中枢 → 168 段/28 中枢）。
++    # 这类行直接剔除并留警告，不再静默填零。volume/amount 为 0 属正常，不在此列。
++    price_cols = ["open", "high", "low", "close"]
++    invalid = (out[price_cols] <= 0).any(axis=1)
++    if bool(invalid.any()):
++        logger.warning(
++            "normalize: 剔除 %d 根非正价格 K 线（前几根 ts=%s）",
++            int(invalid.sum()),
++            ", ".join(out.loc[invalid, "ts"].head(5).astype(str)),
++        )
++        out = out[~invalid]
++
+     out = out.drop_duplicates(subset=["ts"], keep="last")
+     out = out.sort_values("ts", kind="stable").reset_index(drop=True)
+     return out
+ 

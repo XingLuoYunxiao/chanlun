@@ -50,8 +50,12 @@ def _fake_quiet_source(code, period, bars):
 
 
 def _fake_macd(close):
-    """段 0 面积 10、段 2 面积 4 → 背驰强度 (10-4)/10 = 0.6。"""
-    return macd_frame(len(close), areas={5: 10.0, 25: 4.0})
+    """段 0 面积 10、段 2 面积 4 → 背驰强度 (10-4)/10 = 0.6。
+
+    两段都是**向下**段（`_fake_source` 里 direction=-1），按第 24 课
+    「向上的看红柱子，向下看绿柱子」面积只累加绿柱，所以 hist 取负值。
+    """
+    return macd_frame(len(close), areas={5: -10.0, 25: -4.0})
 
 
 # ---------------------------------------------------------------- 充分性
@@ -160,6 +164,28 @@ def test_analyze_snapshot_sorts_by_strength_desc():
     assert hits[0].divergence_strength == pytest.approx(0.6)
     # 段 3（向上，高点 19.0）没有超过段 1（高点 22.0）→ 不算背驰，强度归 0
     assert hits[1].divergence_strength == 0.0
+
+
+def test_divergence_area_is_colour_split_not_abs_sum():
+    """第 24 课「向上的看红柱子，向下看绿柱子」：背驰强度只由**同色**面积决定。
+
+    段 0 的窗口（bar 0-9）里塞一根大红柱（+50）当干扰：旧口径 `sum(abs(hist))`
+    会把前段面积算成 |−10| + |+50| = 60，强度 (60−4)/60 = 0.9333；分色口径下
+    两段都是向下段，只累加绿柱，前段面积 = 10，强度 (10−4)/10 = 0.6。
+    """
+    bars = synth_bars(300, day_step=2)
+    segs = chain([(-1, 10.0, 20.0), (1, 12.0, 22.0), (-1, 9.0, 18.0)])
+    pivots = [pivot_of(segs, 12.0, 18.0, 0, 2)]
+    snap = snapshot_of("600000", "day", bars, segs=segs, pivots=pivots,
+                       signals=[signal_of(segs[2], "b1", pivot_idx=0)])
+    mixed = macd_frame(len(bars), areas={0: -10.0, 1: 50.0, 20: -4.0})
+    hit = analyze_snapshot(snap, bars, macd_df=mixed)[0]
+    assert hit.divergence_strength == pytest.approx(0.6)
+    assert hit.divergence_strength != pytest.approx((60.0 - 4.0) / 60.0)
+    # 反过来：把那根干扰柱换成同色（绿）才会真的改变前段力度。
+    all_green = macd_frame(len(bars), areas={0: -10.0, 1: -50.0, 20: -4.0})
+    assert analyze_snapshot(snap, bars, macd_df=all_green)[0].divergence_strength \
+        == pytest.approx((60.0 - 4.0) / 60.0)
 
 
 def test_analyze_snapshot_carries_contract_fields():

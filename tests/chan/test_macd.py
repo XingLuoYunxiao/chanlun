@@ -205,47 +205,86 @@ def test_macd_matches_reference_on_fixed_real_series():
     assert df["dif"].to_numpy() == pytest.approx(REAL_DIF, abs=1e-6)
     assert df["dea"].to_numpy() == pytest.approx(REAL_DEA, abs=1e-6)
     assert df["hist"].to_numpy() == pytest.approx(REAL_HIST, abs=1e-6)
-    assert hist_area(df, 0, 29) == pytest.approx(0.564488, abs=1e-6)
+    assert hist_area(df, 0, 29, 1) == pytest.approx(0.308937, abs=1e-6)   # 红柱
+    assert hist_area(df, 0, 29, -1) == pytest.approx(0.255551, abs=1e-6)  # 绿柱
     # 该片段 DIF/柱都出现过负值，说明样本确实覆盖了绿柱区间。
     assert (df["dif"] < 0).any() and (df["hist"] < 0).any()
 
 
 # ------------------------------------------------ 5. 面积
 
-def test_hist_area_is_sum_of_absolute_values():
+def test_hist_area_sums_only_same_colour_bars():
+    """第 24 课「向上的看红柱子，向下看绿柱子」：红绿必须**分开**累加。
+
+    审计（`docs/evidence/2026-10-01-chanlun-strictness-audit.md` §2.9）确认旧实现
+    是 `sum(abs(hist))`，把 |红| + |绿| 一起相加；新口径下同一区间两种颜色给出
+    两个不同的面积，且都不等于旧的混色值。
+    """
     df = _fake([1.5, -2.0, 3.0, -0.5])
-    assert hist_area(df, 0, 3) == pytest.approx(7.0)          # |1.5|+|−2|+|3|+|−0.5|
-    assert hist_area(df, 0, 3) != pytest.approx(2.0)          # 不是算术和
-    assert hist_area(df, 0, 1) == pytest.approx(3.5)          # 红绿相消会得到 −0.5
-    assert all(hist_area(df, i, i) >= 0 for i in range(4))
-    # 真实数据上也成立（该区间红绿柱混杂）。
+    red = hist_area(df, 0, 3, 1)
+    green = hist_area(df, 0, 3, -1)
+    assert red == pytest.approx(4.5)                  # 红柱 1.5 + 3.0
+    assert green == pytest.approx(2.5)                # 绿柱 |−2.0| + |−0.5|
+    assert red != green
+    old_abs_sum = float(np.sum(np.abs(df["hist"].to_numpy())))
+    assert old_abs_sum == pytest.approx(7.0)          # 旧口径 |1.5|+|−2|+|3|+|−0.5|
+    assert red != pytest.approx(old_abs_sum) and green != pytest.approx(old_abs_sum)
+    # 也不是算术和（红绿相消会得到 2.0）。
+    assert red != pytest.approx(2.0) and green != pytest.approx(2.0)
+    # 真实数据（该区间红 18 根、绿 11 根）上同样分开，且两者之和才是旧口径。
     real = macd(REAL_CLOSES)
-    abs_sum = float(np.sum(np.abs(real["hist"].to_numpy())))
-    assert hist_area(real, 0, 29) == pytest.approx(abs_sum, abs=1e-12)
+    red_real, green_real = hist_area(real, 0, 29, 1), hist_area(real, 0, 29, -1)
+    assert red_real > 0.0 and green_real > 0.0
+    assert red_real + green_real == pytest.approx(
+        float(np.sum(np.abs(real["hist"].to_numpy()))), abs=1e-12)
+
+
+def test_hist_area_colour_sign_convention():
+    """符号约定：`+1` 只算红柱（hist>0）、`-1` 只算绿柱（hist<0），面积恒 >= 0。
+
+    窗口内没有同色柱时返回 0.0 —— 表示「这段走势没有该方向的力度」，
+    而不是回退去加另一种颜色的柱子。
+    """
+    df = _fake([1.0, 2.0, 4.0, 8.0, 16.0])
+    assert hist_area(df, 0, 4, 1) == pytest.approx(31.0)
+    assert hist_area(df, 0, 4, -1) == 0.0            # 全红 → 绿柱面积为 0
+    mirror = _fake([-1.0, -2.0, -4.0])
+    assert hist_area(mirror, 0, 2, -1) == pytest.approx(7.0)
+    assert hist_area(mirror, 0, 2, 1) == 0.0         # 全绿 → 红柱面积为 0
+    assert all(hist_area(mirror, i, i, -1) >= 0 for i in range(3))
 
 
 def test_hist_area_closed_interval_boundaries():
     """闭区间含两端：右端点的柱子必须计入。"""
     df = _fake([1.0, 2.0, 4.0, 8.0, 16.0])
-    assert hist_area(df, 0, 0) == pytest.approx(1.0)
-    assert hist_area(df, 4, 4) == pytest.approx(16.0)
-    assert hist_area(df, 1, 3) == pytest.approx(14.0)         # 2+4+8，含 i1=3
-    assert hist_area(df, 0, 4) == pytest.approx(31.0)
+    assert hist_area(df, 0, 0, 1) == pytest.approx(1.0)
+    assert hist_area(df, 4, 4, 1) == pytest.approx(16.0)
+    assert hist_area(df, 1, 3, 1) == pytest.approx(14.0)      # 2+4+8，含 i1=3
+    assert hist_area(df, 0, 4, 1) == pytest.approx(31.0)
     # 右端点放一根大柱：闭区间必须把它算进去。
     spike = _fake([0.0, 0.0, 0.0, 5.0])
-    assert hist_area(spike, 0, 2) == pytest.approx(0.0)
-    assert hist_area(spike, 0, 3) == pytest.approx(5.0)
+    assert hist_area(spike, 0, 2, 1) == pytest.approx(0.0)
+    assert hist_area(spike, 0, 3, 1) == pytest.approx(5.0)
+    # 绿柱同理（符号取反后仍是闭区间）。
+    assert hist_area(spike, 0, 2, -1) == pytest.approx(0.0)
+    assert hist_area(_fake([0.0, 0.0, 0.0, -5.0]), 0, 3, -1) == pytest.approx(5.0)
 
 
-def test_hist_area_rejects_bad_range():
+def test_hist_area_rejects_bad_range_and_bad_colour():
     df = _fake([1.0, 2.0, 3.0])
     for i0, i1 in [(2, 1), (0, 3), (-1, 1), (0, -1), (3, 3)]:
         with pytest.raises(ValueError):
-            hist_area(df, i0, i1)
+            hist_area(df, i0, i1, 1)
     with pytest.raises(ValueError):
-        hist_area(macd([]), 0, 0)
+        hist_area(macd([]), 0, 0, 1)
     with pytest.raises(ValueError):
-        hist_area(pd.DataFrame({"dif": []}), 0, 0)
+        hist_area(pd.DataFrame({"dif": []}), 0, 0, 1)
+    for bad in (0, 2, -2, None, "up"):
+        with pytest.raises(ValueError):
+            hist_area(df, 0, 2, bad)
+    # `color` 是必填参数：不允许再退回旧的混色求和口径。
+    with pytest.raises(TypeError):
+        hist_area(df, 0, 2)  # type: ignore[call-arg]
 
 
 # ------------------------------------------------ 6. DIF 极值
@@ -317,15 +356,24 @@ def test_divergence_rejects_bad_direction():
 
 
 def test_divergence_integration_with_area_and_extremes():
-    """把度量函数串起来：后一段价格创新低、MACD 面积缩小 → 背驰。"""
-    df = _fake(hist=[5.0, 4.0, 3.0, 2.0, 1.0, 0.5],
+    """把度量函数串起来：后一段价格创新低、**同色**（绿柱）MACD 面积缩小 → 底背驰。"""
+    df = _fake(hist=[-5.0, -4.0, -3.0, -2.0, -1.0, -0.5],
                dif=[-1.0, -2.0, -3.0, -3.5, -3.4, -3.2])
     price_prev, price_now = 8.0, 7.5                 # 后一段创了新低
-    area_prev = hist_area(df, 0, 2)                  # 12.0
-    area_now = hist_area(df, 3, 5)                   # 3.5
+    area_prev = hist_area(df, 0, 2, -1)              # 绿柱 12.0
+    area_now = hist_area(df, 3, 5, -1)               # 绿柱 3.5
     assert (area_prev, area_now) == (pytest.approx(12.0), pytest.approx(3.5))
+    # 拿红柱口径去量这两段下跌：两段都没有红柱，面积同为 0，不构成「缩小」。
+    assert hist_area(df, 0, 2, 1) == 0.0 and hist_area(df, 3, 5, 1) == 0.0
+    assert is_divergence(price_prev, price_now, 0.0, 0.0, -1) is False
     assert is_divergence(price_prev, price_now, area_prev, area_now, -1) is True
     # 价格没创新低时，同一组面积不构成背驰。
     assert is_divergence(price_now, price_now, area_prev, area_now, -1) is False
+    # 向上段的镜像：价格创新高 + 红柱面积缩小。
+    up = _fake(hist=[5.0, 4.0, 3.0, 2.0, 1.0, 0.5], dif=[1.0, 2.0, 3.0, 3.5, 3.4, 3.2])
+    up_prev, up_now = hist_area(up, 0, 2, 1), hist_area(up, 3, 5, 1)
+    assert (up_prev, up_now) == (pytest.approx(12.0), pytest.approx(3.5))
+    assert is_divergence(8.0, 8.5, up_prev, up_now, 1) is True
+    assert is_divergence(8.0, 8.5, hist_area(up, 0, 2, -1), hist_area(up, 3, 5, -1), 1) is False
     # 向下段的 DIF 低点可由 dif_low 定位，用于圈定背驰段区间。
     assert dif_low(df, 3, 5) == (pytest.approx(-3.5), 3)

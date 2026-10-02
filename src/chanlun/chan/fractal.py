@@ -1,4 +1,4 @@
-"""分型（第 65 课）。
+"""分型（第 62 课定义本体；第 65 课给出包含处理后的方向判定）。
 
 在**合并后**K线上，连续三根 a、b、c：
 - 顶分型：`b.high > a.high and b.high > c.high and b.low > a.low and b.low > c.low`

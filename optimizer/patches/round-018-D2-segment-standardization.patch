@@ -1,0 +1,312 @@
+# kind: theory
+# status: adopted
+# adopted_at: 2026-10-01
+# adopted_note: |
+#   本补丁是**落地后的存档**，不是提案：修复已在主干里（`src/chanlun/chan/segment.py`），
+#   所以 `git apply` 在主干上必然失败，这是设计如此（tests/optimizer 的
+#   test_real_patches_apply_and_revert_cleanly 会跳过 status: adopted 的补丁）。
+#   审计出处：docs/evidence/2026-10-01-chanlun-strictness-audit.md §A.2「D2 线段划分判据」。
+#   落地内容三件：删 `_structural_ok`；新增 `_ordinal_ok` 与 `_extreme_problems`；
+#   左端起点从 argmax 改回「第一个可行起点」。三件是同一处偏差的两面 ——
+#   argmax 当初就是为绕开 `_structural_ok` 制造的可行性悬崖才加的。
+#   判据落在 tests/chan/test_segment.py（新增 test_left_edge_never_skips_a_feasible_first_stroke、
+#   test_validate_segments_flags_unstandardized_high_low、_flags_reversed_extreme_order）、
+#   tests/chan/test_segment_real.py、tests/chan/fixtures/real_strokes.json、
+#   tests/chan/test_engine.py、tests/web/test_structure_window.py。
+#   新增理论条目：optimizer/theory/L78-SEGMENT-STANDARDIZATION.md（第 78 课原文 + 释义）。
+# theory: L78-SEGMENT-STANDARDIZATION,L67-SEGMENT-CHAR-SEQ
+# quote: 就是，如果线段中，最高或最低点不是线段的端点，那么，在任何以线段为基础的分析中，例如把线段为基础构成最小级别的中枢等，都可以把该线段标准化为最高低点都在端点。
+# source: 缠中说禅《教你炒股票108课》第78课《继续说线段的划分》
+# finding: 线段划分把「极值必须落在端点」当成了准入判据，而第 78 课原文把它明确定位在划分**之后**（「都可以把该线段标准化为最高低点都在端点」，理由是「只需要关心这线段的实际区间」）。因果颠倒的代价：真实走势里极值不在端点很常见（12 只票的确认段里 40 余处），_structural_ok 成片否掉合法分界，在 candidates(s) 上凿出可行性空洞，使 best(s) 剧烈非单调。深证成指 sz.399001 日线 8648 根 K 线因此只划出 4 段、1 个中枢（用户报告的「只有一个向下的线段」，取末 4000 根更是只剩 1 段）。同一处偏差还逼出了左端 argmax 这个补偿性 hack，把 sz.399006 日线前 102 笔（占 310 笔的三分之一）藏进不分类的前导段。
+# evidence: # [采纳前] 下面的数字量自采纳之前的口径（它把「极值必须在端点」当成了划分判据），保留作为缺陷证据。
+#    # 判据回归（cp 到 /tmp、git checkout -- 取回 HEAD 版、跑新判据、再逐字节还原）：
+#    #   PYTHONPATH=src ../.venv-chanlun/bin/python -m pytest -q tests/chan/test_segment.py tests/chan/test_segment_real.py tests/chan/test_engine.py
+#    #   修复前：5 failed, 6 passed ——
+#    #     tests/chan/test_segment.py::test_validate_segments_flags_unstandardized_high_low
+#    #     tests/chan/test_segment.py::test_validate_segments_flags_reversed_extreme_order
+#    #     tests/chan/test_segment_real.py::test_real_segment_counts_are_stable[sh.600000]
+#    #     tests/chan/test_segment_real.py::test_real_segment_counts_are_stable[sz.300059]
+#    #     tests/chan/test_engine.py::test_zero_price_bars_do_not_change_the_segmentation
+#    #   修复后：全量 pytest -q -> 823 passed, 12 deselected, 1 warning
+#    #
+#    # 用户报告的故障（深证成指 sz.399001 日线，8648 根 K 线）：修复前 4 段 / 1 中枢；
+#    # 修复后 651 笔 / 55 段（确认 54）/ 9 中枢 / 最长 53 笔。
+#    # 只取末 4000 根：修复前 1 段；修复后 303 笔 / 31 段（确认 30）/ 5 中枢 / 最长 47 笔。
+#    #
+#    # 12 只票全历史复核（store.read -> ChanEngine.full，validate_segments(segs, strokes) 全 0 问题）：
+#    #   sz.399001 day 8648 根 -> 651 笔 / 55 段 / 最长 53 笔
+#    #   sz.399006 day 3968 根 -> 310 笔 / 26 段 / 最长 87 笔（规则所致，非缺陷，见下）
+#    #   sh.000001 day 8736 根 -> 634 笔 / 74 段 / 最长 37 笔
+#    #   sh.000905 day 5282 根 -> 406 笔 / 48 段 / 最长 23 笔
+#    #   sh.000300 day 5282 根 -> 387 笔 / 43 段 / 最长 35 笔
+#    #   sh.600000 day 1393 根 -> 104 笔 / 13 段 / 最长 19 笔
+#    #   sh.601088 day 1636 根 -> 134 笔 / 12 段 / 最长 29 笔
+#    #   sz.300059 day 1636 根 -> 129 笔 / 15 段 / 最长 35 笔
+#    #   sz.300750 day 2018 根 -> 159 笔 / 15 段 / 最长 43 笔
+#    #   sh.600759 5min 78290 根 -> 1948 笔 / 210 段 / 最长 73 笔
+#    #   sh.600519 day 1636 根 -> 138 笔 / 17 段 / 最长 30 笔
+#    #   sz.002415 day 1636 根 -> 137 笔 / 19 段 / 最长 21 笔
+#    #   sh.600887 day 1636 根 -> 136 笔 / 11 段 / 最长 40 笔
+#    #   合计 558 段；超过 80 笔的只有 sz.399006 那一段 87 笔。
+#    #
+#    # 「极值不在端点」在真实数据上有多普遍（确认段里极值不在两端处的数量）：
+#    #   sh.600000 1、sh.601088 2、sz.300059 1、sz.300750 1、sz.399001 4、sz.399006 2、
+#    #   sh.000001 1、sh.000905 3、sh.600759 5min 22、sh.600519 2、sz.002415 2
+#    # 例：sz.300059 segment 0 向上线段 起点 7.33281563 低点 6.138223、终点 16.82038803 高点 16.82038803
+#    #     sh.600000 segment 1 向下线段 起点 8.57864632 高点 8.67122164、终点 7.62203468 低点 7.62203468
+#    # 而「标准化本身失败」（seg.high/low 与笔区间真实极值不符）在 12 只票、全部配置下都是 0 处，
+#    # 说明 _make_segment 的标准化是可靠的；被删掉的 _structural_ok 一直在否掉的是上面这批合法线段。
+#    #
+#    # _ordinal_ok（删除 _structural_ok 后保留的唯一序关系约束）的作用面：
+#    #   12 只票 14727 个候选分界，只有 26 个被它否掉（0.18%）；把它强制成恒真后
+#    #   12 只票的输出逐位相同 —— 即它对最终结果是无操作，保留它是为了把「先见最低后见最高」
+#    #   这种序关系矛盾挡在门外，不是用来调段数的。
+#    #
+#    # sz.399006 那段 87 笔的强制归属（不是缺陷）：segment idx=8 CONFIRMED dir=-1 笔70..156。
+#    # candidates(70) = [76, 156]，但 candidates(76) = candidates(77) = []（best(76)=best(77)=(0,None)）。
+#    # 硬取 76 会让总段数变成 1，DP 给出 17 —— 所以 87 笔是规则自己的判决。
+#    #
+#    # 另外两条备选口径都被实测否掉：
+#    #   * 第 71 课字面「假设分界点后逐点前向检验、首个满足即取」：12 只票只有 202 段（DP 是 566 段），
+#    #     sh.600759 5min 整段 1948 笔只划出 1 段 —— 同样落进用户抱怨的症状，不能采用。
+#    #   * 左端取「确认段数最多」的起点（argmax）：见 note，它是为了绕开 _structural_ok 造的
+#    #     可行性悬崖而加的补偿，_structural_ok 一删就没有理由了。
+#    # build_segments 的后置过滤不是元凶：12 只票里「切出不足三笔」「后面没有笔」「新线段开始三笔无重叠」
+#    # 三类丢弃计数全是 0。
+# note: 本补丁把「划分判据」和「划分后标准化」拆开，两件事在同一次改动里：
+#    1) 删掉 `_structural_ok`（它要求线段的最高/最低点落在端点上，据此否掉候选分界）；
+#    2) 新增 `_ordinal_ok`（只否掉序关系自相矛盾的候选：向上线段先见最高后见最低），
+#       并新增 `_extreme_problems` 把第 78 课的两条要求改成事后校验。
+#    用户裁决（2026-10-01）：「删掉它，回到第78课的『划分后再标准化』」。
+#    #
+#    左端起点同时从「确认段数最多的起点」（argmax）改回「第一个可行起点」——这是删掉 `_structural_ok`
+#    的**直接后果**，不是另一件事：argmax 当初就是为绕开 `_structural_ok` 在候选终点上制造的可行性悬崖
+#    才加的，其注释也是用极值判据给自己找的理由；判据一删，理由就没了，而代价暴露出来 ——
+#    sz.399006 日线的前导 TENTATIVE 段长达 102 笔（占全部 310 笔的三分之一），100 只样本合计
+#    308 笔被这样藏进不分类的前导段，这正是用户抱怨的「只剩一个向下线段」的同一类症状。
+#    第 67 课「一切同一级别图上的走势都可以唯一地划分为线段的连接」里的「唯一」是对手上这段数据
+#    说的：只要第 0 笔能起段，就必须从第 0 笔起划分。前导 TENTATIVE 段是数据截断的工程补丁，
+#    不是缠论概念，只在规则确实无法起段时才允许使用。
+#    #
+#    `_ordinal_ok` 对最终输出是无操作（12 只票强制恒真后逐位相同），保留它属于「与 include.py 的
+#    `>` 改 `>=` 同类的加固」：把不可能的序关系挡在门外，不参与段数调优。不要把它当成新的段数旋钮。
+#    #
+#    标准化不改 `start`/`end`：线段的端点是笔的端点，本来就停在分型上；标准化只决定 `high`/`low`
+#    两个区间端点字段。所以「极值不在端点」永远不该让一条合法线段消失，`validate_segments` 只把它
+#    记成提示（未按第 78 课标准化 / 先见最高后见最低），不推翻划分结果。
+#    #
+#    excluded：`validate_segments(segments)` 不传 `strokes` 时跳过第 78 课两项校验（向后兼容），
+#    传了才查。双数笔、`< 3` 笔这两条只对 CONFIRMED 段生效；同向相邻限制也只管相邻的 CONFIRMED 段 ——
+#    前导 TENTATIVE 段与它后面那条 CONFIRMED 段同向是合法的（tests/chan/test_segment.py::
+#    test_tentative_leading_segment_may_share_direction_with_next 钉住这一点）。
+diff --git a/src/chanlun/chan/segment.py b/src/chanlun/chan/segment.py
+--- a/src/chanlun/chan/segment.py
++++ b/src/chanlun/chan/segment.py
+@@ -11,13 +11,19 @@
+   第二特征序列是否出现反向分型，出现了才确认结束。
+ - 第二特征序列**不再分第一/第二种情况**，只要有分型即可，且**必须严格按包含关系处理**（第 78 课）。
+ 
+ 包含处理的合并方向：向上线段的特征序列按向上规则（取高高），向下线段按向下规则（取低低）。
+-这一条在原文中未展开到公式级，是**策略可插拔点**，由 Task 17 的优化师依据原文继续校准。
+-
+-注意：线段划分是全书修订最多、分歧最大的一层（第 63、84、101 课明确说分型/线段只是
+-递归定义里的「初始项 a0」，**可以随便设计**，只要不破坏后续唯一分解）。因此本模块通过
+-`SegmentPolicy` 协议把实现完全外置，`build_segments` 内**不含任何硬编码的划分规则**。
++这是**原文空白项**：第 67 课只给出特征序列的定义与「对特征序列做包含处理」这一步，
++第 71 课给的是分界点判定程序，第 78 课只说第二特征序列「必须严格按照包含关系的处理来」，
++三处都没有写到公式级的合并方向。故本模块把它当作**显式声明的实现约定**（按线段方向取
++高低）；社区另有「按特征序列自身方向」的读法，两说并存，原文未裁决。
++
++注意：线段划分是全书修订最多、分歧最大的一层。第 67 课「一切同一级别图上的走势都可以
++**唯一地**划分为线段的连接，这是基础的基础，请务必搞清楚」、第 77 课「用线段划分的两种
++情况的规定，不难证明，线段的划分也是唯一的」、第 78 课「根据这两种情况的完全分类来，
++**没有不能唯一去划分的**」三处都宣示唯一性；第 81 课正文则是对第 71 课末图的官方更正
++（「有人提到 71 课里最后一个图，那个图显然是错的」）。所以划分规则本身**不是**可以随便
++设计的自由项；本模块通过 `SegmentPolicy` 协议把实现外置，`build_segments` 内不含硬编码规则。
+ """
+ 
+ from __future__ import annotations
+ 
+@@ -111,31 +117,49 @@
+ def _further(a: float, b: float, direction: int) -> bool:
+     return a > b if direction == 1 else a < b
+ 
+ 
+-def _structural_ok(strokes: Sequence[Stroke], start: int, end: int, direction: int) -> bool:
+-    """线段极值必须在两端。
+-
+-    向上线段的低点在起点、高点在终点；向下线段的高点在起点、低点在终点。
+-    由「线段不可能顶到顶/底到底」推出：极值落在中间即意味着该段被更大的
+-    反向走势穿过，不构成线段。
++def _ordinal_ok(strokes: Sequence[Stroke], start: int, end: int, direction: int) -> bool:
++    """线段**极值的先后次序**必须与线段方向一致。
++
++    第 78 课（一手，逐字）：
++
++    > 如果线段中，最高或最低点不是线段的端点，那么，在任何以线段为基础的分析
++    > 中，例如以线段为基础构成最小级别的中枢等，都可以把该线段标准化为最高低点
++    > 都在端点。经过标准化处理后，所有向上线段都是以最低点开始最高点结束，向下
++    > 线段都是以最高点开始最低点结束。
++
++    **原文明确承认「最高或最低点不是线段的端点」是会发生的情况**，并把它列为划分
++    **之后**才做标准化处理的对象，**不是划分判据**。所以本函数不要求极值落在端点，
++    只要求它们的前后次序与方向一致：向上线段的最低点不晚于最高点，向下线段的最高点
++    不晚于最低点。这是「以最低点开始最高点结束」在**不移动笔的端点**这一约束下的
++    等价表述，也排除了「向上线段先见最高点、后见最低点」这类真正矛盾的划分。
++
++    标准化本身由 `_make_segment` 完成（`high=max(...)`、`low=min(...)`），
++    因此 `Segment.high/low` 恒为该笔区间的真实极值，可直接供中枢构造使用。
++
++    **历史**：本函数此前是 `_structural_ok`，要求极值**必须落在端点**，即把第 78 课的
++    事后标准化提前成了划分前置条件。实测代价见报告 §A.4——它会在候选终点上制造
++    可行性悬崖，逼 DP 选出一条 159 笔、横跨 2001-2005 大熊市的「线段」
++    （`sz.399001`）；改成次序判据后该段缩短到 53 笔，且指数样本里 >100 笔的线段
++    从 1 条降到 0 条。
+     """
+     seg = strokes[start:end + 1]
+     if not seg:
+         return False
+-    highs = [x.high for x in seg]
+-    lows = [x.low for x in seg]
++    hi = max(range(len(seg)), key=lambda i: seg[i].high)
++    lo = min(range(len(seg)), key=lambda i: seg[i].low)
+     if direction == 1:
+-        return seg[0].start.price == min(lows) and seg[-1].end.price == max(highs)
+-    return seg[0].start.price == max(highs) and seg[-1].end.price == min(lows)
++        return lo <= hi
++    return hi <= lo
+ 
+ 
+ class Lesson6768Policy:
+     """第 67 课 + 第 78 课的默认线段划分策略。
+ 
+     终点取「标准特征序列中确立新极值、且构成分型」的元素；缺口（第二种情况）
+     另需反向的第二特征序列出现分型来确认。分界还必须满足两条结构约束：
+-    极值在两端、开始三笔有重叠。
++    开始三笔有重叠、极值的先后次序与方向一致（见 `_ordinal_ok`）。
+ 
+     由于同一走势可能存在多个合法分界，贪心取首个分界会走到死路（后续笔数
+     不足以成段）。这里改为在可行划分中取「确认线段数最多」者，平局取更早
+     分界，从而保证每条分界之后仍能继续划分。
+@@ -174,9 +198,9 @@
+ 
+             end_idx = std[k][2] - 1
+             if end_idx - start + 1 < self.min_strokes:
+                 continue
+-            if not _structural_ok(strokes, start, end_idx, direction):
++            if not _ordinal_ok(strokes, start, end_idx, direction):
+                 continue
+ 
+             has_gap = k >= 1 and _has_gap(std[k - 1], std[k])
+             if has_gap:
+@@ -228,15 +252,29 @@
+                     result = (count + 1, br)
+             memo[start] = result
+             return result
+ 
+-        breaks: list[SegmentBreak] = []
+-        # 窗口左端：数据被截断，第 0 笔可能只是一个不完整线段的尾巴。
+-        # 若从它起无法划分出线段（常见于首笔方向与随后长期走势相反），
+-        # 就把这段前缀交给 TENTATIVE 前导段，从第一个可划分处开始。
++        # 窗口左端：数据被截断，若第 0 笔根本无法起段（`candidates` 为空或一路
++        # 走不通），就把最前面若干笔作为 TENTATIVE 前导段——它们的真实归属无法判定。
++        #
++        # **一旦第 0 笔能起段，就必须从第 0 笔起划分。** 第 67 课：
++        #
++        # > 一切同一级别图上的走势都可以唯一地划分为线段的连接，这是基础的基础。
++        #
++        # 「唯一」是对**手上这段数据**说的：把第 0 笔当作线段起点，划分结果由规则唯一
++        # 决定。前导 TENTATIVE 段是数据截断的工程补丁，不是缠论概念，所以只在规则确实
++        # 无法起段时才使用，不能拿它当调优手段。
++        #
++        # 曾经这里取「确认线段数最多」的起点，用来绕开 `_structural_ok` 在候选终点上制造
++        # 的可行性悬崖。`_structural_ok` 删掉后该理由消失，而代价暴露出来：它会为了多算
++        # 几条线段，把开头整片笔塞进一个不分类的前导段。实测 sz.399006 日线前导段长达
++        # **102 笔**（占全部 310 笔的三分之一），100 只样本合计 308 笔笔被这样隐藏。
++        # 这正是用户报告的「只剩一个向下线段」同一类症状，故改回「第一个可行起点」。
+         start = 0
+         while start < n and best(start)[1] is None:
+             start += 1
++
++        breaks: list[SegmentBreak] = []
+         while start < n:
+             _, br = best(start)
+             if br is None:
+                 break
+@@ -363,10 +401,50 @@
+         out.append(seg)
+     return out
+ 
+ 
+-def validate_segments(segments: Sequence[Segment]) -> list[str]:
+-    """返回线段序列违反的不变量列表（空列表 = 全部满足）。"""
++def _extreme_problems(seg: Segment, i: int, strokes: Sequence[Stroke]) -> list[str]:
++    """第 78 课对确认线段极值的两条要求（需要看到线段内部的笔才能判定）。
++
++    > 如果线段中，最高或最低点不是线段的端点，那么……都可以把该线段标准化为最高
++    > 低点都在端点。经过标准化处理后，所有向上线段都是以最低点开始最高点结束。
++
++    1. **标准化**：`Segment.high/low` 必须是该笔区间内真实的最大/最小值
++       （`_make_segment` 已如此构造，此处是交叉校验）。
++    2. **次序**：向上线段的最低点不晚于最高点，向下线段反之。原文「以最低点开始
++       最高点结束」落在代码里就是这条——线段端点是笔，不能为了凑这条而移动它们。
++    """
++    part = list(strokes[seg.start_stroke_idx : seg.end_stroke_idx + 1])
++    if not part:
++        return [f"segment {i}: 笔区间为空"]
++    hi_i = max(range(len(part)), key=lambda k: part[k].high)
++    lo_i = min(range(len(part)), key=lambda k: part[k].low)
++    hi, lo = part[hi_i].high, part[lo_i].low
++    out: list[str] = []
++    if seg.high != hi or seg.low != lo:
++        out.append(
++            f"segment {i}: 未按第 78 课标准化"
++            f"（线段 高={seg.high} 低={seg.low}，笔区间真实 高={hi} 低={lo}）"
++        )
++    if seg.direction == 1 and lo_i > hi_i:
++        out.append(
++            f"segment {i}: 向上线段先见最高点（第 {hi_i} 笔）后见最低点（第 {lo_i} 笔）"
++        )
++    elif seg.direction == -1 and hi_i > lo_i:
++        out.append(
++            f"segment {i}: 向下线段先见最低点（第 {lo_i} 笔）后见最高点（第 {hi_i} 笔）"
++        )
++    return out
++
++
++def validate_segments(
++    segments: Sequence[Segment], strokes: Sequence[Stroke] | None = None
++) -> list[str]:
++    """返回线段序列违反的不变量列表（空列表 = 全部满足）。
++
++    传入 `strokes` 时额外校验第 78 课的标准化与极值次序（见 `_extreme_problems`）；
++    不传则跳过这两条——它们必须看到线段内部的笔才能判定。
++    """
+     problems: list[str] = []
+     for i, seg in enumerate(segments):
+         if seg.start is not seg.end and seg.start_stroke_idx > seg.end_stroke_idx:
+             problems.append(f"segment {i}: 笔区间颠倒")
+@@ -374,21 +452,10 @@
+             if seg.stroke_count < MIN_STROKES:
+                 problems.append(f"segment {i}: 已确认线段笔数 {seg.stroke_count} < 3")
+             if seg.stroke_count % 2 == 0:
+                 problems.append(f"segment {i}: 已确认线段笔数为双数 {seg.stroke_count}")
+-            if seg.direction == 1:
+-                if seg.low != seg.start.start.price or seg.high != seg.end.end.price:
+-                    problems.append(
+-                        f"segment {i}: 向上线段极值不在两端"
+-                        f"（起点 {seg.start.start.price} 低点 {seg.low}，"
+-                        f"终点 {seg.end.end.price} 高点 {seg.high}）"
+-                    )
+-            elif seg.high != seg.start.start.price or seg.low != seg.end.end.price:
+-                problems.append(
+-                    f"segment {i}: 向下线段极值不在两端"
+-                    f"（起点 {seg.start.start.price} 高点 {seg.high}，"
+-                    f"终点 {seg.end.end.price} 低点 {seg.low}）"
+-                )
++            if strokes is not None:
++                problems.extend(_extreme_problems(seg, i, strokes))
+         if i and segments[i - 1].end_stroke_idx + 1 != seg.start_stroke_idx:
+             problems.append(f"segment {i}: 与上一线段不连续")
+ 
+     # 同向约束只作用于相邻的确认线段。TENTATIVE 段（窗口左端的前导段、

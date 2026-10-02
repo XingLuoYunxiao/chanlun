@@ -1,0 +1,42 @@
+# kind: theory
+# status: adopted
+# adopted_at: 2026-10-01
+# adopted_note: 这一份不是提案，是**落地后补写的存档**：2026-10-01 缠论严格性审计的
+#   修复阶段里，离开段排除与 GG/DD 只遍历同向段是同一条线（round-013-G11c 定了
+#   「只遍历 Zn」，本轮再定「Zn 里不含离开段」），但两者依据不同 —— 前者是第 20 课
+#   原文「n遍历中枢中所有Zn」的直接推论，后者是**原文空白项**下的口径选择，靠中心
+#   定理二的可满足性定案。所以单独立一轮记录，diff 就是主干现在的写法。
+#   因此本补丁对当前主干 `git apply` 会失败（改动已在里面），这是 adopted 的正常状态。
+# theory: L20-PIVOT-DEFINITION
+# quote: 为方便起见，以后都把这些与中枢方向一致的次级别走势类型称为Z走势段，按中枢中的时间顺序，分别记为Zn等，而相应的高、低点分别记为gn、dn，定义四个指标,GG=max(gn),G=min(gn),D=max(dn),DD=min(dn)，n遍历中枢中所有Zn。
+# source: 缠中说禅《教你炒股票108课》第20课《缠中说禅走势中枢级别扩张及第三类买卖点》
+# finding: 原文「n遍历中枢中所有Zn」没说清「中枢中」是否含**离开段**（把价格带出 [ZD,ZG]、朝下一个中枢去的那一个同向段）。含进去时 [DD,GG] 被撑到下一个中枢门口，第20课中心定理二里的「趋势」在结构上永远判不出来：24 只票日线 46 个确认中枢、22 个相邻对，含离开段 → 上涨 0 / 下跌 0 / 形成高级别中枢 22；不含离开段 → 上涨 8 / 下跌 4 / 形成高级别中枢 10 / 无关系 0。且「无关系 0」说明定理二那两句话（后GG〈前DD、后DD〉前GG、否则形成高级别中枢）在这套口径下正好是完全分类。
+# evidence: cd chanlun && PYTHONPATH=src ../.venv-chanlun/bin/python optimizer/tools/measure_l20_dd_gg_scope.py  # 5 种口径对照 + 直接读主干 Pivot.gg/dd：trunk_vs_C = 0（主干与「Zn 去离开段」逐对相同）；T_trunk 与 C 行同为 上涨 8 / 下跌 4 / 高级别中枢 10 / 无关系 0。反例（含离开段时的撑宽）：600000 P0→P1，B=[6.04,8.67]→[5.67,10.21] 判「高级别中枢」，C=[6.84,8.67]→[5.67,7.03] 判「下跌」。
+# note: 离开段在本项目里的定义是 `segments[p.end_idx]`（见 pivot.py 顶部约定与
+#   L20-THIRD-POINT-POSITION），它天然是组里最后一个同向段，所以 `zn[:-1]` 就是
+#   「中枢中的 Zn」。`len(zn) > 1` 的兜底只是防御（trio 保证 A、C 同向，zn 至少两段）。
+diff --git a/src/chanlun/chan/pivot.py b/src/chanlun/chan/pivot.py
+--- a/src/chanlun/chan/pivot.py
++++ b/src/chanlun/chan/pivot.py
+@@ -182,9 +182,20 @@
+         zn = [s for s in group if s.direction == direction]
++        # 组里最后一个 Zn 是**离开段**（本函数的约定：`segments[end_idx]` 是离开段，
++        # 它把价格带出 `[zd, zg]`）。它不算「中枢中」的 Z 走势段，所以不进 GG/DD。
++        #
++        # 这一条不是可有可无的细节，它决定中心定理二能不能成立。实测（24 只票
++        # 日线、46 个确认中枢、22 个相邻对，见 optimizer/tools/
++        # measure_l20_dd_gg_scope.py）：把离开段算进去时 `[DD, GG]` 被撑到下一个
++        # 中枢的门口，22 对全部判成「形成高级别的走势中枢」，上涨/下跌 0/0 ——
++        # 定理二里的「趋势」永远判不出来；把离开段去掉后是 上涨 8 / 下跌 4 /
++        # 高级别中枢 10，且「无关系」0 对（定理二那两句话正好是完全分类）。
++        inside = zn[:-1] if len(zn) > 1 else zn
+         back = back_of[j - 1]
+         pivots.append(
+             Pivot(
+                 idx=len(pivots),
+                 zg=zg,
+                 zd=zd,
+-                gg=max(s.high for s in zn),
+-                dd=min(s.low for s in zn),
++                gg=max(s.high for s in inside),
++                dd=min(s.low for s in inside),

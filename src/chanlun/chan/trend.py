@@ -1,18 +1,19 @@
-"""走势类型：趋势与盘整（第 17 课、第 65 课）。
+"""走势类型：趋势与盘整（第 17 课、第 20 课）。
 
 缠论把走势分成两类：
 
 - **趋势**：至少两个同级别中枢**依次上升或下降**；
-- **盘整**：只有一个中枢，或相邻中枢方向不一致。
+- **盘整**：只有一个中枢，或相邻中枢不构成趋势。
 
 判据只看中枢（`pivot.py` 的产物），不需要再回到笔/线段。本模块只吃
 `CONFIRMED` 中枢：一个还在延伸的中枢随时可能吞掉下一段，拿它定走势类型
 就是拿未来数据下结论。
 
-已知的进一步细化空间（留给优化师按原文重新推导）：原文谈趋势时强调同级别
-中枢**互不重叠**，重叠的中枢按第 20 课应做**扩展**合成更高级别中枢。本实现
-只要求「依次上升/下降」（`zd` 与 `zg` 同时抬高/降低），没有强制不重叠，
-因此重叠但整体抬高的两个中枢也会被算成上涨趋势。
+「依次上升/下降」用第 20 课中心定理二的原文口径（见 `_direction`）：比的是
+**围绕中枢波动的区间 `[DD, GG]`**，而且必须**严格分离**。第 20 课同一课把
+「在趋势里，同级别的前后走势中枢是不能有任何重叠的，这包括任何围绕走势中枢
+产生的任何瞬间波动之间的重叠」写死了 —— 所以两个波动区间只要还沾着，就落到
+定理二第三句「形成高级别的走势中枢」，那是**级别扩张**，不是趋势。
 """
 
 from __future__ import annotations
@@ -49,10 +50,22 @@ class Trend:
 
 
 def _direction(a: Pivot, b: Pivot) -> int:
-    """两个相邻中枢的走向：1 依次上升，-1 依次下降，0 不构成趋势。"""
-    if b.zd > a.zd and b.zg > a.zg:
+    """两个相邻同级别中枢的走向：1 上涨，-1 下跌，0 形成高级别中枢（不是趋势）。
+
+    判据逐字来自第 20 课「走势中枢中心定理二」：
+
+        前后同级别的两个缠中说禅走势中枢，后GG〈前DD等价于下跌及其延续；后DD〉
+        前GG等价于上涨及其延续。后ZG<前ZD且后GG〉=前DD，或后ZD〉前ZG且后DD=<前GG，
+        则等价于形成高级别的走势中枢。
+
+    比的是**围绕中枢波动的区间 `[DD, GG]`**，不是中枢区间 `[ZD, ZG]`。这两句是
+    完全分类：实测 24 只票日线 22 个相邻中枢对，「不满足前两句也不满足第三句」的
+    是 0 对（`optimizer/tools/measure_l20_dd_gg_scope.py`），所以落在 else 分支的
+    就是「形成高级别的走势中枢」——第 20 课把它和趋势并列，**不是趋势**，返回 0。
+    """
+    if b.dd > a.gg:
         return 1
-    if b.zd < a.zd and b.zg < a.zg:
+    if b.gg < a.dd:
         return -1
     return 0
 
@@ -78,8 +91,8 @@ def classify_trends(pivots, level: str = "day") -> list[Trend]:
     i = 0
     n = len(confirmed)
     while i < n:
-        if i + 1 < n and _direction(confirmed[i], confirmed[i + 1]) != 0:
-            want = _direction(confirmed[i], confirmed[i + 1])
+        want = _direction(confirmed[i], confirmed[i + 1]) if i + 1 < n else 0
+        if want != 0:
             j = i + 1
             while j + 1 < n and _direction(confirmed[j], confirmed[j + 1]) == want:
                 j += 1

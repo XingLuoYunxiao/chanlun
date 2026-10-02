@@ -90,6 +90,49 @@ def test_normalize_dedups_and_sorts():
     assert out["ts"].is_monotonic_increasing
 
 
+def test_normalize_drops_non_positive_price_bars(caplog):
+    """0 价 K 线不是行情，必须剔除，不能当成真实极值。
+
+    回归（2026-10-01 用户报告「深证成指日线只剩 1 个向下线段」）：
+    真实数据里 0 价行是停市占位或数据源缺值。`to_numeric(errors="coerce")`
+    先把它们变成 NaN，紧跟的 `fillna(0.0)` 再变成 0.0 —— 于是 min(low)=0.0
+    成了全序列最低点，分型/笔把它当真实极值，1991 年以来的整段走势被压成
+    4 个线段。实测 sz.399001 日线含 5 根全 0 行（1995-02-06~1995-02-10），
+    sh.600759 的 5 分钟线含 142 根。
+    """
+    df = _df(6)
+    for i in (2, 3):
+        for col in ("open", "high", "low", "close"):
+            df.loc[i, col] = 0.0
+    df.loc[4, "volume"] = 0.0  # 成交量为 0 是正常的，不得被剔除
+
+    with caplog.at_level("WARNING"):
+        out = normalize(df)
+
+    assert len(out) == 4
+    assert df.loc[2, "ts"] not in set(out["ts"])
+    assert df.loc[3, "ts"] not in set(out["ts"])
+    assert (out[["open", "high", "low", "close"]] > 0).all().all()
+    assert 0.0 in set(out["volume"])
+    assert "非正价格" in caplog.text
+
+
+def test_normalize_price_filter_is_idempotent():
+    """`normalize` 承诺幂等，剔除后重跑必须再次返回同一结果。"""
+    df = _df(5)
+    df.loc[1, "low"] = -1.0
+    once = normalize(df)
+    assert len(once) == 4
+    assert normalize(once).equals(once)
+
+
+def test_normalize_negative_price_is_dropped_too():
+    """负价同样非法（复权因子错误会产生负价），一并剔除。"""
+    df = _df(4)
+    df.loc[0, "close"] = -3.0
+    assert len(normalize(df)) == 3
+
+
 def test_market_of_handles_prefixed_code():
     assert store.market_of("sh.600000") == "sh"
     assert store.market_of("600000") == "sh"

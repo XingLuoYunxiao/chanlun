@@ -1,6 +1,9 @@
+import itertools
+import random
+
 import pandas as pd
 
-from chanlun.chan.include import merge_bars
+from chanlun.chan.include import _merge_direction, merge_bars
 
 COLS = ["ts", "open", "high", "low", "close", "volume", "amount"]
 
@@ -134,6 +137,63 @@ def test_sequential_principle_not_transitive():
     assert len(m) == 1
     assert (m[0].high, m[0].low) == (8.0, 5.0)
     assert m[0].src_start == 0 and m[0].src_end == 2
+
+
+# ---------------- 方向判据：gn >= gn-1（第 65 课原文） ----------------
+def test_merge_direction_counts_equal_high_as_upward():
+    """第 65 课原文：「如果gn>=gn-1，那么称第n-1、n、n+1根K线是向上的」。
+
+    `>=` **含相等**：高点相等必须判向上（合并取 `max/max`），不能判向下
+    （取 `min/min`）。相等时两种读法的合并结果不同——例如把 (10,5)、(10,6)
+    这两根相等高点的K线合并：向上得 (10,6)，向下得 (10,5)。
+    """
+    assert _merge_direction(10.0, 10.0) == 1     # gn == gn-1 → 向上
+    assert _merge_direction(10.0, 11.0) == 1     # gn >  gn-1 → 向上
+    assert _merge_direction(10.0, 9.0) == -1     # gn <  gn-1 → 向下
+    assert _merge_direction(10.0, 10.0) != -1    # 严格 `>` 会误判为向下
+    # 相等高点在 `merge_bars` 里只能走首两根的 `_infer_direction` 分支（见下一个
+    # 测试的不可达性证明），它同样给出 `>=` 的答案：向上合并取 max/max。
+    # 若按严格 `>` 判向下，这里会得到 (10, 5) —— 两种读法的结果确实不同。
+    m = merge_bars(mk([
+        ("d1", 1, 10, 5, 8, 100, 0),
+        ("d2", 1, 10, 6, 9, 100, 0),
+    ]))
+    assert len(m) == 1
+    assert (m[0].high, m[0].low) == (10.0, 6.0)   # 向上：max(10,10), max(5,6)
+    assert (m[0].high, m[0].low) != (10.0, 5.0)   # 向下 min/min 的结果，被排除
+
+
+def test_adjacent_merged_bars_never_share_a_high():
+    """`_merge_direction` 的相等分支在 `merge_bars` 里**不可达**（穷举验证）。
+
+    为什么不可达：相邻两根已合并K线必然**互不包含**（后一根只在 `_contains`
+    为假时才追加），而两根互不包含的区间若高点相等就必然互相包含（`high`
+    相等时 `_contains` 恒为真），所以追加时高点必不相等；此后只有
+    `merged[-1]` 会被后续的包含合并改写，而改写方向由它相对 `merged[-2]`
+    的高点关系决定，只会把高点推得离 `merged[-2].high` 更远（向上取 max、
+    向下取 min），永远不可能取等。
+
+    于是 `>` 与 `>=` 两种读法在 `merge_bars` 上产出**完全相同**的合并序列：
+    第 65 课的这条边界是**理论边界**——真实数据（24 只 A 股日线）与全部可构造
+    输入都触发不到，`>=` 的修正不改变任何既有结果，只是把原文口径写对。
+    """
+    pairs = [(h, low) for h in range(1, 5) for low in range(0, h)]
+    for n in range(1, 5):
+        for combo in itertools.product(pairs, repeat=n):
+            m = merge_bars([(f"d{i}", h, low) for i, (h, low) in enumerate(combo)])
+            for a, b in zip(m, m[1:]):
+                assert a.high != b.high
+    # 更长的随机序列同样成立（含「新 bar 包含 merged[-1]」这种会抬高/压低
+    # 最后一根合并K线高点的情形）。
+    rng = random.Random(20261001)
+    for _ in range(2000):
+        rows = []
+        for i in range(rng.randint(2, 12)):
+            h = rng.randint(1, 12)
+            rows.append((f"d{i}", h, rng.randint(0, h - 1)))
+        m = merge_bars(rows)
+        for a, b in zip(m, m[1:]):
+            assert a.high != b.high
 
 
 def test_equality_boundaries_count_as_inclusion():

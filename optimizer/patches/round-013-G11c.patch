@@ -1,4 +1,18 @@
 # kind: theory
+# status: adopted
+#
+# 2026-10-01 由缠论严格性审计的修复阶段合入主干。落地方案与本提案等价（只把
+# `gg=max(high)` / `dd=min(low)` 的遍历范围从 `group` 收到同向段），但实现写法不同：
+# 主干把中枢方向显式取自 `trio[0].direction`（第 20 课「A、C段，其方向与中枢形成的
+# 方向是一致的」），并断言相邻确认段方向交替，因此 `zn` 至少含 A、C 两段、不会为空。
+# 已采纳的提案不再要求能 apply 到主干，其判据改由常驻回归承担：
+# tests/chan/test_pivot.py::{test_gg_dd_cover_only_the_z_segments,
+# test_tentative_tail_does_not_join_an_existing_pivot,
+# test_leading_tentative_segment_does_not_shift_a_later_pivot,
+# test_merge_overlapping_same_level_pivots}（4 个用例已按第 20 课原文改判据，
+# 见本提案 tests.summary 的要求）。
+# 与提案的差异：提案写 `zs = [s for s in group if s.direction == group[0].direction]`，
+# 主干用 `trio[0].direction` —— `group[0]` 就是 `confirmed[i]` 即 A 段，两者等价。
 # theory: L20-PIVOT-DEFINITION
 # quote: 为方便起见，以后都把这些与中枢方向一致的次级别走势类型称为Z走势段，按中枢中的时间顺序，分别记为Zn等，而相应的高、低点分别记为gn、dn，定义四个指标,GG=max(gn),G=min(gn),D=max(dn),DD=min(dn)，n遍历中枢中所有Zn。
 # note: 判据是第20课「n 遍历中枢中所有Zn」那一句（GG/DD 只覆盖 Z 走势段），与趋势不重叠（L20-TREND-NO-OVERLAP）不是同一条；本条只改 GG/DD 的遍历范围，不改中枢区间 [ZD,ZG]，也不改趋势判据。

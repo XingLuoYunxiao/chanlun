@@ -2,7 +2,7 @@
 
 规则：
 - 若后一根K线的高低区间完全包含前一根（或反之），则二者需合并。
-- 合并方向由**已合并序列的最后两根**决定（`merged[-1].high > merged[-2].high` 为向上）；
+- 合并方向由**已合并序列的最后两根**决定（`merged[-1].high >= merged[-2].high` 为向上）；
   序列只有一根时，用当前原始 bar 与它比较定方向。
 - 向上处理：`high = max(h1, h2)`，`low = max(l1, l2)`
 - 向下处理：`high = min(h1, h2)`，`low = min(l1, l2)`
@@ -25,12 +25,29 @@ def _contains(a_high: float, a_low: float, b_high: float, b_low: float) -> bool:
 
 
 def _infer_direction(prev_high: float, prev_low: float, high: float, low: float) -> int:
-    """无历史趋势时的方向推断（有唯一确定性结果）。"""
+    """无历史趋势时的方向推断（有唯一确定性结果）。
+
+    原文第 65 课的方向判据要求「第 n 根与第 n-1 根**不是**包含关系」，两两包含的
+    首两根K线不满足这个前提，原文在此是空白项，故这里按高点先比、高点相等再比
+    低点定方向（模块 docstring 已声明该约定）。
+    """
     if high > prev_high:
         return 1
     if high < prev_high:
         return -1
     return 1 if low > prev_low else -1
+
+
+def _merge_direction(prev_high: float, last_high: float) -> int:
+    """已合并序列最后两根的方向判据（第 65 课原文，逐字）。
+
+    原文：「如果gn>=gn-1，那么称第n-1、n、n+1根K线是向上的；如果dn<=dn-1，
+    那么称第n-1、n、n+1根K线是向下的。」
+
+    即高点**相等也算向上**（`>=`，不是严格 `>`）：相等时向上规则取 `max/max`，
+    向下规则取 `min/min`，两者结果不同。此判据只在 `len(merged) >= 2` 时使用。
+    """
+    return 1 if last_high >= prev_high else -1
 
 
 def merge_bars(bars: pd.DataFrame | Sequence[Sequence[float]]) -> list[MergedBar]:
@@ -56,7 +73,9 @@ def merge_bars(bars: pd.DataFrame | Sequence[Sequence[float]]) -> list[MergedBar
 
         last = merged[-1]
         if len(merged) >= 2:
-            direction = 1 if merged[-1].high > merged[-2].high else -1
+            # 第 65 课原文：「如果gn>=gn-1，那么称第n-1、n、n+1根K线是向上的；
+            # 如果dn<=dn-1，那么称第n-1、n、n+1根K线是向下的。」——`>=`，含相等。
+            direction = _merge_direction(merged[-2].high, merged[-1].high)
         else:
             direction = _infer_direction(last.high, last.low, high, low)
 

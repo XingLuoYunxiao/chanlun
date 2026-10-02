@@ -217,7 +217,11 @@ def snapshot_of(code: str, period: str, bars: pd.DataFrame, *, segs=(), pivots=(
 
 def macd_frame(n: int, *, areas: dict[int, float] | None = None,
                spans: dict[tuple[int, int], float] | None = None) -> pd.DataFrame:
-    """假 MACD：`areas[pos]=v` 在单点上放 v；`spans[(i0,i1)]=v` 把 v 均摊到闭区间。"""
+    """假 MACD：`areas[pos]=v` 在单点上放 v；`spans[(i0,i1)]=v` 把 v 均摊到闭区间。
+
+    值**带符号**：`hist_area` 按第 24 课分色取面积（向上的看红柱子、向下看
+    绿柱子），向下段的假面积要传负值，否则该段量出的面积为 0。
+    """
     hist = [0.0] * n
     for pos, total in (areas or {}).items():
         hist[pos] = total

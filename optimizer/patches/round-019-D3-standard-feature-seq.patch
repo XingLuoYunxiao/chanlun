@@ -1,0 +1,146 @@
+# kind: theory
+# status: adopted
+# adopted_at: 2026-10-02
+# adopted_note: |
+#   本补丁是**落地后的存档**，不是提案：修复已在主干里（`src/chanlun/chan/segment.py`），
+#   所以 `git apply` 在主干上必然失败，这是设计如此（tests/optimizer 的
+#   test_real_patches_apply_and_revert_cleanly 会跳过 status: adopted 的补丁）。
+#   审计出处：docs/evidence/2026-10-01-chanlun-strictness-audit.md §A.2「D3 标准特征序列」。
+#   落地内容两件：`_merge_feature` 在合并后回溯到不动点；新增 `_combine` 把第 65 课的
+#   合并公式抽出来给两种方向共用（合并公式与 contained 判定逐字未动，是补漏不是改判据）。
+#   判据落在 tests/chan/test_segment.py 的三条新用例：回溯、非传递、输出无相邻包含。
+#   理论条目：optimizer/theory/L67-SEGMENT-CHAR-SEQ.md 补入第 67 课「非包含处理」原文。
+#   基线：diff 基准是 round-018-D2 落地之后的主干（D2 → D3），不是 HEAD ——
+#   与 round-018-D2（HEAD → D2）串成一条链，逐环可验。
+
+# theory: L67-SEGMENT-CHAR-SEQ
+# quote: 关于特征序列，把每一元素看成是一K线，那么，如同一般K线图中找分型的方法，也存在所谓的包含关系，也可以对此进行非包含处理。经过非包含处理的特征序列，成为标准特征序列。以后没有特别说明，特征序列都是指标准特征序列。
+# source: 缠中说禅《教你炒股票108课》第67课《线段的划分标准》
+# finding: 「标准特征序列」的非包含处理没有做到不动点：`_merge_feature` 只做单趟前向合并，合并出来的新元素不再回头与前一元素比较，于是输出里仍会残留相邻包含关系。
+#    
+#    第 67 课把顺序钉死了：「关于特征序列，把每一元素看成是一K线，那么，如同一般K线图中找分型的方法，也存在所谓的包含关系，也可以对此进行非包含处理。经过非包含处理的特征序列，成为标准特征序列。」第 65 课又明说包含关系「不符合传递律」，所以「先用第1、2根K线……然后用新的K线去和第三根比」这条顺序原则必须走到不动点。**禅师自己在第 79 课第 24 段就是这么做的**：「34、56、78，其中前两者可以进行包含关系处理，因此可以合并为36（指区间），所以78显然和12、36构成底分型」——先把 34 与 56 包含掉，再拿合并出来的 36 去和 12、78 判分型；同课第 26 段：「由于9-10是78的包含关系，所以可以认为线段二延伸到了10」，同样先解包含关系再定线段边界。第 71 课把理由讲透了：「但假设的转折点后的顶分型的元素，是可以应用包含关系的……同一类的东西，当然可以考察包含关系。」第 79 课评论区读者**今才觉艳**（2011-05-14）把它读成通则：「在分析特征序列包含关系的时候，要先把所有的特征序列先包含，然后再分段。而不是只处理最近的特征序列包含关系就可以」——**这是读者的读图笔记，不是禅师原话**，只作佐证。第 67 课评论区也有人说破了这层前提：「注意本课的第一种，第二种情况都是有前提的：经过非包含处理的特征序列，成为标准特征序列。」
+#    
+#    代价是真实的极值被吃掉：标准特征序列里残留一处包含关系，`_is_fractal_at` 在那一处就判不出分型。sz.300760 日线 `_feature_seq(ss, 0, 1)` 的 std[7]=[405.576, 449.805]（笔21）被 std[8]=[393.502, 450.733]（笔27）包含，于是笔27 这个真实最高点永远进不了候选，`candidates(0)` 为空、`best(0)=(0,None)`，classify 只能从笔1 起段 —— 132 笔只划出 3 段、最长段 127 笔。这不是「判据偏严」，是判据在残留包含处**失效**。
+# evidence: # [采纳前] 下面的数字量自采纳之前的口径（`_merge_feature` 单趟合并），保留作为缺陷证据。
+#    # 尺子：真实行情仓，经 store.read -> ChanEngine.full 全量重算；段数 = snap.segments 全段。
+#    # 探针：optimizer/tools/measure_merge_feature_scope.py（--sample 100，共 132 个样本：
+#    #       24 只日线窗口 + 5 只指数全史 + 3 个非日线 + 100 只随机沪市日线窗口）。
+#    #   PYTHONPATH=src .venv-chanlun/bin/python optimizer/tools/measure_merge_feature_scope.py --sample 100
+#    #   相邻包含关系残留合计：50277 → 0
+#    #   线段数：增加 71 / 减少 3 / 不变 58
+#    #   最长段 > 80 笔的样本数：3 → 1
+#    #   最长段最大值：127 笔 → 87 笔
+#    #   典型（旧→新，段/最长段）：
+#    #     sz.300760 day 132笔   3→15 段，最长 127→27 笔，残留 223→0
+#    #     sh.601088 day 134笔  12→14 段，最长  29→25 笔，残留 234→0
+#    #     sz.300750 day 133笔  13→17 段，最长  43→29 笔，残留 171→0
+#    #     sz.399001 day 651笔  55→65 段，最长  53→47 笔，残留 1864→0
+#    #     sz.399006 day 310笔  26→46 段，最长  87→23 笔，残留 224→0
+#    #     sh.600759 5  1948笔 210→232 段，最长 73→47 笔，残留 26714→0
+#    # 不动点核对（最终主干，--sample 100 复跑）：残留合计 50277 → 0，最长段最大 102 → 19 笔。
+#    # 根因逐步追踪（sz.300760 日线，_feature_seq(ss, 0, 1)）：
+#    #   std[7] = [405.576, 449.805]  (笔21)
+#    #   std[8] = [393.502, 450.733]  (笔27)
+#    #   std[7] 被 std[8] 包含 -> _is_fractal_at(std, 8, 1) 要求 393.502 > 405.576 -> False
+#    #   -> 全局最高点笔27 永不在 candidates 里 -> candidates(0) == [] -> best(0) == (0, None)
+#    #   -> classify 从笔1 起段 -> 132 笔塌成 3 段，最长段 127 笔。
+#    # 判据回归（cp 到 /tmp、还原单趟合并、跑新判据、再逐字节还原）：
+#    #   PYTHONPATH=src ../.venv-chanlun/bin/python -m pytest -q tests/chan/test_segment.py
+#    #   修复前：3 failed —— test_feature_merge_backtracks_when_merge_engulfs_previous_element
+#    #                      test_feature_merge_does_not_use_transitivity
+#    #                      test_feature_merge_output_has_no_adjacent_containment
+#    #   修复后：全量 pytest -q -> 831 passed, 12 deselected, 1 warning
+# note: 改动只有一处，纯补漏、不改判据：`_merge_feature` 在 `contained` 分支里把新元素并入末元素后，回头继续检查新的末元素与前一元素是否又构成包含，直到不再构成为止（新增 `_combine` 把第 65 课的合并公式抽出来，两种方向共用）。合并公式本身与 `contained` 判定逐字未动，所以这是**只补缺口、不动判据**的扩展。
+#    
+#    为什么要回头：第 65 课的合并是「顺序原则」下的两两合并，而合并会**放大**元素区间，放大后可能反过来包含前一元素；包含关系又「不符合传递律」，所以不能只看相邻一次。第 79 课那句「先把所有的特征序列先包含」正是这个意思。
+#    
+#    考虑过但没采用的方案：从「上一个未被包含的元素」重新扫描合并（严格前缀重扫）。它能一并消掉全部残留，但第 79 课第 24 段的做法是「先包含、再判分型」两段式，而 `_merge_feature` 的语义就是单趟合并；改用重扫会让「合并」与「分型判定」两个阶段的边界变模糊。当前落地的回溯循环在不动点上与重扫等价（132 只样本实测残留 0）。
+#    
+#    判据落在 tests/chan/test_segment.py 新增的三条：test_feature_merge_backtracks_when_merge_engulfs_previous_element、test_feature_merge_does_not_use_transitivity、test_feature_merge_output_has_no_adjacent_containment。第三条是不变量形式：对任意输入，`_merge_feature` 的输出逐对检查 `not ((b0<=a0 and b1>=a1) or (b0>=a0 and b1<=a1))`。
+diff --git a/src/chanlun/chan/segment.py b/src/chanlun/chan/segment.py
+--- a/src/chanlun/chan/segment.py
++++ b/src/chanlun/chan/segment.py
+@@ -54,15 +54,56 @@
+     """相邻特征序列元素**无重合区间**即为缺口。"""
+     return b[0] < a[1] or b[1] > a[0]
+ 
+ 
++def _combine(
++    h: float,
++    l: float,
++    si: int,
++    high: float,
++    low: float,
++    si2: int,
++    direction: int,
++) -> tuple[float, float, int]:
++    """第65课包含关系的结合法则。
++
++    「当向上时，顺次n个包含关系的K线组，等价于[maxdi,maxgi]的区间对应的K线，
++    也就是说，这n个K线，和最低最高的区间为[maxdi,maxgi]的K线是一回事情；
++    向下时，顺次n个包含关系的K线组，等价于[mindi,mingi]的区间对应的K线。」
++    """
++    if direction == 1:
++        return max(h, high), max(l, low), (si2 if high >= h else si)
++    return min(h, high), min(l, low), (si2 if low <= l else si)
++
++
+ def _merge_feature(
+     elems: Sequence[tuple[float, float, int]], direction: int
+ ) -> list[tuple[float, float, int]]:
+-    """对特征序列做包含处理，得到标准特征序列。
++    """对特征序列做非包含处理，得到**标准特征序列**。
++
++    第67课：「关于特征序列，把每一元素看成是一K线，那么，如同一般K线图中找分型的
++    方法，也存在所谓的包含关系，也可以对此进行非包含处理。经过非包含处理的特征
++    序列，成为标准特征序列。」
++
++    第65课给出结合律与顺序原则：「因此在K线包含关系的分析中，还要遵守顺序原则，
++    就是先用第1、2根K线的包含关系确认新的K线，然后用新的K线去和第三根比，如果有
++    包含关系，继续用包含关系的法则结合成新的K线，如果没有，就按正常K线去处理。」
+ 
+     `direction` 为线段方向；元素记为 `(high, low, stroke_idx)`，
+     合并后保留决定极值的那根笔的索引。
++
++    顺序原则只向前推进，而第65课同时指出「包含关系，不符合传递律」，所以合并出的
++    新元素可能反过来把**前一个**元素包含进去（实测在 A 股各标的普遍出现，`sz.300760`
++    等标的每次划分都有上百处）。此时它就不再是第67课所说的「经过非包含处理」的
++    序列：`_is_fractal_at` 按第62课「第二K线高点是相邻三K线高点中最高的，而低点也是
++    相邻三K线低点中最高的」判定，被包含的那一对永远构不成分型，真极值会被永久跳过，
++    该起点就一个分界点也找不到。所以合并之后要沿已生成的序列回退，直到相邻元素之间
++    不再有包含关系为止 —— 这正是第79课第24段禅师**自己**的做法：「34、56、78，其中前两者
++    可以进行包含关系处理，因此可以合并为36（指区间），所以78显然和12、36构成底分型」
++    （先包含，再判分型；同课第26段同理：「由于9-10是78的包含关系，所以可以认为线段二
++    延伸到了10」）。第71课给出理由：「但假设的转折点后的顶分型的元素，是可以应用包含
++    关系的……同一类的东西，当然可以考察包含关系。」回退只合并**相邻**元素，不借助
++    传递律。
+     """
+     out: list[list[float | int]] = []
+     for high, low, si in elems:
+         if not out:
+@@ -71,15 +112,18 @@
+         h, l, prev_si = out[-1]
+         h, l, prev_si = float(h), float(l), int(prev_si)
+         contained = (high <= h and low >= l) or (high >= h and low <= l)
+         if contained:
+-            if direction == 1:
+-                nh, nl = max(h, high), max(l, low)
+-                nsi = si if high >= h else prev_si
+-            else:
+-                nh, nl = min(h, high), min(l, low)
+-                nsi = si if low <= l else prev_si
+-            out[-1] = [nh, nl, nsi]
++            out[-1] = list(_combine(h, l, prev_si, high, low, si, direction))
++            while len(out) >= 2:
++                h1, l1, si1 = out[-2]
++                h2, l2, si2 = out[-1]
++                h1, l1, si1 = float(h1), float(l1), int(si1)
++                h2, l2, si2 = float(h2), float(l2), int(si2)
++                if not ((h2 <= h1 and l2 >= l1) or (h2 >= h1 and l2 <= l1)):
++                    break
++                out.pop()
++                out[-1] = list(_combine(h1, l1, si1, h2, l2, si2, direction))
+         else:
+             out.append([high, low, si])
+     return [(float(h), float(l), int(si)) for h, l, si in out]
+ 

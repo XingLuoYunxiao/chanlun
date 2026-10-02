@@ -45,8 +45,9 @@ def _snap_with_signal(code, period, bars):
                        signals=[signal_of(segs[2], "b1", pivot_idx=0)])
 
 
-EQUAL_AREAS = lambda close: macd_frame(len(close), areas={5: 4.0, 25: 4.0})  # noqa: E731
-SHRINKING_AREAS = lambda close: macd_frame(len(close), areas={5: 10.0, 25: 4.0})  # noqa: E731
+# 比较的两段都是向下段（`_segs` 里 direction=-1）→ 按第 24 课只算绿柱，hist 取负。
+EQUAL_AREAS = lambda close: macd_frame(len(close), areas={5: -4.0, 25: -4.0})  # noqa: E731
+SHRINKING_AREAS = lambda close: macd_frame(len(close), areas={5: -10.0, 25: -4.0})  # noqa: E731
 
 
 def _run(env, source, bars, *, macd_fn=EQUAL_AREAS):

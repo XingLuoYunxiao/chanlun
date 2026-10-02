@@ -1,4 +1,21 @@
 # kind: theory
+# status: adopted
+# adopted_at: 2026-10-01
+# adopted_note: 由 2026-10-01 缠论严格性审计的修复阶段落地。主干
+#   `src/chanlun/chan/trend.py::_direction` 现在就是 `b.dd > a.gg → 1`、
+#   `b.gg < a.dd → -1`、否则 0，与本补丁的判据逐字相同；docstring 另外补了定理二
+#   第三句（「则等价于形成高级别的走势中枢」）为什么该落到 `return 0`。判据落在
+#   `tests/chan/test_trend.py`：`test_monotone_pivots_with_overlapping_swings_are_not_a_trend`
+#   与 `test_swing_ranges_touching_at_a_point_are_not_a_trend` 是新加的（前者正是本
+#   提案要拦的「[ZD,ZG] 单调但 [DD,GG] 重叠」），另有 7 个既有用例按新口径改了
+#   夹具与期望（`_pivot` 的 gg/dd 默认值从 `zg+1/zd-1` 改成贴住 `[zd, zg]`，否则
+#   人造中枢的波动区间会互相咬住，反而判不出趋势）。
+#   落地前提（本提案自己警告过的那条）：中枢 GG/DD 必须先修成「只遍历同向 Zn 且不含
+#   离开段」。同一轮里先落了那个修复（`optimizer/patches/round-013-G11c.patch`），
+#   否则 `[DD, GG]` 被离开段撑到下一个中枢门口，本判据会把 22/22 对全部判成
+#   「形成高级别的走势中枢」——趋势永远出不来。实测见
+#   `optimizer/tools/measure_l20_dd_gg_scope.py`：修复后 上涨 8 / 下跌 4 /
+#   高级别中枢 10 / 无关系 0。
 # theory: L20-TREND-NO-OVERLAP,L17-TREND-DEF
 # quote: 而在趋势里，同级别的前后缠中说禅走势中枢是不能有任何重叠的，这包括任何围绕走势中枢产生的任何瞬间波动之间的重叠。
 # source: 缠中说禅《教你炒股票108课》第20课《缠中说禅走势中枢级别扩张及第三类买卖点》

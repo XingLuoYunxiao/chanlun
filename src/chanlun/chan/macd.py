@@ -3,6 +3,10 @@
 缠论判断背驰用的是 MACD **面积**：同向的两段走势中，后一段创了新极值，
 但对应区间的 MACD 柱面积反而缩小，说明力度衰竭，背驰成立。
 
+第 24 课原文：「这里的面积，指的是MACD柱子所围成的面积……**向上的看红柱子，
+向下看绿柱子**」——面积必须**分色**累加（向上段只算红柱、向下段只算绿柱），
+红绿混加会把反方向的力度也算进来，见 `hist_area`。
+
 口径必须与通达信/同花顺一致（硬要求，面积比较对口径极其敏感）：
 
     EMA(X, N)_t = (2 * X_t + (N - 1) * EMA(X, N)_{t-1}) / (N + 1)
@@ -173,16 +177,28 @@ def macd(
 # ---------------------------------------------------------------- 面积与极值
 
 
-def hist_area(macd_df: Any, i0: int, i1: int) -> float:
-    """闭区间 `[i0, i1]`（**含两端**）内 MACD 柱的面积。
+def hist_area(macd_df: Any, i0: int, i1: int, color: int) -> float:
+    """闭区间 `[i0, i1]`（**含两端**）内**同色** MACD 柱的面积。
 
-    缠论看的是红绿柱**面积**，即柱高绝对值之和：`sum(abs(hist))`，
-    因此结果恒 >= 0，且不因红绿相消而缩小。索引按位置解释，
-    越界或 `i0 > i1` 抛 `ValueError`。
+    第 24 课原文：「这里的面积，指的是MACD柱子所围成的面积……**向上的看红柱子，
+    向下看绿柱子**」。即向上段只累加红柱（`hist > 0`）、向下段只累加绿柱
+    （`hist < 0`）；而且第 24 课要求两个被比较的走势类型**同向**，混色求和会把
+    反方向的力度也算进来，口径就错了。
+
+    `color=+1` 只算红柱（向上段）、`color=-1` 只算绿柱（向下段），返回**绝对值
+    面积**（恒 >= 0）；窗口内没有同色柱时返回 0.0（该区间没有同向力度）。
+    索引按位置解释，越界或 `i0 > i1` 抛 `ValueError`；`color` 只能是 1 或 -1。
+
+    审计记录（`docs/evidence/2026-10-01-chanlun-strictness-audit.md` §2.9）：
+    旧实现是 `sum(abs(hist))`，把 |红| + |绿| **一起相加**，与本课原文相悖，
+    属审计确认的口径偏离。`color` 是**必填**参数，不允许再退回混色求和。
     """
+    if color not in (1, -1):
+        raise ValueError(f"color 只能是 1（红柱/向上）或 -1（绿柱/向下），收到 {color!r}")
     hist = _column_values(macd_df, "hist")
     i0, i1 = _check_range(hist.size, i0, i1)
-    return float(np.sum(np.abs(hist[i0 : i1 + 1]), dtype=float))
+    signed = hist[i0 : i1 + 1] * color
+    return float(np.sum(np.clip(signed, 0.0, None), dtype=float))
 
 
 def _dif_window(macd_df: Any, i0: int, i1: int) -> tuple[np.ndarray, int]:

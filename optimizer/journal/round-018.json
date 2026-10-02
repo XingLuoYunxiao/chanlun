@@ -1,0 +1,48 @@
+{
+  "after": {
+    "100 只样本": "1161 段 / 最长 93 笔 / 前导 10 笔",
+    "12 只票合计线段": "558 段（最长段 87 笔，仅 sz.399006 一处超 80 笔）",
+    "sz.399001 日线 8648 根": "651 笔 / 55 段（确认 54）/ 9 中枢 / 最长段 53 笔",
+    "sz.399001 日线末 4000 根": "303 笔 / 31 段（确认 30）/ 5 中枢 / 最长段 47 笔",
+    "sz.399006 日线": "310 笔 / 26 段 / 前导 0 笔（最长段 87 笔，规则所致）",
+    "validate_segments 问题数": "13 只票全部 0",
+    "含非正价格的数据文件": "0 / 5453"
+  },
+  "before": {
+    "100 只样本": "308 笔被藏进不分类的前导段",
+    "12 只票合计线段": "argmax 口径 1344 段 / 最长 76 笔 / 前导 308 笔",
+    "_structural_ok 否掉的候选占比": "未单独计量（与 argmax 合计量：100 只样本前导 308 笔）",
+    "sz.399001 日线 8648 根": "4 段 / 1 中枢 / 最长段 592 笔",
+    "sz.399001 日线末 4000 根": "1 段",
+    "sz.399006 日线": "前导 TENTATIVE 段 102 笔（占 310 笔的 1/3）",
+    "含非正价格的数据文件": "4 / 5453（sz.300114 1、sz.399001 day 5、sh.600759 30min 22、sh.600759 5min 142）",
+    "零价注入最差塌陷": "sh.600000@475 段数 12->7、最长 15->41 笔"
+  },
+  "evidence": "# [采纳前] 下面的数字量自采纳**之前**的口径，保留作为这次修正的缺陷证据。\n# 尺子：真实行情仓 data/{day,5min,30min}，经 store.read -> ChanEngine.full 全量重算；\n#       段数 = snap.segments 全段（含前导/尾部 TENTATIVE），确认段 = status == CONFIRMED。\n# 用户报告（原始措辞）：「有一个明显的一个bug你都没看出来吗？就比如说是那个深证指数，\n#   它现在只显示有一个向下的线段，这肯定是不可能的呀！它的这个日线怎么可能只有一个向下的线段？\n#   甚至于我把这个一共调了这个4000根K线，还是只有这一个向下的线段，你认为这对吗？」\n#\n# -- D1 数据层：0 价 K 线 --\n# 全市场扫描（修复前）：5453 个 parquet（day 5440 / 30min 8 / 5min 5），4.2s；\n#   含非正价格的 4 个文件：sz.300114 1 根、sz.399001 day 5 根、sh.600759 30min 22 根、sh.600759 5min 142 根。\n# 零价注入对照（4 只夹具票，步长 5 逐根注入 5 根 0 价 K 线，取最差）：\n#   sh.600000 @475 段数 12 -> 7、最长段 15 -> 41 笔\n#   sh.601088 @670 段数 11 -> 6、最长段 25 -> 58 笔\n#   sz.300059 @450 段数 11 -> 6、最长段 35 -> 56 笔\n#   sz.300750 @385 段数 11 -> 6、最长段 43 -> 74 笔\n#\n# -- D2 线段判据：四组配置的分离对照（sz.399001 日线全历史，651 笔）--\n#   修复前数据 + 贪心（_structural_ok 在场，前向首取）: 3 个分界\n#   修复前数据 + 最优（_structural_ok 在场，DP 最大段数）: 46 个分界 / 最长 159 笔\n#   修复后数据 + 贪心                                  : 46 个分界 / 最长 159 笔\n#   修复后数据 + 最优（去掉 _structural_ok，前向首取）   : 48 个分界 / 最长 159 笔\n#   -> 数据层与判据层是两个独立的致因，任一单独修都不够。\n#   去掉 _structural_ok、保留 DP：first-feasible 55 段 / 最长 53 笔；argmax 58 段 / 最长 53 笔。\n#\n# -- D2 左端 argmax 的对照（12 只票，修复后数据）--\n#   A「第一个可行起点」: sz.399001 55 段 / 最长 53 / 前导 0；sz.399006 26 段 / 最长 87 / 前导 0\n#   B「段数最多的起点」: sz.399001 58 段 / 最长 53 / 前导 14 笔；sz.399006 31 段 / 最长 102 / 前导 102 笔\n#   100 只样本：A 1161 段 / 最长 93 笔 / 前导 10 笔；B 1344 段 / 最长 76 笔 / 前导 308 笔。\n#   B 为了多算 183 段，把 308 笔藏进不分类的前导段 —— 与用户抱怨的症状同类，故取 A。\n#\n# -- D2 修复后的 12 只票复核（validate_segments(segs, strokes) 全 0 问题）--\n#   sz.399001 day 8648 -> 651 笔 / 55 段 / 9 中枢 / 最长 53\n#   sz.399006 day 3968 -> 310 笔 / 26 段 / 3 中枢 / 最长 87\n#   sh.000001 day 8736 -> 634 笔 / 74 段 / 11 中枢 / 最长 37\n#   sh.000905 day 5282 -> 406 笔 / 48 段 / 7 中枢 / 最长 23\n#   sh.000300 day 5282 -> 387 笔 / 43 段 / 9 中枢 / 最长 35\n#   sh.600000 day 1393 -> 104 笔 / 13 段 / 3 中枢 / 最长 19\n#   sh.601088 day 1636 -> 134 笔 / 12 段 / 3 中枢 / 最长 29\n#   sz.300059 day 1636 -> 129 笔 / 15 段 / 3 中枢 / 最长 35\n#   sz.300750 day 2018 -> 159 笔 / 15 段 / 4 中枢 / 最长 43\n#   sh.600759 5min 78290 -> 1948 笔 / 210 段 / 35 中枢 / 最长 73\n#   sh.600519 day 1636 -> 138 笔 / 17 段 / 2 中枢 / 最长 30\n#   sz.002415 day 1636 -> 137 笔 / 19 段 / 3 中枢 / 最长 21\n#   sh.600887 day 1636 -> 136 笔 / 11 段 / 3 中枢 / 最长 40\n#   合计 558 段。\n#\n# -- 用户的确切场景 --\n#   sz.399001 全历史 8648 根：修复前 4 段 / 1 中枢；修复后 651 笔 / 55 段（确认 54）/ 9 中枢。\n#     前 6 段 0:C+1[0..28] 1:C-1[29..55] 2:C+1[56..58] 3:C-1[59..69] 4:C+1[70..96] 5:C-1[97..135]\n#   sz.399001 末 4000 根：修复前 1 段；修复后 303 笔 / 31 段（确认 30）/ 5 中枢 / 最长 47。\n#     前 6 段 0:C+1[0..8] 1:C-1[9..49] 2:C+1[50..56] 3:C-1[57..61] 4:C+1[62..86] 5:C-1[87..91]\n",
+  "finding": "用户报告「深证成指日线只有一个向下的线段，调到 4000 根还是只有这一个」。复盘后确认这是**两处独立偏差叠加**，而不是一个 bug：（D1）`data/types.py::normalize` 里的 `fillna(0.0)` 把停市占位/缺值行变成 0 价 K 线，0.0 于是成了全序列最低点，被包含处理、分型、笔一路当成真实极值；（D2）`chan/segment.py::_structural_ok` 把第 78 课的「划分后标准化」误当成划分准入判据，成片否掉极值不在端点的合法分界，在 `candidates(s)` 上凿出可行性空洞，逼出了左端 argmax 这个补偿性 hack（它又把 sz.399006 前 102 笔藏进不分类的前导段）。两者叠加的结果就是 sz.399001 日线 8648 根 K 线只划出 4 段、1 个中枢、最长段横跨 592 笔；只取末 4000 根更是只剩 1 段 —— 与用户描述完全一致。",
+  "kind": "theory",
+  "notes": "[主干现状] D1：src/chanlun/data/types.py::normalize 在 fillna(0.0) 之前丢弃 open/high/low/close 任一列 (x <= 0) 的整根 K 线（含 NaN），并 logger.warning 记录「非正价格」条数；volume/amount 的 0 仍然保留（停牌日成交量本来就是 0）。\n[主干现状] D2：src/chanlun/chan/segment.py 里已无 _structural_ok；取而代之的是 _ordinal_ok（只否掉「向上线段先见最高后见最低」这类序关系矛盾）与 _extreme_problems（事后校验标准化与极值次序）。validate_segments(segments, strokes=None) 的第二个参数不传时跳过第 78 课两项校验；双数笔、<3 笔两条只对 CONFIRMED 段生效；同向相邻限制只作用于相邻的 CONFIRMED 段。\n[主干现状] D2 附带：classify 的左端起点是「第一个可行起点」（`start = 0; while start < n and best(start)[1] is None: start += 1`），不再是「确认线段数最多的起点」。复现现状：`grep -n \"best(start)\\[1\\] is None\" src/chanlun/chan/segment.py`。\n[主干现状] 新增理论条目 optimizer/theory/L78-SEGMENT-STANDARDIZATION.md。两个补丁都是 status: adopted 的落地存档，不带 apply 自检（test_real_patches_apply_and_revert_cleanly 会跳过）。\n[主干现状] 判据回归：全量 pytest -q -> 823 passed, 12 deselected, 1 warning in 19.96s。\n[用户裁决] 2026-10-01 用户明确选择「删掉它，回到第78课的『划分后再标准化』」，并选择「要，按 round-018 归档」。不要重新讨论「段数变少是不是更差」——缠论说划分是**唯一**的，没说段数最多才对；段数变少是判据归正的结果。\n[口径] `_ordinal_ok` 对最终输出是无操作：12 只票 14727 个候选里它否掉 26 个（0.18%），强制恒真后 12 只票输出逐位相同。保留它属于「与 include.py 的 `>` 改 `>=` 同类」的加固，不是段数旋钮 —— 谁把它当旋钮就会重犯 argmax 的错。\n[口径] 第 71 课字面的「假设分界点后逐点前向检验、首个满足即取」被实测否掉：12 只票只有 202 段（DP 是 566 段），sh.600759 5min 整段 1948 笔只划出 1 段 —— 同样落进用户抱怨的症状。DP 取最大段数的目标函数保留。\n[口径] 12 只票里唯一超过 80 笔的段是 sz.399006 的 87 笔（笔 70..156，dir=-1）。它是规则自身的判决，不是缺陷：candidates(70) = [76, 156]，但 candidates(76) = candidates(77) = []，硬取 76 会让总段数变成 1，DP 给出 17。\n[方法论失败] 本次审计第一轮漏报了这个故障，根因是抽样与判据两层：只跑了 12 只票（深证成指不在其中）、只做了「同一份数据换口径」的对照（没有注入脏数据）、只读代码没看图上画出来的东西。§A.3 记了三条可复用规则。\n[未动的部分] P2/P3 待办不受本轮影响：dif_high/dif_low（第 25 课黄白线回拉 0 轴）仍未接进 signal.py::_first_kind；盘整背驰（第 24/27 课）未实现；第二类买卖点的次级别下钻未做；scan/scanner.py::segment_divergence 仍是段比段而不是走势类型 A/B/C；merge_pivots 仍然生产死亡；区间套未实现。\n[基准漂移] 第 78 课标准化失败（seg.high/low 与笔区间真实极值不符）在 12 只票、全部配置下都是 0 处，所以 _extreme_problems 的「未按第 78 课标准化」分支在真实数据上不触发，只在手工构造的测试里触发。「极值不在端点」则很常见（12 只票确认段 40 余处）—— 这正是被删掉的判据一直在误杀的合法线段。\n",
+  "patch_file": "round-018-D1-nonpositive-price.patch, round-018-D2-segment-standardization.patch",
+  "patch_sha256": "",
+  "probe": "D1+D2",
+  "round": 18,
+  "started_at": "2026-10-01T23:55:00+08:00",
+  "status": "adopted",
+  "tests": {
+    "after": "823 passed, 12 deselected, 1 warning in 19.96s",
+    "before": "旧判据钉住的正是本次要改的行为：tests/chan/test_segment.py::test_confirmed_segments_put_extremes_at_both_ends（把「极值在端点」当断言）、tests/chan/test_segment_real.py 的同类用例、real_strokes.json 里 12/11/11/11 段的旧基准、tests/chan/test_engine.py 的 12 段基准、tests/web/test_structure_window.py 的 FULL_SEGMENTS=12。另有 tests/data/test_store.py 钉住了 0 价保留。",
+    "cmd": "PYTHONPATH=src ../.venv-chanlun/bin/python -m pytest -q",
+    "failed_tests": [
+      "tests/chan/test_segment_real.py::test_real_segment_counts_are_stable[sh.600000]",
+      "tests/chan/test_segment_real.py::test_real_segment_counts_are_stable[sz.300059]",
+      "tests/chan/test_segment.py::test_validate_segments_flags_unstandardized_high_low",
+      "tests/chan/test_segment.py::test_validate_segments_flags_reversed_extreme_order",
+      "tests/chan/test_engine.py::test_zero_price_bars_do_not_change_the_segmentation",
+      "tests/data/test_store.py::test_normalize_drops_non_positive_price_bars",
+      "tests/data/test_store.py::test_normalize_negative_price_is_dropped_too",
+      "tests/data/test_store.py::test_normalize_price_filter_is_idempotent"
+    ],
+    "summary": "判据按第 78 / 67 课原文重写，不是放宽数字凑结果：第 78 课说标准化发生在划分之后，所以断言从「极值必须在端点」改成「确认段的 high/low 等于笔区间极值，且极值次序与方向一致」，并新增两条反向用例（构造未标准化 / 次序颠倒的段，要求 validate_segments 报出来）。左端规则单独用一个桩策略钉住（test_left_edge_never_skips_a_feasible_first_stroke）：随机游走造不出可行性空洞（40 万次随机路径 0 例），只能把 candidates 桩化成 {0:1, 1:2, 3:5, 6:10}，使 best(0)=1 < best(1)=3。全部新判据都用 `cp 到 /tmp → git checkout -- → 跑新判据 → 逐字节还原` 验过修复前必失败（D1 三条、D2 五条、左端桩用例在旧 argmax 下失败并打印「左端起点跳到了笔1」）。"
+  },
+  "theory_id": "L78-SEGMENT-STANDARDIZATION,L67-SEGMENT-CHAR-SEQ"
+}

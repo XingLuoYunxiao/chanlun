@@ -2634,16 +2634,16 @@
    }
   ],
   "expected_first_confirmed": {
-   "start_stroke_idx": 0,
-   "end_stroke_idx": 4,
-   "direction": -1,
-   "start_price": 11.61849285,
-   "end_price": 8.7489018,
-   "high": 11.61849285,
+   "start_stroke_idx": 3,
+   "end_stroke_idx": 5,
+   "direction": 1,
+   "start_price": 9.72980235,
+   "end_price": 10.26594675,
+   "high": 10.26594675,
    "low": 8.7489018
   },
-  "expected_confirmed_count": 8,
-  "expected_total_segments": 9
+  "expected_confirmed_count": 11,
+  "expected_total_segments": 13
  },
  "sz.300750": {
   "window": [
@@ -5340,8 +5340,8 @@
    "high": 115.01411768,
    "low": 53.76858533
   },
-  "expected_confirmed_count": 9,
-  "expected_total_segments": 11
+  "expected_confirmed_count": 13,
+  "expected_total_segments": 15
  },
  "sh.600000": {
   "window": [
@@ -7640,16 +7640,16 @@
    }
   ],
   "expected_first_confirmed": {
-   "start_stroke_idx": 2,
+   "start_stroke_idx": 0,
    "end_stroke_idx": 8,
    "direction": 1,
-   "start_price": 7.18457714,
+   "start_price": 7.47722794,
    "end_price": 9.28434663,
    "high": 9.28434663,
    "low": 7.18457714
   },
   "expected_confirmed_count": 10,
-  "expected_total_segments": 12
+  "expected_total_segments": 11
  },
  "sz.300059": {
   "window": [
@@ -10052,15 +10052,15 @@
    }
   ],
   "expected_first_confirmed": {
-   "start_stroke_idx": 2,
+   "start_stroke_idx": 0,
    "end_stroke_idx": 8,
    "direction": 1,
-   "start_price": 6.138223,
+   "start_price": 7.33281563,
    "end_price": 16.82038803,
    "high": 16.82038803,
    "low": 6.138223
   },
   "expected_confirmed_count": 9,
-  "expected_total_segments": 11
+  "expected_total_segments": 10
  }
 }

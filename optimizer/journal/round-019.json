@@ -1,0 +1,43 @@
+{
+  "after": {
+    "sh.600759 5min 1948 笔": "232 段 / 最长 47 笔",
+    "sz.300760 日线 132 笔": "15 段 / 最长 27 笔",
+    "sz.399006 日线 310 笔": "46 段 / 最长 23 笔",
+    "validate_segments 问题数": "13 只票全部 0",
+    "最长段 > 80 笔的样本数": "1",
+    "最长段最大值": "87 笔",
+    "相邻包含关系残留（132 样本合计）": "0",
+    "线段数变化": "增加 71 / 减少 3 / 不变 58"
+  },
+  "before": {
+    "sh.600759 5min 1948 笔": "210 段 / 最长 73 笔",
+    "sz.300760 日线 132 笔": "3 段 / 最长 127 笔",
+    "sz.399006 日线 310 笔": "26 段 / 最长 87 笔",
+    "最长段 > 80 笔的样本数": "3",
+    "最长段最大值": "127 笔",
+    "相邻包含关系残留（132 样本合计）": "50277",
+    "线段数变化": "基准"
+  },
+  "evidence": "# [采纳前] 下面的数字量自采纳之前的口径（`_merge_feature` 单趟合并），保留作为缺陷证据。\n# 尺子：真实行情仓，经 store.read -> ChanEngine.full 全量重算；段数 = snap.segments 全段。\n# 探针：optimizer/tools/measure_merge_feature_scope.py（--sample 100，共 132 个样本：\n#       24 只日线窗口 + 5 只指数全史 + 3 个非日线 + 100 只随机沪市日线窗口）。\n#   PYTHONPATH=src .venv-chanlun/bin/python optimizer/tools/measure_merge_feature_scope.py --sample 100\n#   相邻包含关系残留合计：50277 → 0\n#   线段数：增加 71 / 减少 3 / 不变 58\n#   最长段 > 80 笔的样本数：3 → 1\n#   最长段最大值：127 笔 → 87 笔\n#   典型（旧→新，段/最长段）：\n#     sz.300760 day 132笔   3→15 段，最长 127→27 笔，残留 223→0\n#     sh.601088 day 134笔  12→14 段，最长  29→25 笔，残留 234→0\n#     sz.300750 day 133笔  13→17 段，最长  43→29 笔，残留 171→0\n#     sz.399001 day 651笔  55→65 段，最长  53→47 笔，残留 1864→0\n#     sz.399006 day 310笔  26→46 段，最长  87→23 笔，残留 224→0\n#     sh.600759 5  1948笔 210→232 段，最长 73→47 笔，残留 26714→0\n# 不动点核对（最终主干，--sample 100 复跑）：残留合计 50277 → 0，最长段最大 102 → 19 笔。\n# 根因逐步追踪（sz.300760 日线，_feature_seq(ss, 0, 1)）：\n#   std[7] = [405.576, 449.805]  (笔21)\n#   std[8] = [393.502, 450.733]  (笔27)\n#   std[7] 被 std[8] 包含 -> _is_fractal_at(std, 8, 1) 要求 393.502 > 405.576 -> False\n#   -> 全局最高点笔27 永不在 candidates 里 -> candidates(0) == [] -> best(0) == (0, None)\n#   -> classify 从笔1 起段 -> 132 笔塌成 3 段，最长段 127 笔。\n# 判据回归（cp 到 /tmp、还原单趟合并、跑新判据、再逐字节还原）：\n#   PYTHONPATH=src ../.venv-chanlun/bin/python -m pytest -q tests/chan/test_segment.py\n#   修复前：3 failed —— test_feature_merge_backtracks_when_merge_engulfs_previous_element\n#                      test_feature_merge_does_not_use_transitivity\n#                      test_feature_merge_output_has_no_adjacent_containment\n#   修复后：全量 pytest -q -> 831 passed, 12 deselected, 1 warning",
+  "finding": "「标准特征序列」的非包含处理没有做到不动点：`_merge_feature` 只做单趟前向合并，合并出来的新元素不再回头与前一元素比较，于是输出里仍会残留相邻包含关系。\n\n第 67 课把顺序钉死了：「关于特征序列，把每一元素看成是一K线，那么，如同一般K线图中找分型的方法，也存在所谓的包含关系，也可以对此进行非包含处理。经过非包含处理的特征序列，成为标准特征序列。」第 65 课又明说包含关系「不符合传递律」，所以「先用第1、2根K线……然后用新的K线去和第三根比」这条顺序原则必须走到不动点；第 79 课评论区进一步明确「在分析特征序列包含关系的时候，要先把所有的特征序列先包含，然后再分段。而不是只处理最近的特征序列包含关系就可以」。第 67 课评论区也有人说破了这层前提：「注意本课的第一种，第二种情况都是有前提的：经过非包含处理的特征序列，成为标准特征序列。」\n\n代价是真实的极值被吃掉：标准特征序列里残留一处包含关系，`_is_fractal_at` 在那一处就判不出分型。sz.300760 日线 `_feature_seq(ss, 0, 1)` 的 std[7]=[405.576, 449.805]（笔21）被 std[8]=[393.502, 450.733]（笔27）包含，于是笔27 这个真实最高点永远进不了候选，`candidates(0)` 为空、`best(0)=(0,None)`，classify 只能从笔1 起段 —— 132 笔只划出 3 段、最长段 127 笔。这不是「判据偏严」，是判据在残留包含处**失效**。",
+  "kind": "theory",
+  "notes": "改动只有一处，纯补漏、不改判据：`_merge_feature` 在 `contained` 分支里把新元素并入末元素后，回头继续检查新的末元素与前一元素是否又构成包含，直到不再构成为止（新增 `_combine` 把第 65 课的合并公式抽出来，两种方向共用）。合并公式本身与 `contained` 判定逐字未动，所以这是**只补缺口、不动判据**的扩展。\n\n为什么要回头：第 65 课的合并是「顺序原则」下的两两合并，而合并会**放大**元素区间，放大后可能反过来包含前一元素；包含关系又「不符合传递律」，所以不能只看相邻一次。第 79 课那句「先把所有的特征序列先包含」正是这个意思。\n\n考虑过但没采用的方案：从「上一个未被包含的元素」重新扫描合并（严格前缀重扫）。它能一并消掉全部残留，但第 79 课说的是「先把所有的特征序列先包含」，而 `_merge_feature` 的语义就是单趟合并；改用重扫会让「合并」与「分型判定」两个阶段的边界变模糊。当前落地的回溯循环在不动点上与重扫等价（132 只样本实测残留 0）。\n\n判据落在 tests/chan/test_segment.py 新增的三条：test_feature_merge_backtracks_when_merge_engulfs_previous_element、test_feature_merge_does_not_use_transitivity、test_feature_merge_output_has_no_adjacent_containment。第三条是不变量形式：对任意输入，`_merge_feature` 的输出逐对检查 `not ((b0<=a0 and b1>=a1) or (b0>=a0 and b1<=a1))`。\n[主干现状] src/chanlun/chan/segment.py::_merge_feature 在 contained 分支合并后回头继续与前一元素比，直到不再构成包含；新增 _combine 抽出第 65 课的合并公式。判据在 tests/chan/test_segment.py 的三条新用例（回溯、非传递、输出无相邻包含）。",
+  "patch_file": "round-019-D3-standard-feature-seq.patch",
+  "patch_sha256": "d3c5f952d75fa440b5738516d83500b8e22085db36c11ac74c41447e4b1fa26e",
+  "probe": "D3",
+  "round": 19,
+  "started_at": "2026-10-01T23:20:00+08:00",
+  "status": "adopted",
+  "tests": {
+    "after": "832 passed, 12 deselected, 1 warning in 19.52s",
+    "before": "3 failed —— tests/chan/test_segment.py 的三条新用例（回溯 / 非传递 / 输出无相邻包含）在单趟合并下全红。",
+    "cmd": "PYTHONPATH=src ../.venv-chanlun/bin/python -m pytest -q",
+    "failed_tests": [
+      "tests/chan/test_segment.py::test_feature_merge_backtracks_when_merge_engulfs_previous_element",
+      "tests/chan/test_segment.py::test_feature_merge_does_not_use_transitivity",
+      "tests/chan/test_segment.py::test_feature_merge_output_has_no_adjacent_containment"
+    ],
+    "summary": "第三条是不变量形式（对任意输入检查输出逐对无相邻包含），前两条用构造出的具体序列钉住「合并会放大区间、放大后可能反过来包含前一元素」与「包含关系不符合传递律，所以不能只看相邻一次」。验红方式：cp 到 /tmp → 还原单趟合并 → 跑新判据 → 逐字节还原。"
+  },
+  "theory_id": "L67-SEGMENT-CHAR-SEQ"
+}

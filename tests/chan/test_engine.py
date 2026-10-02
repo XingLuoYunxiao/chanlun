@@ -91,7 +91,7 @@ def test_full_reproduces_golden_pipeline(code):
 @pytest.mark.parametrize("code", CODES)
 def test_full_structures_pass_their_validators(code):
     snap = snap_of(code)
-    assert validate_segments(snap.segments) == []
+    assert validate_segments(snap.segments, snap.strokes) == []
     assert validate_pivots(snap.pivots) == []
     assert validate_trends(classify_trends(snap.pivots, snap.level)) == []
 
@@ -310,3 +310,49 @@ def test_signal_hook_is_plugged_in_and_reconciled():
     assert len(snap.signals) == 1
     assert snap.signals[0].level == "day"
     assert snap.as_dict()["signals"][0]["kind"] == "b3"
+
+
+# ------------------------------------------------ 脏数据不得改变线段划分
+#: 注入全 0 K 线的位置。这一段是实测里塌陷最重的地方：
+#: 修复前 sh.600000 由 11 段/最长 15 笔变成 7 段/最长 41 笔。
+ZERO_AT = 475
+
+
+def test_zero_price_bars_do_not_change_the_segmentation():
+    """全 0 K 线不是行情，喂进引擎必须被中和掉，划分结果与干净数据一致。
+
+    回归（2026-10-01 用户报告「深证成指日线只剩 1 个向下线段，调到 4000 根
+    还是只有 1 个」）：真实数据里 0 价行来自停市占位或数据源缺值。
+    `normalize` 原先把无法解析的价格 `fillna(0.0)`，于是 0.0 成了全序列最低点，
+    被分型/笔当成真实极值——sz.399001 日线因此从 50 段塌成 4 段（其中 1 个
+    向下线段横跨 1994-09 ~ 2026-09、592 笔），sh.600759 的 5 分钟线从
+    168 段/28 中枢塌成 126 段/20 中枢。
+
+    `ChanEngine.full()` 入口即 `normalize`，所以本用例走的是完整生产链路。
+    这里断言的是「脏数据不改变结果」这条不变量本身，而不是某个段数常量。
+    """
+    clean = bars("sh.600000")
+    snap_clean = ChanEngine("sh.600000", "day").full(clean)
+    # 前提校验：干净数据本身得分得开，否则下面比的是两个「都塌了」的结果。
+    assert len(snap_clean.segments) == 11, "基准已变，本用例的注入位置需要重新标定"
+
+    dirty = clean.copy()
+    dirty.loc[ZERO_AT : ZERO_AT + 4, ["open", "high", "low", "close"]] = 0.0
+    snap_dirty = ChanEngine("sh.600000", "day").full(dirty)
+
+    assert len(snap_dirty.strokes) == len(snap_clean.strokes)
+    assert len(snap_dirty.segments) == len(snap_clean.segments)
+    assert [s.start_stroke_idx for s in snap_dirty.segments] == [
+        s.start_stroke_idx for s in snap_clean.segments
+    ]
+    assert [s.end_stroke_idx for s in snap_dirty.segments] == [
+        s.end_stroke_idx for s in snap_clean.segments
+    ]
+    assert [s.high for s in snap_dirty.segments] == [s.high for s in snap_clean.segments]
+    assert [s.low for s in snap_dirty.segments] == [s.low for s in snap_clean.segments]
+
+
+def test_zero_price_bars_are_really_zeroed_in_the_source():
+    """前提校验：本用例注入的确实是全 0 行，否则上面那条测试是空的。"""
+    df = bars("sh.600000")
+    assert (df.loc[ZERO_AT : ZERO_AT + 4, ["open", "high", "low", "close"]] > 0).all().all()

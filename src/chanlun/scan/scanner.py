@@ -358,7 +358,8 @@ def segment_divergence(snap: Snapshot, seg: Any,
     （`chanlun.chan.macd.is_divergence`），强度取 `(前面积 - 后面积) / 前面积`，
     即力度衰竭的百分比。
     为什么用面积比而不是 DIF 高度：原文第 24 课看的是这波走势的「力度」，
-    面积是对整段走势积分，比单点极值更能反映能量。
+    面积是对整段走势积分，比单点极值更能反映能量。面积按第 24 课
+    「向上的看红柱子，向下看绿柱子」**分色**累加，两段同向故颜色一致。
     """
     if macd_df is None or len(macd_df) == 0:
         return 0.0, "未提供 MACD，背驰强度按 0 计"
@@ -371,8 +372,10 @@ def segment_divergence(snap: Snapshot, seg: Any,
     if prev is None:
         return 0.0, "没有同向的前一段可比，背驰强度按 0 计"
     try:
-        area_prev = hist_area(macd_df, prev.src_start, prev.src_end)
-        area_now = hist_area(macd_df, seg.src_start, seg.src_end)
+        # 面积按第 24 课**分色**累加：「向上的看红柱子，向下看绿柱子」。两段同向
+        # （上面的循环已按 seg.direction 过滤），所以两段的颜色必然一致。
+        area_prev = hist_area(macd_df, prev.src_start, prev.src_end, prev.direction)
+        area_now = hist_area(macd_df, seg.src_start, seg.src_end, seg.direction)
     except ValueError as exc:  # 索引越界：数据与 MACD 长度不匹配
         return 0.0, f"MACD 区间越界（{exc}），背驰强度按 0 计"
     ext_prev = prev.high if seg.direction == 1 else prev.low

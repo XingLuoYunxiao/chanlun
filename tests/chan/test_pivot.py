@@ -4,7 +4,17 @@
 本实现用线段近似次级别走势类型，因此：
 
     ZG = min(前三个线段的高点)      ZD = max(前三个线段的低点)
-    ZG > ZD 才成立                  GG = max(所有段高点)   DD = min(所有段低点)
+    ZG > ZD 才成立                  GG = max(Zn 的高点)    DD = min(Zn 的低点)
+
+第 20 课：「为方便起见，以后都把这些与中枢方向一致的次级别走势类型称为Z走势段，
+按中枢中的时间顺序，分别记为Zn等，而相应的高、低点分别记为gn、dn，定义四个
+指标,GG=max(gn),G=min(gn),D=max(dn),DD=min(dn)，n遍历中枢中所有Zn。」
+即 GG/DD **只遍历同向的 Z 走势段**，反向段（B 及延伸中的回抽段）的极值不计入；
+而组里**最后一个 Zn 是把价格带出中枢的离开段**，它不算「中枢中」的 Z 走势段，
+也不计入 GG/DD。这条不是细节：算进离开段时 `[DD, GG]` 会被撑到下一个中枢门口，
+第 20 课中心定理二里的「趋势」就永远判不出来（实测 22 对全部落进「形成高级别的
+走势中枢」，上涨/下跌 0/0；去掉离开段后是 上涨 8 / 下跌 4 / 高级别中枢 10，
+见 `optimizer/tools/measure_l20_dd_gg_scope.py`）。
 
 关键取舍（都写成测试锁住）：
 1. **只有 `CONFIRMED` 线段能构成中枢**。中枢要求「次级别走势类型」已经完成，
@@ -128,13 +138,25 @@ def test_zg_zd_are_fixed_by_the_first_three_segments():
     assert (p.zg, p.zd) == (18, 12)
 
 
-def test_gg_dd_are_the_full_range():
-    """GG/DD 覆盖中枢内**全部**段，可以远宽于 [ZD, ZG]。"""
-    segs = _zigzag([(10, 20), (12, 22), (11, 18), (8, 25), (0, 5)])
+def test_gg_dd_cover_only_the_z_segments():
+    """GG/DD 只遍历 Z 走势段（同向段），且不含离开段；反向段的极值不进 [DD, GG]。
+
+    本例中枢组 = 4 段：seg0 上 (10,25)、seg1 下 (12,20)、seg2 上 (13,30)、
+    seg3 下 (14,28)。Zn 只有 seg0/seg2；其中 seg2 是组里最后一个 Zn = 离开段
+    （它把价格带出 `[ZD, ZG]`），不算「中枢中」的 Z 走势段，所以只剩 seg0：
+    GG = 25、DD = 10。
+
+    三个数各排除掉一类干扰，正好把口径钉死：
+    - GG = 25 而不是 30：排除**离开段** seg2 的 30；
+    - GG = 25 而不是 28：排除**反向段** seg3 的 28；
+    - DD = 10 而不是 12：排除**反向段** seg1 的低点。
+    [DD, GG] = [10, 25] 两侧都宽于 [ZD, ZG] = [13, 20]，所以 GG/DD 确实是另一套边界。
+    """
+    segs = _zigzag([(10, 25), (12, 20), (13, 30), (14, 28), (0, 5)])
     p = find_pivots(segs, "day")[0]
-    assert (p.zg, p.zd) == (18, 12)
-    assert p.gg == 25           # 包含延伸段的高点
-    assert p.dd == 8            # 包含延伸段的低点
+    assert (p.zg, p.zd) == (20, 13)
+    assert p.gg == 25           # 不含离开段 seg2 的 30、反向段 seg3 的 28
+    assert p.dd == 10           # 不含反向段 seg1 的 12
 
 
 def test_pivot_timestamps_span_first_start_to_last_end():
@@ -175,8 +197,8 @@ def test_tentative_tail_does_not_join_an_existing_pivot():
     ]
     p = find_pivots(segs, "day")[0]
     assert p.end_idx == 2
-    assert p.gg == 22          # 未确认尾段的 30 不得计入
-    assert p.dd == 10
+    assert p.gg == 20          # 未确认尾段的 30 不得计入；反向段 seg1 的 22 也不计
+    assert p.dd == 10          # 组里最后一个 Zn（seg2）是离开段，同样不计入
 
 
 def test_pivot_reaching_the_window_end_is_tentative():
@@ -226,7 +248,10 @@ def test_leading_tentative_segment_does_not_shift_a_later_pivot():
     body = _zigzag([(30, 40), (31, 42), (32, 41), (0, 1)])
     p = find_pivots([lead] + body, "day")[0]
     assert (p.start_idx, p.end_idx) == (1, 3)
-    assert p.gg == 42 and p.dd == 30
+    # Zn = body[0]/body[2]（反向段 body[1] 的 42 不计）；其中 body[2] 是离开段
+    # （第 20 课：「n遍历中枢中所有Zn」，离开段不算「中枢中」的 Z 走势段），
+    # 所以只剩 body[0]：GG = 40、DD = 30。
+    assert p.gg == 40 and p.dd == 30
 
 
 # ---------------------------------------------------------------- 扩展
@@ -258,7 +283,9 @@ def test_merge_overlapping_same_level_pivots():
     assert m.level == "day"
     assert (m.zg, m.zd) == (18, 15)      # 取两者重叠区间
     assert m.start_idx == 0 and m.end_idx == 6
-    assert m.gg == 25 and m.dd == 10
+    assert m.gg == 24 and m.dd == 10
+    # A 的 Zn = seg0/seg2 → gg=20、dd=10；B 的 Zn = seg4/seg6 → gg=24、dd=14。
+    # 合并取并集，故 gg = max(20,24) = 24、dd = min(10,14) = 10。
 
 
 def test_merge_keeps_disjoint_pivots_apart():

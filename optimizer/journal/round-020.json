@@ -1,0 +1,45 @@
+{
+  "after": {
+    "600180 日线全史 114 笔": "19 段 / 首段 16 笔",
+    "603777 日线从 2020-01-01 截断": "17 段 / 首段 25 笔",
+    "sh.600759 5min 全量重算": "1.53s（剪枝后）",
+    "sz.399001 日线从 2020-01-01 截断": "16 段 / 首段 47 笔",
+    "前导 TENTATIVE 段藏笔合计": "71",
+    "怪物段（最长段 > 80 笔）样本数": "0",
+    "窗口一致性（10 票 × 3 窗口，命中全史分界点）": "380/386 = 98.4%",
+    "窗口多出的分界点": "15",
+    "线段合计（132 样本）": "1316"
+  },
+  "before": {
+    "600180 日线全史 114 笔": "5 段 / 首段 73 笔",
+    "603777 日线从 2020-01-01 截断": "5 段 / 首段 87 笔",
+    "sh.600759 5min 全量重算": "0.52s",
+    "sz.399001 日线从 2020-01-01 截断": "8 段 / 首段 81 笔",
+    "前导 TENTATIVE 段藏笔合计": "6",
+    "怪物段（最长段 > 80 笔）样本数": "2",
+    "窗口一致性（10 票 × 3 窗口，命中全史分界点）": "303/341 = 88.9%",
+    "窗口多出的分界点": "10",
+    "线段合计（132 样本）": "1239"
+  },
+  "evidence": "# [采纳前] 下面的数字量自采纳之前的口径（第一个可行起点），保留作为缺陷证据。\n# 探针：optimizer/tools/measure_left_edge_scope.py（132 个样本：24 只日线窗口 + 5 只指数\n#       全史 + 3 个非日线 + 4 只晚上市票 + 3 个截断窗口 + 100 只随机沪市日线窗口）。\n#   PYTHONPATH=src .venv-chanlun/bin/python optimizer/tools/measure_left_edge_scope.py --sample 100\n#   线段合计：1239 → 1316\n#   怪物段（最长段 > 80 笔）样本数：2 → 0\n#   前导 TENTATIVE 段藏笔合计：6 → 71\n#   最长段收缩最多的样本（旧→新）：603777 截断 87→25 笔；600180 全史 73→16 笔；\n#     sz.399001 截断 81→47 笔；sz.300760 27→21 笔；sz.399006 23→19 笔。\n#\n# 窗口一致性对照（决定性证据）：同一走势只换「取数起点」，把窗口内的分界点与全史分界点\n# 按时间戳对齐（前 30 根 K 线留余量，避开截断边缘）。\n#   PYTHONPATH=src .venv-chanlun/bin/python /tmp/exp/window_agree.py\n#   10 只票 × 3 个窗口（2020/2021/2022-01-01）：\n#     命中全史分界点：旧 303/341 = 88.9%  →  新 380/386 = 98.4%\n#     多出的分界点：  旧 10            →  新 15\n#   逐窗口（旧→新，段数 / 命中）：\n#     sz.000001 2020-01-01  16→18 段，15/15→16/16；2021 同；2022 15→18 段，14/14→16/16\n#     sz.399001 2020-01-01   8→16 段， 7/14→14/14\n#     sz.399006 2020-01-01   6→18 段， 5/16→16/16\n#     603777    2020-01-01   5→17 段， 4/15→15/15\n#     600180    2022-01-01  14→16 段， 4/4 →14/14\n#     sz.300760 2022-01-01   5→14 段， 4/11→11/11\n#   sz.000001 的前导段从 0 笔涨到 27 笔，但同一窗口的全史分界点命中反而从 15/15 升到\n#   16/16 —— 换掉的是「编造在数据边界上的那条边界」，承认未知而不是假装知道。\n#\n# 残余（如实记录，未解决）：sz.399001 2021/2022 窗口、603777 2022、sh.601088 2021、\n#   sz.300760 2022、sh.600519 2021、sh.000300 2022 出现「多出」的分界点，合计 10→15，\n#   其中 sz.399001 2021 有 3 个全史分界点没命中（9/9→6/9）。原因是 `best(s)` 只优化\n#   「从 s 起还能划几段」，换起点会换出另一条同样最优的链；要做到完全窗口不变，\n#   得让目标函数本身窗口不变，那是比左端起点更大的改动。\n#\n# 性能（78k 根 5 分钟线，1948 笔，清空 webapi._CACHE 后计时 snapshot_of）：\n#   sh.600759 5：0.52s → 1.53s；sh.600519 30：0.10s → 0.30s；sz.399001 day：0.05s → 0.11s。\n#   剪枝依据：s 之后的起点最多划 (n - s') // min_strokes 条，上界随 s' 单调不增，\n#   达到上界即可停（后面最多追平，而平局取更早）。剪枝不改变结果，由\n#   tests/chan/test_segment.py::test_left_edge_prune_matches_brute_force_argmax 与全量对照钉住。\n#\n# 判据回归（cp 到 /tmp、还原「第一个可行起点」、跑新判据、再逐字节还原）：\n#   修复前：2 failed —— tests/chan/test_segment.py::test_left_edge_takes_the_start_that_keeps_the_most_strokes_in_segments\n#                      tests/chan/test_segment_real.py::test_left_edge_takes_the_start_that_keeps_the_most_strokes_in_segments[sh.601088]\n#           失败信息：sh.601088: 左端起点选了笔0（可划 10 段），而最多的是笔3（可划 11 段）\n#   修复后：全量 pytest -q -> 832 passed, 12 deselected, 1 warning",
+  "finding": "线段划分的**左端起点**取错了判据：原口径是「从第 0 笔起，取第一个可行起点」，等于把「数据商从哪一天开始给数据」当成了线段边界。\n\n第 67 课只说「一切同一级别图上的走势都可以唯一地划分为线段的连接」——「唯一」是对**手上的那段走势**说的；数据文件的第一根 K 线不是走势的起点，它只是**数据商的截断点**（600180 日线从 2021-01-04 开始，该股 1998 年就上市了；sz.300760 从 2020-01-02 开始，它 2018 年就上市了）。**第 67/71/77/78 课都没有规定被截断的左端该怎么起段，这是原文空白项**，不存在「照原文改」的选项，只能取工程判据并写清楚。\n\n后果与用户报告的深证成指是同一机制：换个取数窗口，同一个走势就塌成一条线段。600180 日线全史 114 笔只划出 5 段、首段 73 笔；sz.399001 从 2020-01-01 截断 → 首段 81 笔（全史只有 47）；603777 同样截断 → 首段 87 笔（全史只有 25）。\n\n新口径：取「还能确认最多线段」的起点（平局取更早），前面那几笔交给 TENTATIVE 前导段 —— 前导段本来就为这件事存在，不参与中枢/背驰/买卖点。",
+  "kind": "theory",
+  "notes": "这是**原文空白项**的工程判据，不是「照原文改」。第 67/71/77/78 课都只说划分唯一，没有一课规定被截断的左端该怎么起段；本地 ../chanlun108/回复/ 里第 67/71/78 课的评论区缠师本人都没有回复过这类问题。新增理论条目 optimizer/theory/L67-SEGMENT-LEFT-EDGE.md 专门记录这条空白项与所取的口径，以及「本条目只覆盖左端起点这一个自由度，不是放宽线段划分标准的许可」。\n\n这段历史要写清楚：argmax 不是第一次出现。它当初就是为绕开 `_structural_ok` 造出的可行性悬崖而加的补偿性 hack，round-018-D2 删掉 `_structural_ok` 时把它一并改回「第一个可行起点」，当时的反证是「argmax 口径下 100 只样本有 308 笔被藏进前导段，sz.399006 前导段 102 笔」。**那个反证是在 `_structural_ok` 还在、`_merge_feature` 还漏包含的代码上量的，已经作废**：round-019 修好非包含处理之后复量，前导段最大只剩 13 笔、100 只样本合计 31 笔，反证不再成立。现在重新采纳 argmax，证据是窗口一致性 88.9% → 98.4% 与怪物段 2 → 0，而不是段数变多。\n\n`_ordinal_ok` 保留不动：14727 个候选里否掉 26 个（0.18%），把它改成恒真在 12 只票上逐位相同，即对最终输出是 no-op，留着只是把「分型次序」这层显式写出来。\n\n新增/改动的判据：tests/chan/test_segment.py::test_left_edge_takes_the_start_that_keeps_the_most_strokes_in_segments（重写，桩策略）、test_left_edge_ties_break_towards_the_earlier_start（新增）、test_left_edge_prune_matches_brute_force_argmax（新增，剪枝 vs 全量对照）；tests/chan/test_segment_real.py::test_left_edge_takes_the_start_that_keeps_the_most_strokes_in_segments（重写，真实笔）；tests/chan/fixtures/real_strokes.json（仅 sh.601088 重钉：确认段 10→11、总段 11→13、首个确认段起点笔0→笔3）。\n[主干现状] src/chanlun/chan/segment.py::Lesson6768Policy.classify 左端起点取「还能确认最多线段」的起点（平局取更早），带单调上界剪枝；首个分界之前的笔由build_segments 补一条 TENTATIVE 前导段，不参与中枢/背驰/买卖点。新增理论条目 optimizer/theory/L67-SEGMENT-LEFT-EDGE.md 记录这条原文空白项与所取口径。",
+  "patch_file": "round-020-D5-left-edge-argmax.patch",
+  "patch_sha256": "b7c0e72c4973877b185e96fbd84b5963d728bdc5fb3bec62ea01d1ef312644c2",
+  "probe": "D5",
+  "round": 20,
+  "started_at": "2026-10-02T10:40:00+08:00",
+  "status": "adopted",
+  "tests": {
+    "after": "832 passed, 12 deselected, 1 warning in 19.52s",
+    "before": "2 failed —— 左端桩用例与真实笔用例都断言 argmax，在「第一个可行起点」下全红。",
+    "cmd": "PYTHONPATH=src ../.venv-chanlun/bin/python -m pytest -q",
+    "failed_tests": [
+      "tests/chan/test_segment.py::test_left_edge_takes_the_start_that_keeps_the_most_strokes_in_segments",
+      "tests/chan/test_segment_real.py::test_left_edge_takes_the_start_that_keeps_the_most_strokes_in_segments[sh.601088]"
+    ],
+    "summary": "桩用例：把 candidates 桩化成 {0:1, 1:2, 3:5, 6:10}，使 best(0)=1 < best(1)=3，断言起点为笔1且笔0 进 TENTATIVE 前导段；另加平局用例（TABLE={0:2,3:5} 断言取笔0）与剪枝对照用例（每个起点都算一遍的暴力 argmax 必须与 classify 相同）。真实笔用例在 4 只票上比较 classify 的起点与独立算出的 argmax，并断言 sum(stroke_count) == len(strokes)（不允许有笔没被任何段覆盖）。real_strokes.json 仅 sh.601088 重钉：确认段 10→11、总段 11→13、首个确认段起点笔0→笔3。"
+  },
+  "theory_id": "L67-SEGMENT-LEFT-EDGE"
+}
