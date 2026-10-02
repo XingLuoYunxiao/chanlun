@@ -837,6 +837,27 @@ back.direction == -1 and back.low > first.price`（`signal.py:244-269`）。
 **后果 / 变更历史**：`divergences` 是派生数据，point-in-time 语义由
 `segments` + `macd` 保证，故不参与 `state.reconcile` 的调和。
 
+> **变更历史（2026-10-02，Task 3 修复轮 R1 补记，原文保留不改）**：
+> ① **`Divergence.in_pivot` 的取值此前是错的。** 它按闭区间
+> `start_idx <= i <= end_idx` 判定，把中枢的**离开段**（`segments[end_idx]`，
+> `pivot.py:125-127`）也算进了「中枢震荡段」，于是**每一个趋势背驰都得到
+> `in_pivot=True`** —— 而趋势背驰比的恒是离开段。这正好与第 049 课
+> 「两者分别在第三类买点的前后……这是有严格区分的」相反，也与本条目上一段
+> 「以 `Divergence.in_pivot` 保留第 049 课的区分」的说法相反。现改为
+> `in_pivot = 该段落在某个中枢组的 [start_idx, end_idx) 内`：中枢震荡段 `True`、
+> 离开段 `False`、趋势背驰恒 `False`。**判据本身（力度收缩 + 比较对象 + 创新极值）
+> 一行未动**，变的只是这个派生字段的取值。口径由
+> `tests/chan/test_divergence.py::test_in_pivot_is_the_049_oscillation_vs_leaving_leg_split`
+> 与同文件末尾的合成用例钉住。
+> ② **上一段被否决方案里的「窄口径 220 次 vs 全局 233 次」是旧探针口径下的数**，
+> 不是本实现的口径。旧探针（`/tmp/exp/panzheng.py`）在面积收缩之外**还要求创新
+> 极值**（`if new and shrink`），而本实现的盘整背驰判据只有力度收缩（第 039 课的
+> 判据是「力度」；创新极值的要求属于趋势背驰，见第 037 课）。把该过滤条件加回去
+> 重测：1.93 次/只（14 只 27 次），与旧探针的 1.991 次/只（117 只 233 次）同量级；
+> 本实现口径实测约 5 次/只（59 只 317 次，本轮重跑复现）。**权威复测随 Task 9 的
+> 测量工具落地**；今后引用 220/233 必须带上「额外要求创新极值」这个限定。
+> 详见 `optimizer/theory/L39-CONSOLIDATION-DIVERGENCE.md` 的同名更正。
+
 #### D-34 回测触发判据：从「结构确认时刻」改为「首次可见」
 
 **决策**：`src/chanlun/backtest/strategy.py::ChanSignalStrategy.on_bar` 不再用

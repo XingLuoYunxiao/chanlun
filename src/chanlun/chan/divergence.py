@@ -25,7 +25,10 @@
 
 第 49 课：「中枢震荡中出现的类似盘整背驰的走势段，与中枢完成的向上移动出现的
 背驰段是不同的，两者分别在第三类买点的前后……这是有严格区分的。」
-⇒ `Divergence.in_pivot` 记录这个区分。
+⇒ `Divergence.in_pivot` 记录这个区分，口径按 `pivot.py:125-127` 的下标约定：
+该段是**中枢震荡段**（属于某个中枢组的 `[start_idx, end_idx)`）时为 `True`；
+**离开段 `end_idx` 为 `False`** —— 它是「中枢完成的移动出现的背驰段」，与震荡段
+「分别在第三类买点的前后」。趋势背驰比较的正是离开段，故趋势背驰恒为 `False`。
 
 理论依据见 `optimizer/theory/L39-CONSOLIDATION-DIVERGENCE.md`。
 """
@@ -78,9 +81,16 @@ class Divergence:
     area_prev: float
     #: 是否创出新的极值（第 27 课「不出现新低」的反面）。
     new_extreme: bool
-    #: 该段是否落在某个中枢区间内（第 49 课的区分）。
+    #: 该段是否为**中枢震荡段**（第 49 课的区分）：属于某中枢组的
+    #: `[start_idx, end_idx)` 时为 `True`；**离开段 `end_idx` 为 `False`**
+    #: —— 它是「中枢完成的移动出现的背驰段」，与震荡段「分别在第三类买点的
+    #: 前后」。趋势背驰比的是离开段，故恒为 `False`。
     in_pivot: bool
     pivot_idx: int | None = None
+    #: 人读的说明文案。**与 `signal.py::Signal.reason` 有意不同**：这里不带
+    #: 极值价格（`signal.py:238-239` 的 `创{where} {price:.3f}`），因为
+    #: `Divergence.price` 已经单独带了那个价，且没有任何代码比较这两串文本；
+    #: 两者的**判据**仍逐条相同（见 `_trend` docstring），差的只是文案。
     reason: str = ""
     status: Status = Status.TENTATIVE
     confirmed_at: str | None = None
@@ -112,11 +122,17 @@ def _area(macd_df: pd.DataFrame, seg: Segment) -> float | None:
         return None
 
 
-def _locate(pivots: Sequence[Pivot], i: int) -> tuple[bool, int | None]:
+def _locate(pivots: Sequence[Pivot], i: int) -> tuple[Pivot | None, int | None]:
+    """线段 `i` 属于哪个**中枢组**（按下标区间）。
+
+    返回 `(p, p.idx)`；不在任何中枢组的区间里则返回 `(None, None)`。
+    只回答「属于哪个中枢组」，**不回答「是不是中枢震荡段」** —— 后者要排除
+    离开段，由 `_make` 按第 49 课的口径判定。
+    """
     for p in pivots:
         if p.start_idx <= i <= p.end_idx:
-            return True, p.idx
-    return False, None
+            return p, p.idx
+    return None, None
 
 
 def _index_of(segs: list[Segment], seg: Segment) -> int:
@@ -142,7 +158,12 @@ def _make(kind: DivergenceKind, seg: Segment, ref: Segment, level: str,
           pivots: Sequence[Pivot], seg_idx: int, ref_idx: int,
           a_now: float, a_prev: float, new_extreme: bool,
           reason: str) -> Divergence:
-    in_pivot, pivot_idx = _locate(pivots, seg_idx)
+    pivot, pivot_idx = _locate(pivots, seg_idx)
+    # 第 49 课：中枢震荡段与「中枢完成的移动出现的背驰段」必须分开。按
+    # `pivot.py:125-127` 的下标约定，`segments[end_idx]` 是**离开段**，中枢震荡
+    # 严格取 `[start_idx, end_idx)` —— 离开段不算（两者「分别在第三类买点的
+    # 前后」）。趋势背驰的 `seg_idx` 恒为 `end_idx`，故 `in_pivot` 恒为 False。
+    in_pivot = pivot is not None and seg_idx < pivot.end_idx
     price = seg.low if seg.direction == -1 else seg.high
     return _seal(
         Divergence(

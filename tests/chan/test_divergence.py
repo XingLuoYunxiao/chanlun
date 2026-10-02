@@ -16,12 +16,27 @@ from chanlun.chan.types import Fractal, FractalKind, Segment, Status, Stroke
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "bars.parquet"
 
+#: 夹具是 **4 只票的面板**：`code` 列带市场前缀（`sh.600000` 等），4 只各 1212 行，
+#: 3636 个重复 `ts` 就是交织的证据。必须先按票过滤再送进引擎 —— 把 4 只票拼成
+#: 一条序列只会拼出无意义的结构（实测 10 段 / 2 中枢，单票是 10~15 段），让
+#: 「空集 == 空集」这类断言空转。同一惯例见 `test_engine.py:33-35`、
+#: `test_signal.py::test_real_data_must_produce_signals`。
+#: 选 `sz.300750`：单票里线段/中枢/盘整背驰都最多，上下两个方向、
+#: `new_extreme` 真/假、`pivot_idx` 有/无、CONFIRMED/TENTATIVE 都取得到样本。
+CODE = "sz.300750"
+_ALL = pd.read_parquet(FIXTURE)
+
+
+def bars(code: str) -> pd.DataFrame:
+    """单只票的行情。`code` 是夹具 `code` 列里的**带市场前缀**代码。"""
+    return _ALL[_ALL["code"] == code].drop(columns=["code"]).reset_index(drop=True)
+
 
 @pytest.fixture()
 def snap():
-    bars = pd.read_parquet(FIXTURE)
-    return bars, ChanEngine("600000", "day", signal_fn=find_signals,
-                            level="day").full(bars)
+    df = bars(CODE)
+    return df, ChanEngine(CODE, "day", signal_fn=find_signals,
+                          level="day").full(df)
 
 
 def _first_points(signals) -> set[tuple[str, float]]:
@@ -47,7 +62,11 @@ def test_trend_divergence_matches_b1_s1(snap):
     离开段口径、同样的创新极值要求、同样的严格面积收缩），所以集合必须完全一致。
     只写 `firsts <= trend` 会漏掉「`_trend` 用了更松的力度阈值、多报了一批趋势
     背驰」这种漂移 —— 多出来的那些恰恰是错的。实测 397 只票 19 个趋势背驰，
-    两个方向的差集都是 0；夹具上两者同为 0（故另有合成用例兜底，见文件末尾）。
+    两个方向的差集都是 0。
+
+    **`sz.300750` 与夹具里另外 3 只票都不出趋势背驰，所以这里显式钉住两边同为
+    空集**，至少让「`_trend` 突然多报」能被抓住；双向一致性的真实覆盖面是文件
+    末尾的合成用例（`test_synthetic_trend_divergence_matches_b1_exactly` 等）。
     """
     bars, s = snap
     divs = find_divergences(bars, s.segments, s.pivots, "day")
@@ -56,6 +75,10 @@ def test_trend_divergence_matches_b1_s1(snap):
     assert trend == firsts, (
         f"第一类买卖点里这些没有对应的趋势背驰：{firsts - trend}；"
         f"趋势背驰里这些没有对应的第一类买卖点：{trend - firsts}"
+    )
+    assert trend == set(), (
+        f"{CODE} 上不应出现趋势背驰（夹具 4 只票都是 0），"
+        f"出现了就说明 `_trend` 漂了：{trend}"
     )
 
 
@@ -67,6 +90,9 @@ def test_consolidation_divergence_area_shrinks(snap):
     divs = [d for d in find_divergences(bars, s.segments, s.pivots, "day")
             if d.kind is DivergenceKind.CONSOLIDATION]
     assert divs, "夹具上没有任何盘整背驰，本测试没有在测量任何东西"
+    # 单票夹具上的确切条数：`assert divs` 只挡得住「一条都没有」，钉住条数才能
+    # 挡住「判据漏报一半」。（`sz.300750`：0 条趋势背驰 + 7 条盘整背驰。）
+    assert len(divs) == 7, f"{CODE} 上应有 7 条盘整背驰，实际 {len(divs)} 条"
     for d in divs:
         now, prev = segs[d.seg_idx], segs[d.ref_seg_idx]
         assert prev.direction == now.direction, "盘整背驰的两段必须同向"
@@ -89,11 +115,17 @@ def test_consolidation_divergence_does_not_require_a_new_extreme(snap):
     bars, s = snap
     consol = [d for d in find_divergences(bars, s.segments, s.pivots, "day")
               if d.kind is DivergenceKind.CONSOLIDATION]
+    assert consol, f"{CODE} 上没有盘整背驰，本测试没有在测量任何东西"
     # 两个方向都要有「未创新极值」的样本：只断言 `any(...)` 的话，给其中一个方向
-    # 单独加一条创新极值要求仍然测不出来（夹具恰好两个方向都有这种样本，故按方向查）。
-    no_extreme = {d.direction for d in consol if not d.new_extreme}
-    assert no_extreme == {-1, 1}, \
-        f"上下两个方向都必须存在「未创新极值」的盘整背驰样本，实际只有 {no_extreme}"
+    # 单独加一条创新极值要求仍然测不出来（`sz.300750` 上两个方向都有这种样本，
+    # 故按方向查，并把条数一起钉住：-1 向 4 条、+1 向 2 条）。
+    no_extreme = {want: sum(1 for x in consol
+                            if x.direction == want and not x.new_extreme)
+                  for want in (-1, 1)}
+    assert no_extreme == {-1: 4, 1: 2}, (
+        f"上下两个方向都必须存在「未创新极值」的盘整背驰样本（{CODE} 上 -1 向 4 条、"
+        f"+1 向 2 条），实际 {no_extreme}"
+    )
 
 
 def test_divergence_ids_and_sorting_are_stable(snap):
@@ -101,6 +133,8 @@ def test_divergence_ids_and_sorting_are_stable(snap):
     a = find_divergences(bars, s.segments, s.pivots, "day")
     b = find_divergences(bars, s.segments, s.pivots, "day")
     assert a == b, "纯函数：同样的输入必须逐项相同"
+    # 钉住条数，否则下面两条断言可以在空列表上空转。
+    assert len(a) == 7, f"{CODE} 上应有 7 条背驰（0 趋势 + 7 盘整），实际 {len(a)} 条"
     assert [d.idx for d in a] == list(range(len(a)))
     assert [d.ts for d in a] == sorted(d.ts for d in a)
 
@@ -108,13 +142,22 @@ def test_divergence_ids_and_sorting_are_stable(snap):
 def test_divergence_status_inherits_segment(snap):
     bars, s = snap
     segs = list(s.segments)
-    for d in find_divergences(bars, s.segments, s.pivots, "day"):
+    divs = find_divergences(bars, s.segments, s.pivots, "day")
+    assert divs, f"{CODE} 上没有背驰，本测试的循环体永远不执行"
+    seen = set()
+    for d in divs:
         seg = segs[d.seg_idx]
         if seg.status is Status.CONFIRMED and seg.confirmed_at is not None:
             assert d.status is Status.CONFIRMED
             assert d.confirmed_at == seg.confirmed_at
+            seen.add(Status.CONFIRMED)
         else:
             assert d.status is Status.TENTATIVE
+            seen.add(Status.TENTATIVE)
+    # 两个分支都要真的被走到：`sz.300750` 上 6 条挂在 CONFIRMED 段、1 条挂在
+    # 未确认的尾段。只走一个分支的话，另一个分支的判据坏了也看不出来。
+    assert seen == {Status.CONFIRMED, Status.TENTATIVE}, \
+        f"CONFIRMED / TENTATIVE 两个分支都必须有样本，实际只走到 {seen}"
 
 
 def test_consolidation_is_not_called_a_divergence(snap):
@@ -132,12 +175,52 @@ def test_only_trend_divergence_requires_a_trend(snap):
     """盘整背驰可以出现在没有任何中枢的位置；趋势背驰不行（第 37 课）。"""
     bars, s = snap
     divs = find_divergences(bars, s.segments, s.pivots, "day")
-    trend = [d for d in divs if d.kind is DivergenceKind.TREND]
+    consol = [d for d in divs if d.kind is DivergenceKind.CONSOLIDATION]
+    outside = [d for d in consol if d.pivot_idx is None]
+    assert outside, (
+        f"第 39 课的盘整背驰不要求落在中枢里，{CODE} 上必须有落不进任何中枢组的"
+        f"样本；否则 `any(...) or consol == []` 这种写法会在空集上空转"
+    )
+    # 该票上趋势背驰为 0，`all(...)` 空转，故趋势背驰那一半放到合成用例里断言：
+    segs, pivots, macd_df = _synthetic_trend(area_a=10.0, area_b=1.0)
+    trend = [d for d in find_divergences(pd.DataFrame(), segs, pivots, "day",
+                                         macd_df=macd_df)
+             if d.kind is DivergenceKind.TREND]
+    assert trend, "合成用例必须真的产出趋势背驰，否则下面这条断言又是空转"
     assert all(d.pivot_idx is not None for d in trend), \
         "趋势背驰必然挂在某个中枢上（没有趋势就没有背驰）"
-    consol = [d for d in divs if d.kind is DivergenceKind.CONSOLIDATION]
-    assert any(d.pivot_idx is None for d in consol) or consol == [], \
-        "盘整背驰不应被强制要求落在中枢里"
+
+
+def test_in_pivot_is_the_049_oscillation_vs_leaving_leg_split(snap):
+    """第 49 课：「中枢震荡中出现的类似盘整背驰的走势段，与中枢完成的向上移动
+    出现的背驰段是不同的，两者分别在第三类买点的前后……这是有严格区分的。」
+
+    `in_pivot` 判的是**前者**：中枢震荡区间严格取 `[start_idx, end_idx)`
+    （`pivot.py:125-127`：`segments[end_idx]` 是**离开段**），离开段不是震荡段，
+    为 `False`。旧实现直接判 `start_idx <= i <= end_idx`，把离开段也算成震荡段，
+    这条测试就是为了让它不能再退化回去。
+    """
+    bars, s = snap
+    consol = [d for d in find_divergences(bars, s.segments, s.pivots, "day")
+              if d.kind is DivergenceKind.CONSOLIDATION]
+    inside = [d for d in consol if d.in_pivot]
+    assert inside, (
+        f"{CODE} 上必须有落在中枢震荡段里的盘整背驰，否则 `in_pivot` 恒 False "
+        f"也测不出来"
+    )
+    assert [d for d in consol if not d.in_pivot], (
+        f"{CODE} 上必须有不落在震荡段里的盘整背驰，否则 `in_pivot` 恒 True 也测不出来"
+    )
+    for d in consol:
+        p = None if d.pivot_idx is None else s.pivots[d.pivot_idx]
+        if p is not None:
+            assert p.start_idx <= d.seg_idx <= p.end_idx, \
+                f"seg{d.seg_idx} 的 pivot_idx 指错了中枢组：{p.idx}"
+        expected = p is not None and d.seg_idx < p.end_idx
+        assert d.in_pivot == expected, (
+            f"seg{d.seg_idx} 的 in_pivot={d.in_pivot}，但中枢组 "
+            f"{None if p is None else (p.start_idx, p.end_idx)} 要求 {expected}"
+        )
 
 
 # ---- 合成用例：夹具上趋势背驰为 0，上面那条一致性断言在夹具上是空转的 ----
@@ -262,3 +345,30 @@ def test_synthetic_boundary_cases_agree_with_b1():
         trend, firsts = _agree(*_synthetic_trend(area_a, area_b, points))
         assert trend == firsts, f"{why}：趋势背驰 {trend} != 第一类买卖点 {firsts}"
         assert trend == set(), f"{why}：不该报趋势背驰，却报了 {trend}"
+
+
+def test_synthetic_in_pivot_separates_oscillation_from_leaving_leg():
+    """第 49 课：`in_pivot` 必须把中枢震荡段与离开段分开（`pivot.py:125-127`）。
+
+    `_trend` 比较的 `segs[p.end_idx]` 是「中枢完成的移动出现的背驰段」，恒**不属于**
+    中枢震荡区间 `[start_idx, end_idx)`；同一个中枢组里的震荡段 `segs[6]` 属于。
+    旧实现按闭区间 `start_idx <= i <= end_idx` 赋值，于是**每个趋势背驰都恒为
+    `True`** —— 正好把第 49 课要求区分的东西混成了一类。
+    """
+    segs, pivots, macd_df = _synthetic_trend(area_a=10.0, area_b=1.0)
+    divs = find_divergences(pd.DataFrame(), segs, pivots, "day", macd_df=macd_df)
+    trend = [d for d in divs if d.kind is DivergenceKind.TREND]
+    assert len(trend) == 1, f"合成用例必须恰好产出一个趋势背驰，实际 {len(trend)} 条"
+    d = trend[0]
+    assert d.seg_idx == 8 == pivots[1].end_idx, "趋势背驰比的是中枢 B 的离开段"
+    assert d.pivot_idx == 1, "pivot_idx 仍要指向留下该离开段的中枢组"
+    assert d.in_pivot is False, (
+        "第 49 课：离开段是「中枢完成的移动出现的背驰段」，不是中枢震荡段"
+    )
+    osc = [x for x in divs
+           if x.kind is DivergenceKind.CONSOLIDATION and x.seg_idx == 6]
+    assert len(osc) == 1, \
+        f"合成用例必须产出 seg6（中枢 B 的震荡段）上的盘整背驰，实际 {len(osc)} 条"
+    assert osc[0].pivot_idx == 1 and osc[0].in_pivot is True, (
+        "中枢震荡段（B 的 5 <= seg6 < 8）里的盘整背驰必须是 in_pivot=True"
+    )
