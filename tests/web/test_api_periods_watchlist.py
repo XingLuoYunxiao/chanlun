@@ -305,8 +305,37 @@ def test_watchlist_structure_invalid_mode_is_422(client):
     """非法口径必须 **422**（FastAPI 的 `Query(pattern=...)`），不是 400、更不是 500。
 
     签名若写成裸 `str`：`mode=wild` 会被**静默忽略**（200），或者一路走到
-    `SignalMode("wild")` 抛 `ValueError`（500）—— 两种都不是 422。
+    `SignalMode("wild")` 抛 `ValueError` —— 后者在本端点**不是 500**，而是被
+    `except (DataSourceError, HTTPException, ValueError)` 兜成一行
+    `{"missing": true, "error": ...}`（见 `test_watchlist_structure_degrades_...`）；
+    两种都不是 422。
     """
     _clear_cache()
     r = client.get("/api/watchlist/structure", params={"period": "day", "mode": "wild"})
     assert r.status_code == 422, f"非法 mode 必须 422，实测 {r.status_code}: {r.text[:200]}"
+
+
+def test_watchlist_structure_degrades_a_value_error_instead_of_500(client, monkeypatch):
+    """`snapshot_of` 抛 `ValueError` 时这一行必须**降级**（200 + `missing: true`），不是 500。
+
+    **这是护栏，不是「修复的证明」**：本用例在改 `watchlist_structure` 的 docstring
+    **之前**就已通过 —— docstring 只是描述行为，改它不会让任何用例变绿。它守的是
+    `api.py` 里那条 `except (DataSourceError, HTTPException, ValueError)`：
+    删掉它，`SignalMode("qfq")` 这类 `ValueError` 会一路冒到 FastAPI 变成 500，
+    而自选栏默认池有 7 只票 —— 用户看到的是整栏 500，不是一行「未同步」。
+
+    历史背景：复权值原先也叫 `mode`，与口径参数同名会互相覆盖，把 `"qfq"`
+    顶进 `SignalMode(...)`；这正是把复权值改叫 `adj` 的原因。
+    """
+    from chanlun.web import api as api_mod
+
+    _clear_cache()
+    client.post("/api/watchlist", json={"code": "600000", "name": "浦发银行"})
+
+    def boom(*args, **kwargs):
+        raise ValueError("'qfq' is not a valid SignalMode")
+
+    monkeypatch.setattr(api_mod, "snapshot_of", boom)
+    item = _watch_item(client, "600000")
+    assert item["missing"] is True, item
+    assert "'qfq' is not a valid SignalMode" in item["error"], item
