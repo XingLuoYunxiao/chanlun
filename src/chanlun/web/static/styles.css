@@ -182,11 +182,11 @@ button, input { font: inherit; color: inherit; }
 .rail-tab.is-on { color: var(--rice); border-left-color: var(--indigo); background: var(--panel-2); }
 .rail-tab:hover { color: var(--rice); }
 
-/* 背驰图层按钮上的**全史**计数徽标。默认视野常常一条背驰都画不到（窗口只含
-   最近一小段K线），按钮亮着而图上空的，会被读成"这功能坏了" —— 把"全史有多少条"
+/* 背驰图层按钮上的**全史**计数徽标。默认视野常常一处背驰都画不到（窗口只含
+   最近一小段K线），按钮亮着而图上空的，会被读成"这功能坏了" —— 把"全史有多少处"
    写在按钮上，用户才分得清"数据里就没有"与"功能没生效"。
    这个数字与窗口无关（不监听 dataZoom，永不陈旧），与图层开关也无关：
-   它说的是数据里有多少条背驰，不是"现在画了几条"。
+   它说的是数据里有多少处背驰，不是"现在画了几处"。
    竖排（.rail-tab 的 writing-mode: vertical-rl）下它接在"背驰"两字下面；
    没数字时用 :empty 收掉。**注意本项目 `[hidden] { display: none !important }`
    是可用的**（见文件顶部那条），这里不用 hidden 只是为了让空态**不依赖 JS

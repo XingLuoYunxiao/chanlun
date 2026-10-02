@@ -136,6 +136,37 @@
   }
   window.addEventListener("resize", () => chart.resize());
 
+  // 鼠标当前悬停的**轴类目**（= 那一根K线的 `ts`）。背驰 tooltip 的反查要用它。
+  //
+  // 为什么不能只按价格反查：同一只票**两个不同日期恰好同价**时，两个背驰点的
+  // `value[1]` 是同一个浮点数，`find` 对两者都返回数组里**靠前**的那条 ⇒ tooltip
+  // 显示的是**另一个点**的判据。实测（`sh.600187` 日线严格，2022-01-04 与
+  // 2024-01-12 都是 2.83）：hover `2024-01-12` 显示的是 `2022-01-04` 的文案。
+  // 这不是理论风险：全史扫描 5471 只 × 2 口径 = 10942 个组合，命中 62 处同价不同日
+  // （分布在 60 个组合里）；逐个真实鼠标 hover 核验 124/124 读到的都是自己的判据
+  // （见 task-8-report.md §R3）。
+  //
+  // 为什么用 `updateAxisPointer` 取 ts：轴 tooltip 路径**不把数据项交给回调** ——
+  // `tooltip.valueFormatter` 实收 `(value, dataIndex)` 两个**标量**参数，没有
+  // `p.data` 可取（实测 `arg0_type: "number"`，见报告 §R3 第 0 步）。
+  // 本事件实测在 `valueFormatter` **之前**触发，所以读到的就是这一帧的类目。
+  // `e.axesInfo` 里 x 轴（`axisIndex: 0`）的 `value` 是**原始**类目下标 ——
+  // 不是 `dataZoom` 过滤后的序号 —— 与 `state.data.bars` 一一对应。
+  // 类目表要现取：`chart.getOption().xAxis[0].data` 实测在缩放前后都是完整的
+  // 1200 条（`filterMode: "filter"` 只过滤 series，不裁类目表）。
+  //
+  // **不要退回去用 `e.dataIndex`**：实测 12/12 次事件里 `axesInfo` 都带 x:0 项，
+  // 且 `x0.value === e.dataIndex`；但 `dataIndex` 正是 R1/R2 那个错位缺陷的字段名，
+  // 留一条以它兜底的支路，等于给下一个人留了"再串一次台"的入口。
+  // 取不到 x 轴类目时宁可置 null —— tooltip 只显示价格、不显示**别人**的判据。
+  let axisTs = null;
+  chart.on("updateAxisPointer", (e) => {
+    const ai = (e.axesInfo || []).find((x) => x.axisDim === "x" && x.axisIndex === 0);
+    const cats = ((chart.getOption() || {}).xAxis || [])[0];
+    const list = cats && cats.data ? cats.data : null;
+    axisTs = ai && list && list[ai.value] !== undefined ? list[ai.value] : null;
+  });
+
   // ------------------------------------------------------------------ 取数
   async function load() {
     const qs = new URLSearchParams({ code: state.code, period: state.period });
@@ -244,12 +275,12 @@
       : "严格：第一类只取自趋势背驰，第二类需前置第一类，第三类回试不得回到中枢内。点击切到非严格。";
   }
 
-  // 背驰图层按钮上的**全史**计数徽标。默认视野常常一条背驰都画不到（窗口只含
-  // 最近一小段K线），按钮亮着而图上空的，会被读成"这功能坏了" —— 把"全史有多少条"
+  // 背驰图层按钮上的**全史**计数徽标。默认视野常常一处背驰都画不到（窗口只含
+  // 最近一小段K线），按钮亮着而图上空的，会被读成"这功能坏了" —— 把"全史有多少处"
   // 写在按钮上，用户才分得清"数据里就没有"与"功能没生效"。
-  // 数字取 payload 的 `divergences` 长度（**全史**，不是窗口过滤后的数量）：
-  // 它不监听 dataZoom，所以永不陈旧；也与图层开关无关 —— 它说的是数据里有多少条
-  // 背驰，不是"现在画了几条"。为 0 时不显示数字，免得制造噪音。
+  // 数字取**合并后**的处数（**全史**，不是窗口过滤后的数量）：
+  // 它不监听 dataZoom，所以永不陈旧；也与图层开关无关 —— 它说的是数据里有多少处
+  // 背驰，不是"现在画了几处"。为 0 时不显示数字，免得制造噪音。
   // 同一 `(ts, price)` 的背驰**是同一个位置上的两种背驰**（后端同一次事件同时给了
   // 盘整背驰与趋势背驰两条，价格是同一个浮点数）。它们必须合并成**一个**数据点：
   // 不合并的话 ECharts 会在同一像素叠两个标记，而按值反查 tooltip 只能命中第一条 ——
@@ -293,7 +324,7 @@
   function applyDivergenceBadge(body) {
     const btn = document.querySelector('.rail-tab[data-layer="divergence"]');
     if (!btn) return;
-    // 数字用**合并后**的条数，与图上标记数一致：用后端原始条数的话，
+    // 数字用**合并后**的处数，与图上标记数一致：用后端原始条数的话，
     // `sh.600588` 会变成「徽标 7、图上 6 个标记」，看起来像 bug。
     const n = body && body.divergences ? mergeDivergencesByPoint(body.divergences).length : 0;
     const badge = $("#divergence-badge");
@@ -779,19 +810,26 @@
             // 所以后端的 `reason` 挂在这里，hover 才真的看得到；
             // 说明文案仍然只有后端一处实现，前端不拼第二份。
             //
+            // 轴路径**不给数据项**：实测本回调收到的是 `(value, dataIndex)` 两个标量，
+            // `value` 就是该点的 `value[1]`，没有 `p.data` 可读（报告 §R3 第 0 步）。
+            //
             // **不要用第二个参数（那个"过滤后序号"）去索引 `divergences`**：
             // `dataZoom.filterMode` 默认是 `"filter"`，ECharts 传进来的是
             // **过滤后**的序号，而 `divergences` 是**全量**数组 —— 两者错位，
             // hover 到的是**别人**的说明。
             // 实测（sh.600000 日线严格，默认视野）：唯一可见的是 2026-09-23 那条，
             // 显示的却是 2021-11-10 那条的说明。首屏即可见。
-            // 改成按**值**反查（传进来的 `value` 就是该数据项的 `value[1]`），
+            // 改成反查，且键必须是 **`(ts, price)` 两元组**：只按 price 反查时，
+            // 两个不同日期恰好同价的点会串台（hover 谁都是靠前那条的判据）——
+            // 实测 `sh.600187` 2022-01-04 与 2024-01-12 都是 2.83，报告 §R3。
+            // `ts` 取 `axisTs`（由 `updateAxisPointer` 记录，见 `chart` 初始化处），
             // 与下标、与窗口、与过滤模式全都无关。
-            // 反查能命中**唯一**一条，靠的是 `mergeDivergencesByPoint` 已经把同一
-            // `(ts, price)` 的背驰并成了一个点（不合并时 `find` 只会命中第一条，
-            // 第二条的 reason 永远读不到 —— 见那个函数的注释）。
+            // 合并过的点（`mergeDivergencesByPoint` 的产物）天然是唯一的 `(ts, price)`，
+            // 所以这里最多命中一条，两条 reason 也已在该点的 `reason` 里连好。
             valueFormatter: (value) => {
-              const div = divergences.find((x) => x.value[1] === value);
+              const div = divergences.find(
+                (x) => x.value[1] === value && x.value[0] === axisTs
+              );
               const text = f2(value); // 同页其它数值都走 f2，别让 tooltip 露原始浮点
               return div && div.reason ? `${text}｜${div.reason}` : text;
             },
