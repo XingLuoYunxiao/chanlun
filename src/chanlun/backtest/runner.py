@@ -41,10 +41,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import Any, Mapping, Sequence
 
+from ..chan.divergence import find_divergences
 from ..chan.engine import ChanEngine
-from ..chan.signal import find_signals
+from ..chan.signal import SignalMode, find_signals
 from ..chan.state import backtestable
 from ..data import store
 from .broker import Bar, Broker, EquityPoint, Fill, Order, Position, Rejection, RoundTrip
@@ -134,6 +136,7 @@ def run(
     start: str | None = None,
     end: str | None = None,
     period: str = "day",
+    mode: str = "strict",
     initial_cash: float = 100_000.0,
     *,
     benchmark_code: str | None = DEFAULT_BENCHMARK,
@@ -148,14 +151,29 @@ def run(
     codes: 股票代码列表（`600000` 或 `sh.600000` 都接受，多票共用一份现金）。
     start/end: 回测区间（含端点）。为 `None` 时表示不限。
     period: 行情周期，默认 `day`。
+    mode: 买卖点口径，`"strict"`（默认）或 `"loose"`，只影响买卖点与背驰标注，
+        不改笔/线段/中枢划分（D-32）。缺省值**不是** `None` ——
+        `SignalMode(None)` 会抛 `ValueError`。
     initial_cash: 初始资金，默认 10 万。
     benchmark_code: 基准代码，默认沪深300（`000300`）；无数据则 benchmark=None。
+
+    口径在入口处**归一化成 `SignalMode` 成员**再注入 `find_signals`：
+    `SignalMode` 是 `str` 枚举，`SignalMode.LOOSE == "loose"` 为 True 而
+    `SignalMode.LOOSE is "loose"` 为 False，`signal.py` 内部用的是 `is`。
+    字符串直通会让 `mode="loose"` **静默等于严格模式**，所以这里必须转换；
+    非法值由 `SignalMode(mode)` 抛 `ValueError`，不静默降级。
     """
     name = strategy_name or type(strategy).__name__
     notes: list[str] = []
     bare_codes = [_bare(c) for c in codes]
+    m = SignalMode(mode)  # 入口归一化：绝不让字符串透传到 signal.py 的 `is` 比较
     make_engine = engine_factory or (
-        lambda code: ChanEngine(code, period, signal_fn=find_signals, level=period)
+        lambda code: ChanEngine(
+            code, period,
+            signal_fn=partial(find_signals, mode=m),
+            divergence_fn=find_divergences,
+            level=period,
+        )
     )
 
     # 1) 时间轴：只用 start/end 读取来确认「哪几天有 bar」，不进引擎、不进策略。

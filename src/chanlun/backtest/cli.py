@@ -53,6 +53,9 @@ def add_parser(sub: Any) -> argparse.ArgumentParser:
     p.add_argument("--start", default=None, help="开始日期 YYYY-MM-DD（含）")
     p.add_argument("--end", default=None, help="结束日期 YYYY-MM-DD（含）")
     p.add_argument("--period", default="day", choices=PERIODS, help="行情周期，默认 day")
+    p.add_argument("--mode", choices=("strict", "loose"), default="strict",
+                   help="买卖点口径：strict=严格（默认）；loose=非严格，"
+                        "含盘整背驰买卖点与第三类回试容忍度")
     p.add_argument("--cash", type=float, default=100_000.0, help="初始资金，默认 100000")
     p.add_argument("--strategy", default="chan", choices=sorted(STRATEGIES),
                    help="策略：chan=缠论三类买卖点，fractal=底/顶分型机械策略"
@@ -179,6 +182,7 @@ def run_command(args: Any, cfg: Any = None) -> int:
         period=getattr(args, "period", "day"), initial_cash=getattr(args, "cash", 100_000.0),
         benchmark_code=getattr(args, "benchmark", DEFAULT_BENCHMARK),
         strategy_name=args.strategy,
+        mode=getattr(args, "mode", "strict"),
     )
     print(format_report(result))
     return 0 if result.equity else 1
