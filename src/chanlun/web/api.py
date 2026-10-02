@@ -39,6 +39,7 @@ from ..data import sync as sync_mod
 from ..data import periods as periods_mod
 from ..data.baostock_source import to_bs_code
 from ..data.types import DataSourceError
+from ..version import version_info
 
 log = logging.getLogger("chanlun.web")
 
@@ -516,8 +517,20 @@ def health(request: Request) -> dict[str, Any]:
         "port": getattr(request.app.state, "port", cfg.web.port),
         "data_root": str(cfg.data.root),
         "periods": list(cfg.periods),
+        "version": version_info()["version"],
         "disclaimer": DISCLAIMER,
     }
+
+
+@router.get("/api/version")
+def version() -> dict[str, str]:
+    """当前版本号及其来源。
+
+    单独开一个口子而不是只塞进 `/api/health`：排查「线上跑的到底是哪一版」时，
+    需要的是一个不依赖配置、不碰数据库、随时能答的端点。`source` 一并返回，
+    是为了区分「从源码树读的」和「从安装元数据读的」——两者不一致本身就是线索。
+    """
+    return version_info()
 
 
 @router.get("/api/universe")

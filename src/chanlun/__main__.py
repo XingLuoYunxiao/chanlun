@@ -63,6 +63,7 @@ from .scan import (
     scan_report,
     track_watchlist,
 )
+from .version import __version__
 
 log = logging.getLogger("chanlun")
 
@@ -137,6 +138,12 @@ def _parse_periods(text: str) -> tuple[str, ...]:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m chanlun", description="缠论数据工具")
+    # `--version` 挂在顶层，且**不是**子命令：`python -m chanlun --version` 要能直接答出来，
+    # 不必先选一个子命令。argparse 的 version action 就地打印并退出，不受 required 子命令影响。
+    parser.add_argument(
+        "--version", action="version", version=f"chanlun {__version__}",
+        help="打印版本号后退出",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_universe = sub.add_parser("universe", help="重建品种表并打印数量")

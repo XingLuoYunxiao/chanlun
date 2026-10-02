@@ -62,6 +62,25 @@ def test_health_reports_fixed_port(client):
     assert body["data_root"]
 
 
+def test_health_carries_version(client):
+    """`/api/health` 顺带报版本号，方便一条命令看清「这个端口上跑的是哪一版」。"""
+    import chanlun
+
+    body = client.get("/api/health").json()
+    assert body["version"] == chanlun.__version__
+
+
+def test_version_endpoint(client):
+    """`/api/version` 不碰配置也不碰数据库，随时能答。"""
+    import chanlun
+
+    r = client.get("/api/version")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["version"] == chanlun.__version__
+    assert body["source"] == "pyproject.toml", "源码态应读 pyproject.toml"
+
+
 def test_ensure_port_free_raises_when_occupied():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))

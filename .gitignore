@@ -5,3 +5,6 @@
 .pytest_cache/
 __pycache__/
 *.egg-info/
+
+# 108 课抓取缓存（141 MB，可重新生成；原文/回复/问答等成品才入库）
+/chanlun108/cache/
