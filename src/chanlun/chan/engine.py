@@ -51,6 +51,11 @@ from .types import Fractal, MergedBar, Segment, Stroke
 SignalFn = Callable[[pd.DataFrame, Sequence[Segment], Sequence[Pivot], str],
                     Sequence[Any]]
 
+#: 背驰判定回调：`(bars, segments, pivots, level) -> Sequence[Divergence]`。
+#: 与 `SignalFn` 同理，引擎不内置背驰规则。
+DivergenceFn = Callable[[pd.DataFrame, Sequence[Segment], Sequence[Pivot], str],
+                        Sequence[Any]]
+
 
 @dataclass(frozen=True)
 class Snapshot:
@@ -68,6 +73,9 @@ class Snapshot:
     segments: tuple[Segment, ...] = ()
     pivots: tuple[Pivot, ...] = ()
     signals: tuple[Any, ...] = ()
+    #: 背驰（趋势背驰 / 盘整背驰）。**派生数据**：由 `segments` + `macd` 决定，
+    #: 不进 `state.py::_FIELDS`，不参与 reconcile 调和。
+    divergences: tuple[Any, ...] = ()
     version: int = 1
 
     @property
@@ -107,6 +115,7 @@ class Snapshot:
             segments=tuple(g for g in self.segments if kept(g.start.start.ts, g.end.end.ts)),
             pivots=tuple(p for p in self.pivots if kept(p.start_ts, p.end_ts)),
             signals=tuple(s for s in self.signals if first_ts <= s.ts <= last_ts),
+            divergences=tuple(d for d in self.divergences if first_ts <= d.ts <= last_ts),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -125,6 +134,7 @@ class ChanEngine:
         policy: SegmentPolicy | None = None,
         signal_fn: SignalFn | None = None,
         level: str | None = None,
+        divergence_fn: DivergenceFn | None = None,
     ) -> None:
         if not code:
             raise ValueError("code 不能为空")
@@ -133,6 +143,7 @@ class ChanEngine:
         self.level = level or period
         self.policy = policy
         self.signal_fn = signal_fn
+        self.divergence_fn = divergence_fn
 
     # ---- 对外 ----
 
@@ -173,6 +184,9 @@ class ChanEngine:
         signals: Sequence[Any] = ()
         if self.signal_fn is not None:
             signals = self.signal_fn(bars, segments, pivots, self.level)
+        divergences: tuple[Any, ...] = ()
+        if self.divergence_fn is not None:
+            divergences = tuple(self.divergence_fn(bars, segments, pivots, self.level))
         return Snapshot(
             code=self.code,
             period=self.period,
@@ -184,5 +198,6 @@ class ChanEngine:
             segments=tuple(segments),
             pivots=tuple(pivots),
             signals=tuple(signals),
+            divergences=divergences,
             version=version,
         )

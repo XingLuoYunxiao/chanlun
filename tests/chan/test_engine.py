@@ -356,3 +356,40 @@ def test_zero_price_bars_are_really_zeroed_in_the_source():
     """前提校验：本用例注入的确实是全 0 行，否则上面那条测试是空的。"""
     df = bars("sh.600000")
     assert (df.loc[ZERO_AT : ZERO_AT + 4, ["open", "high", "low", "close"]] > 0).all().all()
+
+
+# ------------------------------------------------ 背驰：派生数据，不进状态机
+#: 背驰夹具用的票。**实测四只夹具票的背驰全是盘整背驰，趋势背驰一只都没有**：
+#: sh.600000=5 / sh.601088=5 / sz.300059=2 / sz.300750=7，逐只都是
+#: `{'consolidation': n}`（trend=0）。这不是夹具选取失误，是这四只 2020-2024
+#: 日线上确实没走出「两个同向中枢 + 离开段力度收缩」的形态。取背驰最多的
+#: sz.300750；窗口 `[ts[600], ts[-1]]` 内剩 4 个，够两条用例用。
+DIVERGENCE_CODE = "sz.300750"
+
+
+def test_snapshot_carries_divergences_when_fn_given():
+    from chanlun.chan.divergence import find_divergences
+    from chanlun.chan.signal import find_signals
+
+    df = bars(DIVERGENCE_CODE)
+    plain = ChanEngine(DIVERGENCE_CODE, "day", signal_fn=find_signals,
+                       level="day").full(df)
+    rich = ChanEngine(DIVERGENCE_CODE, "day", signal_fn=find_signals, level="day",
+                      divergence_fn=find_divergences).full(df)
+    assert plain.divergences == (), "没给 divergence_fn 时不应凭空产出背驰"
+    assert rich.divergences, "给了 divergence_fn 就必须有背驰"
+    assert plain.signals == rich.signals, "背驰是派生数据，不得影响买卖点"
+
+
+def test_clipped_to_keeps_only_visible_divergences():
+    from chanlun.chan.divergence import find_divergences
+    from chanlun.chan.signal import find_signals
+
+    df = bars(DIVERGENCE_CODE)
+    snap = ChanEngine(DIVERGENCE_CODE, "day", signal_fn=find_signals, level="day",
+                      divergence_fn=find_divergences).full(df)
+    lo, hi = str(df["ts"].iloc[600]), str(df["ts"].iloc[-1])
+    cut = snap.clipped_to(lo, hi)
+    assert cut.divergences, "窗口内应有背驰"
+    assert all(lo <= d.ts <= hi for d in cut.divergences)
+    assert len(cut.divergences) <= len(snap.divergences)
