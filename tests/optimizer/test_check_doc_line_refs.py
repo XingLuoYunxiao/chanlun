@@ -127,6 +127,57 @@ def test_out_of_range_reference_fails(tool, tmp_path):
     assert "越界" in out
 
 
+def test_inverted_range_in_bounds_fails(tool, tmp_path):
+    """区间写反（起 > 止）⇒ 硬失败，哪怕两端都落在文件行数之内。
+
+    只查上界的旧实现会**静默放行**它：`6-3` 的终点 3 和起点 6 都不越界，
+    于是进 `通过` 桶、退出码 0 —— 一个写反的区间被记成了绿。
+    """
+    root, doc = _mini(tmp_path, {"src/chanlun/chan/foo.py": FOO}, DOC_HEAD + "见 `foo.py:6-3`。\n")
+    code, out = _run(tool, root, doc)
+    assert code != 0, out
+    assert "失败 1 条" in out
+    assert "通过 0 条" in out
+    assert "区间倒置" in out
+    assert "6-3" in out
+
+
+def test_inverted_range_with_out_of_range_start_gives_verdict_not_traceback(tool, tmp_path):
+    """起点越界、终点不越界的倒置区间 ⇒ 可读判定，不是 IndexError。
+
+    `99-3` 在上界判据眼里「终点 3 ≤ 10 行」是合格的，于是旧实现一路走到
+    `res.lines[s - 1]` 抛 IndexError —— 退出码 1 来自崩溃而非判据，
+    输出里也没有任何一行说明文档哪里写错了。
+    """
+    root, doc = _mini(tmp_path, {"src/chanlun/chan/foo.py": FOO}, DOC_HEAD + "见 `foo.py:99-3`。\n")
+    code, out = _run(tool, root, doc)  # 崩溃会在这里冒泡成异常 ⇒ 本用例直接红
+    assert code != 0, out
+    assert "失败 1 条" in out
+    assert "区间倒置" in out
+    assert "99-3" in out
+    assert "Traceback" not in out
+
+
+def test_inverted_continuation_segment_fails(tool, tmp_path):
+    """续段写反同样要拦：`3-4, 7-5` 的第二段起 > 止。"""
+    root, doc = _mini(tmp_path, {"src/chanlun/chan/foo.py": FOO}, DOC_HEAD + "见 `foo.py:3-4, 7-5`。\n")
+    code, out = _run(tool, root, doc)
+    assert code != 0, out
+    assert "失败 1 条" in out
+    assert "区间倒置" in out
+    assert "7-5" in out
+
+
+def test_line_number_zero_fails_instead_of_wrapping_to_file_tail(tool, tmp_path):
+    """行号 0 ⇒ 硬失败。旧实现 `res.lines[0 - 1]` 是 Python 负索引，静默指到末行。"""
+    root, doc = _mini(tmp_path, {"src/chanlun/chan/foo.py": FOO}, DOC_HEAD + "见 `foo.py:0-0`。\n")
+    code, out = _run(tool, root, doc)
+    assert code != 0, out
+    assert "失败 1 条" in out
+    assert "通过 0 条" in out
+    assert "低于下界" in out
+
+
 def test_missing_file_fails(tool, tmp_path):
     root, doc = _mini(tmp_path, {"src/chanlun/chan/foo.py": FOO}, DOC_HEAD + "见 `nope.py:1`。\n")
     code, out = _run(tool, root, doc)
@@ -298,6 +349,45 @@ def test_summary_line_has_every_field(tool, tmp_path):
     assert code == 0, out
     last = [ln for ln in out.splitlines() if ln.startswith("共 ")][-1]
     assert SUMMARY_RE.search(last), last
+
+
+def test_summary_states_which_buckets_can_change_the_exit_code(tool, tmp_path):
+    """输出必须显式说明退出码归属 —— 尤其「缺符号无法校验」不在其内。
+
+    这条只钉**披露**，不动判据：同一个夹具下 `code == 0` 就证明缺符号桶
+    仍然不影响退出码（它过去、现在都只披露）。
+    """
+    root, doc = _mini(tmp_path, {"src/chanlun/chan/foo.py": FOO}, DOC_HEAD + "见 `foo.py:3-4`。\n\n`bar` 在别处。\n")
+    code, out = _run(tool, root, doc)
+    assert code == 0, out
+    assert "缺符号无法校验 1 条" in out
+    assert "退出码归属" in out
+    assert "仅 --strict-symbols 时 exit 1" in out
+    assert "不接入退出码" in out
+
+
+def test_missing_symbol_bucket_never_changes_exit_code(tool, tmp_path):
+    """反向对照：三条「缺符号无法校验」，退出码仍是 0（这一桶不许接进退出码）。"""
+    doc = DOC_HEAD + "见 `foo.py:3-4`。\n\n见 `foo.py:6-7`。\n\n见 `foo.py:8-9`。\n"
+    root, doc_path = _mini(tmp_path, {"src/chanlun/chan/foo.py": FOO}, doc)
+    code, out = _run(tool, root, doc_path)
+    assert code == 0, out
+    assert "失败 0 条" in out
+    assert "缺符号无法校验 3 条" in out
+    assert "退出码归属" in out
+
+
+def test_help_states_exit_code_ownership(tool):
+    """`--help` 同样要说清哪些桶能改退出码（否则只有读输出的人知道）。"""
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), pytest.raises(SystemExit):
+        tool.main(["--help"])
+    text = buf.getvalue()
+    assert "退出码归属" in text, text
+    assert "缺符号无法校验" in text, text
 
 
 # --------------------------------------------------------------------------- #
