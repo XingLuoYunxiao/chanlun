@@ -152,23 +152,39 @@
   // 本事件实测在 `valueFormatter` **之前**触发，所以读到的就是这一帧的类目。
   // `e.axesInfo` 里 x 轴（`axisIndex: 0`）的 `value` 是**原始**类目下标 ——
   // 不是 `dataZoom` 过滤后的序号 —— 与 `state.data.bars` 一一对应。
-  // 类目表要现取：`chart.getOption().xAxis[0].data` 实测在缩放前后都是完整的
-  // 1200 条（`filterMode: "filter"` 只过滤 series，不裁类目表）。
+  // 类目表**由 `draw()` 缓存**在 `axisCats` 里（就是它算出的那个 `ts` 数组）。
+  // 原来是每次事件现取 `chart.getOption().xAxis[0].data`，等价但**极贵**：本机实测
+  // 单次 `getOption()` 预热后中位 1.1–1.2 ms（min 0.8 / max 3.4），返回的 option
+  // JSON 39.6 万–40.8 万字符（复审给的数字是 0.72 ms / 348875 字符，同一量级）；
+  // 30 次真实鼠标移动 **1:1** 触发 30 次调用 ⇒ 按 30–60 次移动/秒算是单核的 3–7%，
+  // 并按 0.8 MB × 30/秒 ≈ 每秒二十多 MB 的速度产生短命对象。
+  // 两者**逐字节等价**：`draw()` 里 `xAxes` 的 `axisBase.data` 就是 `ts` 本身
+  // （四个窗格共用同一个数组），而 `state.data = body`（load）到 `draw()` 之间
+  // **没有 `await`**，不存在缓存与 `divergences` 不同步的窗口。
+  // 首屏 `draw()` 之前 `axisCats` 还是 null ⇒ 置 null，安全降级。
   //
   // **不要退回去用 `e.dataIndex`**：实测 12/12 次事件里 `axesInfo` 都带 x:0 项，
   // 且 `x0.value === e.dataIndex`；但 `dataIndex` 正是 R1/R2 那个错位缺陷的字段名，
   // 留一条以它兜底的支路，等于给下一个人留了"再串一次台"的入口。
   // 取不到 x 轴类目时宁可置 null —— tooltip 只显示价格、不显示**别人**的判据。
   let axisTs = null;
+  let axisCats = null; // 由 draw() 写入：当前图上 x 轴类目表（= state.data.bars 的 ts）
   chart.on("updateAxisPointer", (e) => {
     const ai = (e.axesInfo || []).find((x) => x.axisDim === "x" && x.axisIndex === 0);
-    const cats = ((chart.getOption() || {}).xAxis || [])[0];
-    const list = cats && cats.data ? cats.data : null;
-    axisTs = ai && list && list[ai.value] !== undefined ? list[ai.value] : null;
+    axisTs = ai && axisCats && axisCats[ai.value] !== undefined ? axisCats[ai.value] : null;
   });
 
   // ------------------------------------------------------------------ 取数
+  // 在途请求的序号。点一次周期 tab 会发**两个**请求（主图 `load()` + 自选
+  // `loadWatch()`，见文件末尾 `.period` 的 click），而 `load()` 之间没有保护时
+  // **后到的旧响应会覆盖 `state.data`** ⇒ 页面停在旧周期的数据上、徽标为空。
+  // 复审实测这是**确定性**的、不是偶发：逐请求计时 `/api/structure?period=week`
+  // 5863→6461 ms 而 `period=day` 5879→5939 ms —— 先发的旧请求后完成。
+  // 每次 `load()` 领一个号，`await` 回来后号变了就把自己整段丢掉（不碰 state、
+  // 不画图、不改图注）。正常单次点击时号没变，刷新路径完全不受影响。
+  let loadSeq = 0;
   async function load() {
+    const seq = ++loadSeq;
     const qs = new URLSearchParams({ code: state.code, period: state.period });
     if (state.limit) qs.set("limit", String(state.limit)); // 未指定时用后端默认窗口（1200）
     qs.set("adjust", state.adjust);
@@ -181,9 +197,13 @@
     try {
       resp = await fetch(`/api/structure?${qs}`);
     } catch (err) {
+      // 旧请求连不上时也不许弹提示：那是上一次点击的事，新请求可能已经成功了。
+      if (seq !== loadSeq) return;
       return showNotice("连不上本地服务", `请确认服务在本机 8888 端口运行：${err}`, "python -m chanlun serve");
     }
     const body = await resp.json().catch(() => ({}));
+    // ★ 从这里往下每一行都在改界面：旧响应必须整段丢弃。
+    if (seq !== loadSeq) return;
     if (!resp.ok) {
       // 404 = 这个周期本地真没有数据。命令行提示是给终端用户的，看盘的人需要能点的东西。
       // 但**不是每个 404 都能补**：指数没有分钟线（`syncable: false`），给一个必然
@@ -275,12 +295,6 @@
       : "严格：第一类只取自趋势背驰，第二类需前置第一类，第三类回试不得回到中枢内。点击切到非严格。";
   }
 
-  // 背驰图层按钮上的**全史**计数徽标。默认视野常常一处背驰都画不到（窗口只含
-  // 最近一小段K线），按钮亮着而图上空的，会被读成"这功能坏了" —— 把"全史有多少处"
-  // 写在按钮上，用户才分得清"数据里就没有"与"功能没生效"。
-  // 数字取**合并后**的处数（**全史**，不是窗口过滤后的数量）：
-  // 它不监听 dataZoom，所以永不陈旧；也与图层开关无关 —— 它说的是数据里有多少处
-  // 背驰，不是"现在画了几处"。为 0 时不显示数字，免得制造噪音。
   // 同一 `(ts, price)` 的背驰**是同一个位置上的两种背驰**（后端同一次事件同时给了
   // 盘整背驰与趋势背驰两条，价格是同一个浮点数）。它们必须合并成**一个**数据点：
   // 不合并的话 ECharts 会在同一像素叠两个标记，而按值反查 tooltip 只能命中第一条 ——
@@ -321,6 +335,23 @@
     return out;
   }
 
+  // 背驰图层按钮上的**已加载区间**计数徽标。默认视野常常一处背驰都画不到（窗口只含
+  // 最近一小段K线），按钮亮着而图上空的，会被读成"这功能坏了" —— 把"已加载的这段里
+  // 有多少处"写在按钮上，用户才分得清"数据里就没有"与"功能没生效"。
+  // 数字取**合并后**的处数（**已加载区间内**的处数，不是窗口过滤后的数量）：
+  // 它不监听 dataZoom，所以永不陈旧；也与图层开关无关 —— 它说的是数据里有多少处
+  // 背驰，不是"现在画了几处"。为 0 时不显示数字，免得制造噪音。
+  //
+  // ★ 这个数字**不是全史**，`title` 里因此不许无条件写"全史"：
+  // `divergences` 取自**被裁剪过的**快照（`api.py:419`
+  // `snap.clipped_to(第一根 bar 的 ts, last_ts)`），裁剪边界就是 `limit` 送出的那批 bar，
+  // 所以它**随 `limit` 变**。实测 `sz.399001` 日线：默认 1200 根 -> 3 处，
+  // `limit=9000`（全史 8648 根）-> 31 处 —— 差 10 倍。默认视野下写"全史 3 处"，
+  // 用户会以为这只票历史上只背驰过 3 次。
+  // （对照：图注里 `counts_total` 那句"全史 N 段"**是对的**，那个数不随 limit 变。）
+  // 判据：送出的 bar 数 vs 该票全史根数 —— 两个字段都在 payload 顶层
+  // （`api.py:537-538` 的 `bars` / `bars_total`），实测都存在。
+  // **取不到时不许猜**：按"已加载区间"兜底，宁可少说，不说量不出来的话。
   function applyDivergenceBadge(body) {
     const btn = document.querySelector('.rail-tab[data-layer="divergence"]');
     if (!btn) return;
@@ -331,9 +362,23 @@
     if (badge) badge.textContent = n ? String(n) : "";
     // 量词用「处」不用「条」：两处背驰落在同一时间同一价位 = 同一个**位置**上的
     // 两种背驰，那个位置只画一个标记，"处"才对得上图。
+    const nBars = body && Array.isArray(body.bars) ? body.bars.length : null;
+    const total = body && Number.isFinite(body.bars_total) ? body.bars_total : null;
+    if (nBars !== null && total !== null && nBars === total) {
+      // 已加载的就是全史（新股，或 limit 大到覆盖全史）⇒ 这里说的"全史"是真话，
+      // 两句都与改动前**逐字节相同**（≤1200 根的票输出完全不变）。
+      btn.title = n
+        ? `背驰标注：全史 ${n} 处（这里只画与当前窗口相交的部分，默认视野可能一条都不含）。开关只决定画不画，不影响这个数字。`
+        : "背驰标注：这只票的全史没有背驰（与当前窗口无关）。";
+      return;
+    }
+    // 已加载 < 全史：四个事实都要说全 —— ① 这是已加载区间不是全史 ② 加载了多少根
+    // ③ 总共多少根 ④ 怎么看到更早的。总数缺失时整段省掉 ③④，不拿猜的数填空。
+    const scope = nBars !== null ? `已加载的最近 ${nBars} 根K线内` : "已加载区间内";
+    const tail = nBars !== null && total !== null ? `（共 ${total} 根；加大 limit 可看更早）` : "";
     btn.title = n
-      ? `背驰标注：全史 ${n} 处（这里只画与当前窗口相交的部分，默认视野可能一条都不含）。开关只决定画不画，不影响这个数字。`
-      : "背驰标注：这只票的全史没有背驰（与当前窗口无关）。";
+      ? `背驰标注：${scope} ${n} 处${tail}。这里只画与当前窗口相交的部分，默认视野可能一处都不含。开关只决定画不画，不影响这个数字。`
+      : `背驰标注：${scope}没有背驰${tail}。与当前窗口无关。`;
   }
 
   function httpTitle(status) {
@@ -489,6 +534,9 @@
     const d = state.data;
     const bars = d.bars;
     const ts = bars.map((b) => b.ts);
+    // x 轴类目表 = 这个数组本身（下面 `axisBase.data` 用的就是它）。
+    // 缓存给 `updateAxisPointer` 用，省掉每次鼠标移动一次 `chart.getOption()`（实测 0.72 ms）。
+    axisCats = ts;
     const idxOf = new Map(ts.map((t, i) => [t, i]));
     const up = cssVar("--cinnabar"), down = cssVar("--bamboo");
     const indigo = cssVar("--indigo"), mohui = cssVar("--mohui"), amber = cssVar("--amber");
