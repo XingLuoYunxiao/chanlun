@@ -421,6 +421,55 @@ def test_negative_control_blank_symbol_window_turns_red_under_strict(tool, tmp_p
 
 
 # --------------------------------------------------------------------------- #
+# 引用行无可校验符号（人工复核清单）
+# --------------------------------------------------------------------------- #
+def test_own_line_without_symbols_is_listed_per_line(tool, tmp_path):
+    """本行反引号里没有可校验符号 ⇒ 逐行给出「文档行号 | 引用文本 | 该行符号数 | 判定」。"""
+    root, doc = _mini(tmp_path, {"src/chanlun/chan/foo.py": FOO}, DOC_HEAD + "见 `foo.py:3-4`。\n")
+    code, out = _run(tool, root, doc)
+    assert code == 0, out
+    assert "=== 引用行无可校验符号" in out, out
+    assert "  文档行号 | 引用文本 | 该行符号数 | 判定" in out, out
+    assert "  L3 | foo.py:3-4 | 0 | ±1 窗口亦无符号" in out, out
+    assert "共 1 行：±1 窗口亦无符号 1 行" in out, out
+
+
+def test_own_line_with_symbol_is_not_listed(tool, tmp_path):
+    """反向对照：本行有符号（`alpha`）就不进这张清单 —— 否则清单等于「所有引用行」。"""
+    root, doc = _mini(tmp_path, {"src/chanlun/chan/foo.py": FOO}, DOC_HEAD + "`alpha` 见 `foo.py:3-4`。\n")
+    code, out = _run(tool, root, doc)
+    assert code == 0, out
+    assert "  无（每条引用所在的行都至少有一个可校验符号）" in out, out
+
+
+def test_neighbour_symbol_is_marked_circumstantial_only(tool, tmp_path):
+    """邻行有符号 ⇒ 判定记「可旁证」，且必须写明**不代表引用正确**（它仍是人工复核项）。"""
+    doc = DOC_HEAD + "见 `foo.py:3-4`。\n`bar` 在别处。\n\n见 `foo.py:6-7`。\n"
+    root, doc_path = _mini(tmp_path, {"src/chanlun/chan/foo.py": FOO}, doc)
+    code, out = _run(tool, root, doc_path)
+    assert code == 0, out
+    assert "  L3 | foo.py:3-4 | 0 | ±1 窗口有符号可旁证：bar" in out, out
+    assert "  L6 | foo.py:6-7 | 0 | ±1 窗口亦无符号" in out, out
+    assert "共 2 行：±1 窗口亦无符号 1 行" in out, out
+    assert "邻行有符号可旁证 1 行" in out, out
+    assert "不代表引用正确" in out, out
+    # 窗口 0 个符号 ⇒ 必然也在「覆盖度偏弱点」桶里（同一把尺子，只差窗口大小）。
+    assert "  L6: 引用 1 条 / 窗口符号 0 个" in out, out
+    assert "  L3: 引用" not in out, out
+
+
+def test_unverifiable_bucket_is_disclosure_only_even_under_strict(tool, tmp_path):
+    """本桶不许接进退出码：两条「±1 窗口连符号都没有」+ `--strict-symbols`，仍须 exit 0。"""
+    doc = DOC_HEAD + "见 `foo.py:3-4`。\n\n见 `foo.py:6-7`。\n"
+    root, doc_path = _mini(tmp_path, {"src/chanlun/chan/foo.py": FOO}, doc)
+    code, out = _run(tool, root, doc_path, "--strict-symbols")
+    assert code == 0, out
+    assert "引用行无可校验符号 2" in out, out
+    assert "符号漂移告警 0 条" in out, out  # 一个符号都没有 ⇒ 严格档也没东西可报警
+    assert "不接入退出码" in out, out
+
+
+# --------------------------------------------------------------------------- #
 # 真文档
 # --------------------------------------------------------------------------- #
 def test_real_architecture_doc_is_green_and_enumerates_app_js(tool):
@@ -444,3 +493,19 @@ def test_real_architecture_doc_reports_py_totals(tool):
     """.py 桶总数：全文 182 处 / 173 行；§3.4 56 处 / 55 行（与探针逐项一致）。"""
     _, out = _run(tool, CHANLUN, CHANLUN / "ARCHITECTURE.md")
     assert "引用总数（.py 桶）：全文 182 处 / 173 行；§3.4 56 处 / 55 行" in out
+
+
+def test_real_architecture_doc_discloses_unverifiable_lines(tool):
+    """真文档：新桶逐行披露、条数与列出的行数一致，且**不接退出码**。
+
+    129 是 2026-10-03（Task 10a-R2）实测值：文档一增删就该有人重看这张清单 ——
+    这正是它存在的意义（它是一份人工复核清单，不是一个恒绿的指标）。
+    """
+    code, out = _run(tool, CHANLUN, CHANLUN / "ARCHITECTURE.md")
+    assert code == 0, out
+    m = re.search(r"引用行无可校验符号 (\d+)", out)
+    assert m, out
+    assert int(m.group(1)) == 129, f"实测 {m.group(1)} 行；重排/增删后请人工复核这张清单"
+    rows = re.findall(r"^  L\d+ \| .+ \| \d+ \| ", out, re.M)
+    assert len(rows) == 129, f"打印了 {len(rows)} 行，与计数不符"
+    assert "不接入退出码" in out, out
