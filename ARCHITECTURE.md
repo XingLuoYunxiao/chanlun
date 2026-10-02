@@ -370,9 +370,9 @@ raw bars: DataFrame(ts, high, low, close)
 | `LEVEL_UP` | `{"5":"30","30":"day","day":"week","week":"month"}` | `pivot.py:59-64` | 未知级别退化为 `"<level>+"` |
 | MACD 周期 | `fast=12, slow=26, signal=9` | `macd.py:148` | 通达信/同花顺口径 |
 | 分型窗口 | 3 根合并 K 线、**严格不等式** | `fractal.py:59-66` | 严格不等式避免"平台等高"误判 |
-| `Segment.policy` 默认 | `"lesson_67_78"` | `types.py:107` | `Lesson6768Policy`（`segment.py:198`） |
+| `Segment.policy` 默认 | `"lesson_67_78"` | `chan/types.py:107` | `Lesson6768Policy`（`segment.py:198`） |
 | 左端起段选择 | 取确认线段**最多**的起点，平局取**更早** | `segment.py:298-340` | **原文空白项**，工程判据（[D-30](#d-30-被截断的左端起段取还能确认最多线段的起点)） |
-| 状态默认 | `Stroke/Segment/Pivot/Trend = CONFIRMED`；`Signal = TENTATIVE` | `types.py:71,105`；`pivot.py:98`；`trend.py:48`；`signal.py:72` | 信号须经 `_seal` 升级 |
+| 状态默认 | `Stroke/Segment/Pivot/Trend = CONFIRMED`；`Signal = TENTATIVE` | `chan/types.py:71,105`；`pivot.py:98`；`trend.py:48`；`signal.py:72` | 信号须经 `_seal` 升级 |
 
 ### 3.4 结构层决策记录
 
@@ -475,7 +475,7 @@ G2a 的 9 段上限随之作废。
 2026-10-01 已就此重新征询，用户选择「**保留 `[DD,GG]`，把页面文案改成一致**」，
 故前端文案随之改写（见下）。
 
-**前端文案已同步**：`src/chanlun/web/static/app.js:36` 的 `TREND_BASIS` 现为
+**前端文案已同步**：`src/chanlun/web/static/app.js:54` 的 `TREND_BASIS` 现为
 
 ```
 第一类买卖点取自趋势背驰；趋势按 [DD,GG] 波动区间判（第20课中心定理二；GG/DD 不含离开段，不是中枢区间 [ZD,ZG]）
@@ -543,7 +543,7 @@ seg.direction)`（`signal.py:82-90`）。
 
 **被否决的写法**：把 `segs[p.end_idx + 1]` 当离开段。真实线段首尾相连，
 那**必然**是一段反向回抽段。旧写法在 148 只票 / 193 个中枢上产出 **0 信号**
-（`signal.py:159-163`）。
+（`signal.py:217-221`）。
 
 **变更历史**：`0.0.9`（commit `271ff95`）。
 
@@ -551,11 +551,11 @@ seg.direction)`（`signal.py:82-90`）。
 
 **决策**：`_first_kind` 要求 `classify_trends` 给出下跌趋势覆盖的中枢组（≥ 2 个），
 `leave = segs[p.end_idx]` 方向须 `== want == -1`，且要求 `leave.low < prev.low`
-**且**面积 `a_now < a_prev`（`signal.py:211-241`）。
+**且**面积 `a_now < a_prev`（`signal.py:300-305`）。
 
 **依据**：第 24 课把"趋势背驰"与"盘整背驰"分开。
 
-**已知空白**：**盘整背驰（一个中枢前后两段比较）没有实现**（`signal.py:6-7, 20`）。
+**已知空白**：**盘整背驰（一个中枢前后两段比较）没有实现**（`signal.py:6-7, 22-24`）。
 
 **内联而非复用**：第一类买卖点处**内联**同一判据而非调用 `is_divergence`
 （`signal.py:228-234`）。
@@ -564,10 +564,10 @@ seg.direction)`（`signal.py:82-90`）。
 
 **决策**：以已有 B1 为锚，用 `src_start/src_end` 在 `segs` 定位下标 `k`，
 取 `bounce = segs[k+1]`、`back = segs[k+2]`；要求 `bounce.direction == 1 and
-back.direction == -1 and back.low > first.price`（`signal.py:244-269`）。
+back.direction == -1 and back.low > first.price`（`signal.py:349-355`）。
 
 **代码自陈的近似**：原文要求"**次级别**回抽"，本实现用**本级别下一段**近似
-（`signal.py:21-22`）。
+（`signal.py:25-26`）。
 
 #### D-22 禁止未来函数：逐层显式 `confirmed_at`
 
@@ -588,7 +588,7 @@ back.direction == -1 and back.low > first.price`（`signal.py:244-269`）。
 | 线段 | "确认它被破坏的那一笔"的 `confirmed_at`，再用 `_monotone_stamps` 取前缀最大值压实非递减 | `segment.py:373-381, 447-466` |
 | 中枢 | **回试段**的确认时间 | `pivot.py:134-140, 207-214` |
 | 走势 | `max(各中枢 confirmed_at)` | `trend.py:73-80` |
-| 信号 | `_seal` 用触发段的 status/confirmed_at | `signal.py:102-106` |
+| 信号 | `_seal` 用触发段的 status/confirmed_at | `signal.py:145-149` |
 
 **回测唯一入口**：`state.backtestable(items, as_of)` =
 `CONFIRMED and confirmed_at is not None and confirmed_at <= as_of`
@@ -624,7 +624,7 @@ back.direction == -1 and back.low > first.price`（`signal.py:244-269`）。
 - `idx` 保持全量编号
 
 **理由**：反过来"先截断再算"等于让窗口参与划分。实测同一只票 `limit=300` 的
-首段在 1212 根全量里**根本不存在**（`engine.py:81-82`）。
+首段在 1212 根全量里**根本不存在**（`engine.py:88-93`）。
 
 **变更历史**：`0.0.10`（commit `f9cedda`），页面必须让用户看到"窗口里 12 段"与
 "这只票只有 12 段"的区别。
@@ -817,6 +817,47 @@ back.direction == -1 and back.low > first.price`（`signal.py:244-269`）。
 （`tests/chan/test_signal_mode.py::test_strict_mode_matches_baseline` 守门）。
 `web/api.py` 的 `_CACHE` 键必须包含 `mode`，否则两种口径会串数据。
 
+> **变更历史（2026-10-02，Task 10a 补记，原文保留不改）**：
+> ① **口径开关已落地到两个 HTTP 端点。** `/api/structure`（Task 7）与
+> `/api/watchlist/structure`（Task 7b）都收 `mode` 查询参数
+> （`Query("strict", pattern="^(strict|loose)$")`）：缺省 `"strict"` ⇒ 不传 `mode`
+> 的既有调用路径逐字节不变；非法值被 pattern 挡成 **422**（不是 400、不是 500）。
+> 响应顶层回显 `mode`，前端据此知道图上这套买卖点是哪个口径。注意 `mode`（买卖点
+> 口径）与 `adjust`（复权口径）是**两个维度**，别混 —— 见 §4.1 的说明。
+> ② **`mode` 传字符串会静默退化成严格模式（裁决 I），已修** —— 机制、修法、
+> 行为变更范围见 D-35 变更历史 ⑥（同一天同一处改动，不在这里重抄）。
+> 补一条可复算的计数（本任务实测，`tests/chan/fixtures/bars.parquet` 的 4 只票合计；
+> 把入口归一化那行在内存里去掉即复现修复前）：
+> 修复前 严格 **7** / 成员 `SignalMode.LOOSE` **36** / 字符串 `"loose"` **7**（= 严格，
+> 逐字节相同）；修复后 字符串 **36** = 成员 **36**。
+>
+> ```bash
+> cd /Users/zzz/workspace/chanlun && PYTHONPATH=src ../.venv-chanlun/bin/python - <<'PY'
+> import sys, types; from functools import partial; from pathlib import Path
+> import pandas as pd; import chanlun.chan.signal as real
+> from chanlun.chan.engine import ChanEngine
+> src = Path(real.__file__).read_text()
+> pre = types.ModuleType("chanlun.chan.sig_pre"); pre.__package__ = "chanlun.chan"
+> sys.modules[pre.__name__] = pre          # dataclasses 要能按 __module__ 找到它
+> exec(compile(src.replace("    mode = SignalMode(mode)", "    pass"),
+>              real.__file__, "exec"), pre.__dict__)
+> all_ = pd.read_parquet("tests/chan/fixtures/bars.parquet")
+> codes = ("sh.600000", "sh.601088", "sz.300059", "sz.300750")
+> def n(mod, m):
+>     t = 0
+>     for c in codes:
+>         b = all_[all_["code"] == c].drop(columns=["code"]).reset_index(drop=True)
+>         t += len(ChanEngine(c, "day", signal_fn=partial(mod.find_signals, mode=m),
+>                             level="day").full(b).signals)
+>     return t
+> for lab, mod in (("修复前", pre), ("修复后", real)):
+>     print(lab, "严格", n(mod, mod.SignalMode.STRICT), "成员",
+>           n(mod, mod.SignalMode.LOOSE), "字符串", n(mod, "loose"))
+> PY
+> ```
+>
+> 输出：`修复前 严格 7 成员 36 字符串 7` / `修复后 严格 7 成员 36 字符串 36`。
+
 #### D-33 盘整背驰作为独立信号类型，不得并入第一类买卖点
 
 **决策**：新增 `SignalKind.PB` / `PS`（值 `"pb"` / `"ps"`），只在 `LOOSE` 模式产出。
@@ -857,6 +898,18 @@ back.direction == -1 and back.low > first.price`（`signal.py:244-269`）。
 > 本实现口径实测约 5 次/只（59 只 317 次，本轮重跑复现）。**权威复测随 Task 9 的
 > 测量工具落地**；今后引用 220/233 必须带上「额外要求创新极值」这个限定。
 > 详见 `optimizer/theory/L39-CONSOLIDATION-DIVERGENCE.md` 的同名更正。
+
+> **变更历史（2026-10-02，Task 10a 补记，原文保留不改）**：
+> ① **`pb` / `ps` 的中文名从「（类第二类）」改为「（类第一类）」。** 依据第 027 课
+> 「这时候就要用到这因为盘整背驰而形成的类第一类买点了」
+> （`chanlun108/原文/027-盘整背驰与历史性底部.md`）与第 060 课「如果把55当成
+> 第一类买点（严格来说，盘整背驰无所谓第一类买点，只是这样来类比）」：盘整背驰
+> **点本身**是「类第一类」，「类第二类」是其后回抽不创新低 / 不创新高的那个点
+> （`b2` / `s2`，第 027 课里「如果不出现新低，但可以构成类似第二类买点的买点」
+> 那条路径）。判据、`SignalKind` 取值、信号数量都不变，变的只是显示名。
+> 完整记录见 D-35 变更历史 ④。
+> ② 本节正文的「严格 / 非严格」在 Task 5 之后才真正可用：字符串 `"loose"` 曾静默
+> 等于严格模式，见 D-35 变更历史 ⑥；HTTP 端点见 D-32 变更历史 ①。
 
 #### D-34 回测触发判据：从「结构确认时刻」改为「首次可见」
 
@@ -1001,9 +1054,65 @@ back.direction == -1 and back.low > first.price`（`signal.py:244-269`）。
 > 当时 `_first_kind` 211-243；`:567` 的 `244-269` = 当时 `_second_kind` 244-271；
 > `:341`/`:487` 的 `215` / `215-224` = 当时 `classify_trends(pivots, level)`
 > 的调用点，该函数定义在 `trend.py`、`signal.py` 只调用），所以是被 Task 5
-> 与本轮的行数增长推偏的，**未在本轮一并重排** —— 留作 Task 10 的文档整理项。
+> 与本轮的行数增长推偏的。
 > 本轮只把 `optimizer/theory/L20-THIRD-TOLERANCE.md` 里的硬编码行号换成了
 > 符号引用（裁决 G）。
+
+> ⑧ **「`THIRD_TOL` 近乎 inert」有两个来源不同的数字，不许混写。** ② 的
+> **63 / 64**（计数不同的票 **1/60**）是 `data/day` 全市场随机 60 只、直接看
+> `b3` 的**比率**（脚本 + 跑法见 `optimizer/theory/L20-THIRD-TOLERANCE.md` 的判据三
+> 那一节，脚本就写在那里；`grep -n "计数不同的票" optimizer/theory/L20-THIRD-TOLERANCE.md`
+> 定位记录下来的输出行）。逐字复现的输出是：`sh.600850 b3 2023-08-25 越界比例=0.0861
+> 中枢段数=8 中枢高度=2.637`，以及 `第三类：严格 63 / 非严格 64；计数不同的票 1/60`；
+> 另一条是**单票例证、不是比率**：`sh.605300` 走完整 `find_signals`，`s3` 从严格
+> **1** 个变非严格 **2** 个（严格 `2023-05-08`；非严格多出 `2026-09-23`）。
+> 禁止写成「1/60（`sh.605300`）」这类混写 —— 样本、口径、信号类型三者都不同。
+> 机制结论不变（同 ②：只在被 `MAX_SEGMENTS` 截断过的中枢上可能翻结论）。
+>
+> ```bash
+> cd /Users/zzz/workspace/chanlun && PYTHONPATH=src ../.venv-chanlun/bin/python - <<'PY'
+> from functools import partial
+> import pandas as pd
+> from chanlun.chan.engine import ChanEngine
+> from chanlun.chan.signal import SignalMode, find_signals
+> bars = pd.read_parquet("data/day/sh/605300.parquet").drop(columns=["code"], errors="ignore")
+> for m in (SignalMode.STRICT, SignalMode.LOOSE):
+>     snap = ChanEngine("sh.605300", "day", signal_fn=partial(find_signals, mode=m),
+>                       level="day").full(bars)
+>     print(m.value, [s.ts for s in snap.signals if s.kind.value == "s3"])
+> PY
+> ```
+>
+> 输出：`strict ['2023-05-08']` / `loose ['2023-05-08', '2026-09-23']`。
+>
+> ⑨ **「现在生效的措辞以哪一处为准」（Task 10a 实测结论）。** 上面**决策**段与 ①
+> 的字面仍是 `back.low >= p.zg - THIRD_TOL * (p.zg - p.zd)`（**含等号**），代码是
+> `back.low > p.zg - tol`；`optimizer/theory/L20-THIRD-TOLERANCE.md` 的
+> 「被否决的替代方案」里写着「本轮只把文档从 `>=` 更正为代码实际的 `>`」，
+> 但 `grep -n "back.low >=" ARCHITECTURE.md` 显示**本文件的决策段与 ① 变更历史
+> 至今仍是 `>=`** —— 那次更正没落到这里。L20 现在的两处表述都与代码一致
+> （判据三写 `back.low` 落在 `(zg - tol, zg]`；「被否决的替代方案」写
+> 「现行代码是 `back.low > p.zg`」，定位命令见下）。⇒ **生效措辞以
+> 代码 + L20 的「被否决的替代方案」为准：`>`**（比「不跌破」的字面更严一点点，
+> 等号归属继续记为已知偏差，同 ①）。决策段按「D-xx 只增不改」保留原文。
+> 这里**故意不写那两行的行号** —— 它们会随本文档增删而漂移，用命令定位。
+>
+> ```bash
+> cd /Users/zzz/workspace/chanlun && grep -n "back.low >=" ARCHITECTURE.md && grep -n "tol = THIRD_TOL" src/chanlun/chan/signal.py && grep -n "back.low > p.zg\|(zg - tol, zg\]" optimizer/theory/L20-THIRD-TOLERANCE.md
+> ```
+>
+> 输出：第一条命令命中的行里，决策段与 ① 变更历史各一行、其余是本节引用它们的
+> 文字（引文自己也会被 `grep` 命中）；第二条是代码里那一行
+> `tol = THIRD_TOL * (p.zg - p.zd) if mode is SignalMode.LOOSE else 0.0`；
+> 第三条命中 L20 判据三的 `(zg - tol, zg]` 与「现行代码是 `back.low > p.zg`」两行。
+>
+> ⑩ **⑦ 记的那批偏号（§3.5 的 `signal.py:行号` 等）已在 Task 10a 逐条改指当前
+> 代码。** 用新工具 `optimizer/tools/check_doc_line_refs.py` 全量复核：全文
+> `182 处 / 173 行`，硬判据通过 **178 → 181**（改前 3 条路径歧义 + 1 条非仓库路径
+> `/tmp/exp/fresh_trigger.py` 不判）、失败 **0** 条；符号漂移告警 **4** 条、
+> 缺符号无法校验 **29** 条（其中 ±2 行内有符号的 J2 **14** 条）。
+> ⑦ 的原句保留不改，此处记结果。命令见 §3.5 末尾的「行号由工具守门」。
+>
 
 ### 3.5 课号引用总表（代码 → 原文）
 
@@ -1016,17 +1125,17 @@ back.direction == -1 and back.low > first.price`（`signal.py:244-269`）。
 | `include.py:27-39` | 65 | 两两包含的首两根 K 线走 `_infer_direction`（**原文空白项**） |
 | `fractal.py:1` | 62 / 65 | 分型定义本体 / 包含处理后的方向判定 |
 | `stroke.py:1` | 62 + 77 | 笔 |
-| `types.py:90` | 67 | 线段 |
+| `chan/types.py:90` | 67 | 线段 |
 | `segment.py:4-12` | 78 | 至少三笔、笔数为单数、特征序列、缺口、两种情况 |
 | `segment.py:67-71` | 65 | 包含关系 K 线组等价区间 |
 | `segment.py:58-76` | 65 | 结合法则 `_combine`（向上取 max/max，向下取 min/min） |
 | `segment.py:78-127` | 67 / 65 | 标准特征序列 / 顺序原则 / **合并后回退**（不传递律，D-31） |
 | `segment.py:94-103` | 65 / 79 | 包含关系不符合传递律 / 先全部包含再分段 |
-| `segment.py:97` | 62 | 顶底分型的三 K 线定义 |
+| `segment.py:97-98` | 62 | 顶底分型的三 K 线定义 |
 | `segment.py:141-152` | 62 | `_is_fractal_at` 的严格不等式 |
 | `segment.py:163-196` | 78 | 极值**次序**判据 `_ordinal_ok`（标准化是事后步骤，D-28） |
 | `segment.py:298-340` | 67 | 划分唯一性；**左端起段取 argmax**（原文空白项，D-30） |
-| `segment.py:452` | 78 | 第二种情况的确认笔可以远在后面 |
+| `segment.py:452-456` | 78 | 第二种情况的确认笔可以远在后面 |
 | `segment.py:469-501` | 78 | `_extreme_problems`：标准化与次序的交叉校验 |
 | `segment.py:503-523` | 78 | `validate_segments(..., strokes=)` 的额外校验 |
 | `pivot.py:13` | 20 | 判趋势看 `[DD, GG]`（中心定理二） |
@@ -1043,16 +1152,22 @@ back.direction == -1 and back.low > first.price`（`signal.py:244-269`）。
 | `macd.py:180-202` | 24 | `hist_area(..., color)` 分色累加（D-17） |
 | `signal.py:6-7` | 24 | 趋势背驰 vs 盘整背驰 |
 | `signal.py:9-11` | 20 | 「离开」是位置 |
-| `signal.py:83-84` | 24 | 向上看红柱子，向下看绿柱子 |
-| `signal.py:149-153` | 20 | 第三类买点定义 |
-| `signal.py:193` | 24 | 比较力度的对象是离开段 |
+| `signal.py:126-127` | 24 | 向上看红柱子，向下看绿柱子 |
+| `signal.py:209-210` | 20 | 第三类买点定义 |
+| `signal.py:265` | 24 | 比较力度的对象是离开段 |
 
-> **哪些行是未提交的**：`include.py` 的 `>=`、`segment.py` 的 `_combine` /
-> 合并后回退 / `_ordinal_ok` / 左端 argmax / `_extreme_problems`、
-> `pivot.py` 的 `Zn` 剔除离开段、`trend.py` 的 `[DD, GG]` 三分支、
-> `macd.py` 的分色面积 —— 这九处都是**工作区未提交**的判据变更，
-> 见 [CHANGELOG.md](CHANGELOG.md) `[Unreleased]`。其余各行是已提交状态。
-> 提交后删掉这段说明。
+> **本表的行号由工具守门。** 本文档里的 `.py` 引用（`文件.py:行号`）可以随时全量复核
+> —— 文件是否存在、行号是否越界（硬判据，失败即 `exit 1`），外加符号漂移告警与
+> 「缺符号、无法校验」的条数：
+>
+> ```bash
+> cd /Users/zzz/workspace/chanlun && ../.venv-chanlun/bin/python optimizer/tools/check_doc_line_refs.py
+> ```
+>
+> 上次全量复核 2026-10-02（Task 10a）：`182 处 / 173 行`、硬判据失败 **0** 条
+> （改前 3 条路径歧义）、符号漂移告警 **4** 条、缺符号无法校验 **29** 条
+> （其中 ±2 行内有符号的 J2 **14** 条）、路径歧义 **0** 条、非仓库路径 **1** 条。
+> `--strict-symbols` 可把符号漂移告警升级为失败。
 
 ---
 
@@ -1071,15 +1186,22 @@ back.direction == -1 and back.low > first.price`（`signal.py:244-269`）。
 | GET | `/api/version` | `{"version", "source"}`，不碰配置与数据库 |
 | GET | `/api/universe` | `limit`（默认 200）、`q` |
 | GET | `/api/bars` | `code` `period` `limit` `adjust=qfq` `ma` |
-| GET | `/api/structure` | 结构快照 + bars + macd + counts |
+| GET | `/api/structure` | 结构快照 + bars + macd + counts；`mode`（默认 `strict`，非法 422） |
 | GET | `/api/scan` | `period=day` `date`，读 `meta.get_scan_results` |
 | GET | `/api/watchlist` | 自选池 |
 | POST | `/api/watchlist` | 增 |
 | PATCH | `/api/watchlist` | `delta` 仅 ±1（上下移动） |
 | DELETE | `/api/watchlist` | 删 |
-| GET | `/api/watchlist/structure` | 自选栏批量结构 |
+| GET | `/api/watchlist/structure` | 自选栏批量结构；`mode`（默认 `strict`，非法 422） |
 | POST | `/api/sync` | 触发同步，返回 **202** |
 | GET | `/api/sync/status` | 同步进度 |
+
+> **`mode` 与 `adjust` 是两个维度，别混。** `adjust`（`qfq` / `hfq` / `raw`）是
+> **复权口径**：价格怎么还原。`mode`（`strict` / `loose`，D-32）是**买卖点口径**：
+> 只放宽买卖点判据，不动笔 / 线段 / 中枢的划分。响应里两者分别回显在 `adjust` 与
+> `mode` 字段。`mode` 缺省 `"strict"`，非法值由 `Query(pattern="^(strict|loose)$")`
+> 挡成 **422**（不是 400、不是 500）。收 `mode` 的端点：`/api/structure`、
+> `/api/watchlist/structure`。
 
 **`/api/structure` 的 404 响应体形状**：
 
@@ -1118,15 +1240,15 @@ ECharts 5.5.1 canvas 渲染。
 - **404 的两种命运**：404 = 这个周期本地真没有数据。命令行提示是给终端用户的，
   看盘的人需要能点的东西。但**不是每个 404 都能补**：指数没有分钟线
   （`syncable: false`），给一个必然 400 的按钮比不给更糟 ——
-  用户点了、等了、被拒，才知道这条路是死的（`app.js:117-120`）。
+  用户点了、等了、被拒，才知道这条路是死的（`app.js:209-212`）。
 - **结构必须画在同一口径上**，否则"前复权的 K 线 + 不复权的笔"是两张图的叠加
-  （`app.js:1111-1112`）。
+  （`app.js:1388-1389`）。
 - **取数不等渲染**：`requestAnimationFrame` 在后台标签页会停摆，把它放在加载路径上
-  会导致页面永远停在"尚未加载"（`app.js:1155-1156`）。
+  会导致页面永远停在"尚未加载"（`app.js:1453-1458`）。
 - **首屏定位只做一次**：`?code=` 优先；否则打开在自选池第一只，且只做一次
   （`initialCodePinned`）。
 - 不复权帧在除权日有一根几十个点的缺口，拿它算涨跌幅会在自选栏里报出一根
-  根本不存在的跌停，而图上那根 K 线看起来是平的（`app.js:780-781`）。
+  根本不存在的跌停，而图上那根 K 线看起来是平的（`app.js:1044-1046`）。
 
 **localStorage 键**：`chanlun.ma` / `chanlun.adjust` / `chanlun.watch-collapsed`。
 
