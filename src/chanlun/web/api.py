@@ -23,15 +23,17 @@ import re
 import threading
 import time
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
+from ..chan.divergence import DivergenceKind, find_divergences
 from ..chan.engine import ChanEngine, Snapshot
 from ..chan.macd import macd as compute_macd
-from ..chan.signal import find_signals
+from ..chan.signal import SignalMode, find_signals
 from ..chan.types import Status, to_jsonable
 from ..data import adjust as adjust_mod
 from ..data import markets, meta, store
@@ -59,8 +61,12 @@ _CODE_RE = re.compile(r"^(?:(sh|sz|bj)\.?)?(\d{6})$")
 #: 所有"给结构用"的接口共用这一个值，避免页面和自选池卡片描述两个不同窗口。
 DEFAULT_LIMIT = 1200
 
-#: 结构快照缓存：同一只票同一段行情只算一次。键为 (code, period, 口径, last_ts, 因子指纹)
+#: 结构快照缓存：同一只票同一段行情只算一次。
+#: 键为 (code, period, 复权口径, last_ts, 因子指纹, **买卖点口径 mode**)
 #: —— **不含 limit**：快照是全量的，窗口只在出口处裁，所以多切几次根数不必重算。
+#: **`mode` 必须在键里**：它是**划分之外的买卖点集合**，两种口径的快照内容不同；
+#: 漏掉它，先看严格模式再切非严格会直接命中严格模式的旧快照 —— 不报错、不崩溃，
+#: 只是按钮无效，用户会以为功能没做。
 _CACHE: dict[tuple, Snapshot] = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE_MAX = 64
@@ -361,7 +367,7 @@ class StructureView:
 
 
 def snapshot_of(code: str, period: str, limit: int, *, adjust: str = "qfq",
-                meta_db=None) -> StructureView:
+                meta_db=None, mode: str = "strict") -> StructureView:
     """全量算结构、按 `limit` 裁显示，返回 `StructureView`。
 
     **结构必须与画出来的 K 线同一个口径**：请求 `hfq` 却拿 `raw` 的笔/段/中枢，
@@ -373,16 +379,31 @@ def snapshot_of(code: str, period: str, limit: int, *, adjust: str = "qfq",
     显示全史买卖点的三分之一。价格早就定过同一条原则（spec §3.3：某一天的后复权价
     是该日期的属性，与可见窗口无关），结构同理。
 
+    `mode` 是买卖点口径（`"strict"` / `"loose"`，D-32）：**只放宽买卖点判据，
+    不动笔/段/中枢的划分**。它必须是 `str` 的默认值而不是 `None` ——
+    `SignalMode(None)` 抛 `ValueError`。非法值由调用方（端点的 `Query(pattern=...)`）
+    挡在 422；这里直接传错值抛 `ValueError` 是编程错误，不是用户输入错误。
+
     取数一律走 `_read_bars`：缺数据的 404 与周期校验必须只有一处实现，
     否则某条路径会绕过检查、拿着空 DataFrame 往下跑到 500。
     """
     full, effective, note, fingerprint = _period_frame(code, period, adjust=adjust, meta_db=meta_db)
     last_ts = str(full["ts"].iloc[-1])
-    key = (code, period, effective, last_ts, fingerprint)
+    key = (code, period, effective, last_ts, fingerprint, mode)
     with _CACHE_LOCK:
         snap = _CACHE.get(key)
     if snap is None:
-        snap = ChanEngine(code, period, signal_fn=find_signals, level=period).full(full)
+        # `find_signals` 是裸函数时默认严格（`signal.py:171`），`partial` 才能把 `mode`
+        # 带进去；引擎按**位置**传 `(bars, segments, pivots, self.level)`，`mode` 走关键字。
+        # `divergence_fn` 不接的话 `engine.py:189` 的判空不成立，
+        # `Snapshot.divergences` 恒为 `()` —— 线上背驰列表会一直是空的。
+        m = SignalMode(mode)
+        snap = ChanEngine(
+            code, period,
+            signal_fn=partial(find_signals, mode=m),
+            divergence_fn=find_divergences,
+            level=period,
+        ).full(full)
         with _CACHE_LOCK:
             if len(_CACHE) >= _CACHE_MAX:
                 _CACHE.clear()
@@ -484,7 +505,8 @@ def _counts(snap: Snapshot) -> dict[str, int]:
     }
 
 
-def structure_payload(view: StructureView, *, include_merged: bool = False) -> dict[str, Any]:
+def structure_payload(view: StructureView, *, include_merged: bool = False,
+                      mode: str = "strict") -> dict[str, Any]:
     """结构 + 行情一起返回：一次请求就能画图，且两边必然对齐。
 
     `counts` 数的是**本窗口看得见**的对象（要和图上的条数对得上），
@@ -492,10 +514,22 @@ def structure_payload(view: StructureView, *, include_merged: bool = False) -> d
 
     `merged`（包含处理后的 K 线）默认不传 —— 它是内部中间量，条数与 bars 同量级，
     传了只会让页面变慢；需要核对包含处理时用 `?merged=true` 单独取。
+
+    `mode` 原样回显，页面据此确认「图上这套买卖点是哪个口径」——
+    缓存命中时它来自入参而不是缓存的快照，所以切口径不会回显成上一个口径。
+
+    背驰列表已经随 `to_jsonable(view.snap)` 出来了（`asdict()` 递归），**不手写映射**；
+    但 `asdict()` 不含计算属性，所以逐项补 `kind_cn`：中文名只许来自
+    `DivergenceKind.name_cn` 一处实现（第 015 / 060 课：盘整背驰不许简写成「背驰」）。
     """
     body = to_jsonable(view.snap)
     if not include_merged:
         body.pop("merged", None)
+    divs = body.get("divergences")
+    if divs:
+        body["divergences"] = [
+            {**d, "kind_cn": DivergenceKind(d["kind"]).name_cn} for d in divs
+        ]
     body["bars"] = _bars_payload(view.bars)
     body["macd"] = _macd_payload(view.macd, len(view.bars))
     body["counts"] = _counts(view.snap)
@@ -504,6 +538,7 @@ def structure_payload(view: StructureView, *, include_merged: bool = False) -> d
     body["derived"] = view.derived
     body["base_period"] = view.base_period
     body["partial"] = view.partial
+    body["mode"] = mode
     body["disclaimer"] = DISCLAIMER
     return body
 
@@ -569,13 +604,24 @@ def bars(request: Request, code: str, period: str = "day",
 @router.get("/api/structure", response_model=None)
 def structure(request: Request, code: str, period: str = "day",
               limit: int = Query(DEFAULT_LIMIT, ge=10, le=20000), merged: bool = False,
-              adjust: str = "qfq", ma: str | None = None) -> dict[str, Any] | JSONResponse:
+              adjust: str = "qfq", ma: str | None = None,
+              mode: str = Query("strict", pattern="^(strict|loose)$")) -> dict[str, Any] | JSONResponse:
+    """缠论结构 + 行情。`mode` 是**买卖点口径**（严格 / 非严格，D-32）。
+
+    **别把它和 `adjust`（复权口径）搞混**：函数体里那个复权值原先也叫 `mode`，
+    同名会互相覆盖（查询参数一进来就被复权值顶掉，`SignalMode("qfq")` 直接 500），
+    所以复权值改叫 `adj`。
+
+    非法 `mode` 由 `Query(pattern=...)` 挡成 **422**，到不了 `SignalMode(mode)`：
+    用户手拼 URL 不该看到 500。默认 `"strict"` 与 `find_signals` 的默认值一致，
+    既有不传 `mode` 的调用路径**逐字节不变**。
+    """
     cfg = _cfg(request)
     key = normalize_code(code)
-    mode = normalize_adjust_or_400(adjust)
+    adj = normalize_adjust_or_400(adjust)
     periods = parse_ma(ma)
     try:
-        view = snapshot_of(key, period, limit, adjust=mode, meta_db=cfg.data.meta_db)
+        view = snapshot_of(key, period, limit, adjust=adj, meta_db=cfg.data.meta_db, mode=mode)
     except HTTPException as exc:
         if exc.status_code != 404:
             raise
@@ -587,7 +633,7 @@ def structure(request: Request, code: str, period: str = "day",
             content={"detail": exc.detail, "syncable": blocker is None,
                      "sync_hint": blocker or ""},
         )
-    body = structure_payload(view, include_merged=merged)
+    body = structure_payload(view, include_merged=merged, mode=mode)
     conn = meta.init(cfg.data.meta_db)
     try:
         name = meta.name_of(conn, key)
@@ -595,7 +641,7 @@ def structure(request: Request, code: str, period: str = "day",
         conn.close()
     body.update({
         "code": key, "name": name, "period": period,
-        "adjust": mode, "adjust_effective": view.effective, "adjust_note": view.note,
+        "adjust": adj, "adjust_effective": view.effective, "adjust_note": view.note,
         "ma": ma_payload(view.bars, periods), "ma_periods": list(periods),
     })
     return body
