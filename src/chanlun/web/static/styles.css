@@ -188,8 +188,9 @@ button, input { font: inherit; color: inherit; }
    这个数字与窗口无关（不监听 dataZoom，永不陈旧），与图层开关也无关：
    它说的是数据里有多少条背驰，不是"现在画了几条"。
    竖排（.rail-tab 的 writing-mode: vertical-rl）下它接在"背驰"两字下面；
-   没数字时用 :empty 收掉 —— 不能用 hidden 属性，那条 UA 规则的优先级压不过
-   这里的 display，会留下一个空药丸。 */
+   没数字时用 :empty 收掉。**注意本项目 `[hidden] { display: none !important }`
+   是可用的**（见文件顶部那条），这里不用 hidden 只是为了让空态**不依赖 JS
+   同步属性** —— 空态由 :empty 自洽，少一个"忘了删 hidden"的失败面。 */
 .rail-badge {
   display: inline-block;
   margin-top: 5px;

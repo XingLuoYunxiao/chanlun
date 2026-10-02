@@ -250,14 +250,58 @@
   // 数字取 payload 的 `divergences` 长度（**全史**，不是窗口过滤后的数量）：
   // 它不监听 dataZoom，所以永不陈旧；也与图层开关无关 —— 它说的是数据里有多少条
   // 背驰，不是"现在画了几条"。为 0 时不显示数字，免得制造噪音。
+  // 同一 `(ts, price)` 的背驰**是同一个位置上的两种背驰**（后端同一次事件同时给了
+  // 盘整背驰与趋势背驰两条，价格是同一个浮点数）。它们必须合并成**一个**数据点：
+  // 不合并的话 ECharts 会在同一像素叠两个标记，而按值反查 tooltip 只能命中第一条 ——
+  // 表现为「两行一模一样的文案」，且**第二条的 reason 永远读不到**。
+  // 实测样本：`sh.600588` 2024-08-28 @ 8.03（盘整 + 趋势）、
+  // `sz.300913` 2025-08-28 @ 69.78667905（盘整 + 趋势）。
+  //
+  // 分组只按**精确相等**（`===`）：同一事件的两条来自后端同一个浮点数，
+  // 用近似相等反而会把相邻两笔的价位误并。
+  // 合并点落在组内**第一条**的位置，所以原有的时间顺序不变。
+  function mergeDivergencesByPoint(list) {
+    // key 用 NUL 拼接两个字段：ts 与 price 里都不可能出现 NUL，不会串键
+    const groups = new Map();
+    for (const div of list) {
+      const key = `${div.ts}\x00${div.price}`;
+      const g = groups.get(key);
+      if (g) g.push(div);
+      else groups.set(key, [div]);
+    }
+    const out = [];
+    for (const g of groups.values()) {
+      const first = g[0];
+      // 形状/颜色/rotate 取**趋势**那条：趋势背驰更稀有、语义更强，而且同一价位
+      // 重叠时盘整的菱形本来就会被趋势的三角盖住 —— 取趋势才与视觉结果一致。
+      // 组内全是盘整背驰时自然取盘整背驰。`kind`/`kind_cn` 与形状取同一条。
+      const lead = g.find((d) => d.kind === "trend") || first;
+      out.push({
+        ts: first.ts,
+        price: first.price,
+        kind: lead.kind,
+        kind_cn: lead.kind_cn,
+        direction: lead.direction,
+        // 组内**每一条**的 reason 都保留，按原有先后顺序用"；"连接 —— 一条都不许丢。
+        reason: g.map((d) => d.reason || "").filter(Boolean).join("；"),
+        name: g.map((d) => d.kind_cn || d.kind).join("／"),
+      });
+    }
+    return out;
+  }
+
   function applyDivergenceBadge(body) {
     const btn = document.querySelector('.rail-tab[data-layer="divergence"]');
     if (!btn) return;
-    const n = body && body.divergences ? body.divergences.length : 0;
+    // 数字用**合并后**的条数，与图上标记数一致：用后端原始条数的话，
+    // `sh.600588` 会变成「徽标 7、图上 6 个标记」，看起来像 bug。
+    const n = body && body.divergences ? mergeDivergencesByPoint(body.divergences).length : 0;
     const badge = $("#divergence-badge");
     if (badge) badge.textContent = n ? String(n) : "";
+    // 量词用「处」不用「条」：两处背驰落在同一时间同一价位 = 同一个**位置**上的
+    // 两种背驰，那个位置只画一个标记，"处"才对得上图。
     btn.title = n
-      ? `背驰标注：全史 ${n} 条（这里只画与当前窗口相交的部分，默认视野可能一条都不含）。开关只决定画不画，不影响这个数字。`
+      ? `背驰标注：全史 ${n} 处（这里只画与当前窗口相交的部分，默认视野可能一条都不含）。开关只决定画不画，不影响这个数字。`
       : "背驰标注：这只票的全史没有背驰（与当前窗口无关）。";
   }
 
@@ -558,7 +602,7 @@
     // 不是"只有非严格才画背驰"。趋势/盘整**形状与颜色都不同**，见 DIV_COLOR 的注释。
     const divergences = [];
     if (state.layers.divergence) {
-      for (const div of d.divergences || []) {
+      for (const div of mergeDivergencesByPoint(d.divergences || [])) {
         const trend = div.kind === "trend";
         // direction：+1 = 顶背驰，-1 = 底背驰（与笔/线段/买卖点同一套符号约定）
         const top = div.direction > 0;
@@ -566,12 +610,13 @@
           value: [div.ts, div.price],
           // 中文名只许有一处实现（后端 `DivergenceKind.name_cn`）：这里只读 payload，
           // 不在前端写第二份中文名 —— 缺字段时退化成枚举名，而不是自己编一个。
-          name: div.kind_cn || div.kind,
+          // 合并点会把组内各条的 kind_cn 用"／"连起来（同一个位置上的两种背驰）。
+          name: div.name,
           symbol: trend ? "triangle" : "diamond",
           symbolRotate: trend && top ? 180 : 0, // 照分型层：三角朝下 = 顶背驰
           itemStyle: { color: DIV_COLOR[trend ? "trend" : "consolidation"][top ? "top" : "bottom"] },
           // 说明文案直接用后端给的 reason（第15/60课的判据细节都在里面），
-          // 前端不拼第二份解释
+          // 前端不拼第二份解释。合并点会把组内各条的 reason 用"；"连起来。
           reason: div.reason || "",
         });
       }
@@ -742,6 +787,9 @@
             // 显示的却是 2021-11-10 那条的说明。首屏即可见。
             // 改成按**值**反查（传进来的 `value` 就是该数据项的 `value[1]`），
             // 与下标、与窗口、与过滤模式全都无关。
+            // 反查能命中**唯一**一条，靠的是 `mergeDivergencesByPoint` 已经把同一
+            // `(ts, price)` 的背驰并成了一个点（不合并时 `find` 只会命中第一条，
+            // 第二条的 reason 永远读不到 —— 见那个函数的注释）。
             valueFormatter: (value) => {
               const div = divergences.find((x) => x.value[1] === value);
               const text = f2(value); // 同页其它数值都走 f2，别让 tooltip 露原始浮点
