@@ -193,7 +193,8 @@ def test_only_trend_divergence_requires_a_trend(snap):
 
 def test_in_pivot_is_the_049_oscillation_vs_leaving_leg_split(snap):
     """第 49 课：「中枢震荡中出现的类似盘整背驰的走势段，与中枢完成的向上移动
-    出现的背驰段是不同的，两者分别在第三类买点的前后……这是有严格区分的。」
+    出现的背驰段是不同的，两者分别在第三类买点的前后……这是有严格区分的，
+    不能搞糊涂了。」
 
     `in_pivot` 判的是**前者**：中枢震荡区间严格取 `[start_idx, end_idx)`
     （`pivot.py:125-127`：`segments[end_idx]` 是**离开段**），离开段不是震荡段，
@@ -350,10 +351,11 @@ def test_synthetic_boundary_cases_agree_with_b1():
 def test_synthetic_in_pivot_separates_oscillation_from_leaving_leg():
     """第 49 课：`in_pivot` 必须把中枢震荡段与离开段分开（`pivot.py:125-127`）。
 
-    `_trend` 比较的 `segs[p.end_idx]` 是「中枢完成的移动出现的背驰段」，恒**不属于**
-    中枢震荡区间 `[start_idx, end_idx)`；同一个中枢组里的震荡段 `segs[6]` 属于。
-    旧实现按闭区间 `start_idx <= i <= end_idx` 赋值，于是**每个趋势背驰都恒为
-    `True`** —— 正好把第 49 课要求区分的东西混成了一类。
+    `_trend` 比较的 `segs[p.end_idx]` 是「中枢完成的向上移动出现的背驰段」（第 49 课
+    举的是向上移动，向下移动同理），恒**不属于**中枢震荡区间
+    `[start_idx, end_idx)`；同一个中枢组里的震荡段 `segs[6]` 属于。旧实现按闭区间
+    `start_idx <= i <= end_idx` 赋值，于是**每个趋势背驰都恒为 `True`** ——
+    正好把第 49 课要求区分的东西混成了一类。
     """
     segs, pivots, macd_df = _synthetic_trend(area_a=10.0, area_b=1.0)
     divs = find_divergences(pd.DataFrame(), segs, pivots, "day", macd_df=macd_df)
@@ -363,7 +365,7 @@ def test_synthetic_in_pivot_separates_oscillation_from_leaving_leg():
     assert d.seg_idx == 8 == pivots[1].end_idx, "趋势背驰比的是中枢 B 的离开段"
     assert d.pivot_idx == 1, "pivot_idx 仍要指向留下该离开段的中枢组"
     assert d.in_pivot is False, (
-        "第 49 课：离开段是「中枢完成的移动出现的背驰段」，不是中枢震荡段"
+        "第 49 课：离开段是「中枢完成的向上移动出现的背驰段」，不是中枢震荡段"
     )
     osc = [x for x in divs
            if x.kind is DivergenceKind.CONSOLIDATION and x.seg_idx == 6]

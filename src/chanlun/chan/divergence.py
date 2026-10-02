@@ -24,11 +24,12 @@
 承载盘整背驰点（由后续任务加入 `signal.py`），本模块只产出 `Divergence`。
 
 第 49 课：「中枢震荡中出现的类似盘整背驰的走势段，与中枢完成的向上移动出现的
-背驰段是不同的，两者分别在第三类买点的前后……这是有严格区分的。」
+背驰段是不同的，两者分别在第三类买点的前后……这是有严格区分的，不能搞糊涂了。」
 ⇒ `Divergence.in_pivot` 记录这个区分，口径按 `pivot.py:125-127` 的下标约定：
 该段是**中枢震荡段**（属于某个中枢组的 `[start_idx, end_idx)`）时为 `True`；
-**离开段 `end_idx` 为 `False`** —— 它是「中枢完成的移动出现的背驰段」，与震荡段
-「分别在第三类买点的前后」。趋势背驰比较的正是离开段，故趋势背驰恒为 `False`。
+**离开段 `end_idx` 为 `False`** —— 它是「中枢完成的向上移动出现的背驰段」（第 49 课
+举的是向上移动，向下移动同理），与震荡段「分别在第三类买点的前后」。趋势背驰比较的
+正是离开段，故趋势背驰恒为 `False`。
 
 理论依据见 `optimizer/theory/L39-CONSOLIDATION-DIVERGENCE.md`。
 """
@@ -51,9 +52,9 @@ from .types import Status
 class DivergenceKind(str, Enum):
     """背驰类型。两种类型**语义上不对等**，只是判据实现上并列。
 
-    第 15 课把「盘整中有没有背驰」写死为没有，所以只有 `TREND` 才是第 15 课
-    意义上的「背驰」；`CONSOLIDATION` 是被单独命名的类比物，中文名必须带
-    「盘整」二字，不许简写成「背驰」。
+    第 15 课认定盘整中无所谓背驰（原文「在盘整中是无所谓“背驰”的」），所以只有
+    `TREND` 才是第 15 课意义上的「背驰」；`CONSOLIDATION` 是被单独命名的类比物，
+    中文名必须带「盘整」二字，不许简写成「背驰」。
     """
 
     TREND = "trend"
@@ -83,8 +84,9 @@ class Divergence:
     new_extreme: bool
     #: 该段是否为**中枢震荡段**（第 49 课的区分）：属于某中枢组的
     #: `[start_idx, end_idx)` 时为 `True`；**离开段 `end_idx` 为 `False`**
-    #: —— 它是「中枢完成的移动出现的背驰段」，与震荡段「分别在第三类买点的
-    #: 前后」。趋势背驰比的是离开段，故恒为 `False`。
+    #: —— 它是「中枢完成的向上移动出现的背驰段」（第 49 课举的是向上移动，
+    #: 向下移动同理），与震荡段「分别在第三类买点的前后」。趋势背驰比的是
+    #: 离开段，故恒为 `False`。
     in_pivot: bool
     pivot_idx: int | None = None
     #: 人读的说明文案。**与 `signal.py::Signal.reason` 有意不同**：这里不带
@@ -159,7 +161,7 @@ def _make(kind: DivergenceKind, seg: Segment, ref: Segment, level: str,
           a_now: float, a_prev: float, new_extreme: bool,
           reason: str) -> Divergence:
     pivot, pivot_idx = _locate(pivots, seg_idx)
-    # 第 49 课：中枢震荡段与「中枢完成的移动出现的背驰段」必须分开。按
+    # 第 49 课：中枢震荡段与中枢完成后的离开段必须分开。按
     # `pivot.py:125-127` 的下标约定，`segments[end_idx]` 是**离开段**，中枢震荡
     # 严格取 `[start_idx, end_idx)` —— 离开段不算（两者「分别在第三类买点的
     # 前后」）。趋势背驰的 `seg_idx` 恒为 `end_idx`，故 `in_pivot` 恒为 False。
