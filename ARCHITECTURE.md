@@ -830,8 +830,9 @@ back.direction == -1 and back.low > first.price`（`signal.py:244-269`）。
 
 **被否决的替代方案**：① 并入 `b1`/`s1` —— 违反第 60 课原话；
 ② 只在中枢内比较 —— 第 39 课未把比较限制在中枢内，且实测差距很小
-（窄口径 220 次 vs 全局 233 次），故取全局口径并以 `Divergence.in_pivot`
-保留第 49 课「中枢震荡中的盘整背驰 vs 离开中枢后的背驰段」的区分。
+（窄口径 220 次 vs 全局 233 次），故取全局口径，并以 `Divergence.in_pivot` 保留第 049 课的区分：
+第 049 课原话「中枢震荡中出现的类似盘整背驰的走势段，与中枢完成的向上移动出现的背驰段是不同的」
+—— 禅师用的是「类似盘整背驰的走势段」，第三种措辞，与「背驰」「盘整背驰」都不同。
 
 **后果 / 变更历史**：`divergences` 是派生数据，point-in-time 语义由
 `segments` + `macd` 保证，故不参与 `state.reconcile` 的调和。
@@ -840,11 +841,11 @@ back.direction == -1 and back.low > first.price`（`signal.py:244-269`）。
 
 **决策**：`src/chanlun/backtest/strategy.py::ChanSignalStrategy.on_bar` 不再用
 `sig.confirmed_at == bar.ts` 判断「今日新可知」。改由 `runner.py` 在逐 bar 重算时
-计算「本 bar 第一次可见的信号」，显式传给 `_view(...)`。
+计算**本 bar 第一次可见的信号**，显式传给 `_view(...)`。
 **不改** `Segment.confirmed_at` 的语义，**不改** `segment.py::_make_segment`。
 
 **依据**：`confirmed_at` 是**结构自身的确认完成时刻**（线段继承「确认它被破坏的那一笔」
-的确认时间，`segment.py:375-395`），不是「引擎第一次产出它的时刻」。
+的确认时间，`segment.py:375-395`），不是**引擎第一次产出它的时刻**。
 实测两者系统性不等：`sh.600000` 121/121、`sh.601088` 158/158、
 `sz.000001` 146/146 —— **100%** 的结构 `confirmed_at` 早于首次可见。
 故旧判据在结构上不可能成立，回测恒定 0 笔成交。
