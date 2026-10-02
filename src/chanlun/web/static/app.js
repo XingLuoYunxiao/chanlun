@@ -21,7 +21,20 @@
   const $ = (sel) => document.querySelector(sel);
   const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
-  const KIND_CN = { b1: "一买", b2: "二买", b3: "三买", s1: "一卖", s2: "二卖", s3: "三卖" };
+  // pb / ps 是**非严格口径专有**的短标签（盘整背驰形成的买卖点）。它们不许简写成
+  // "一买"/"一卖"：第 60 课「严格来说，盘整背驰无所谓第一类买点，只是这样来类比」。
+  // 后端 `DivergenceKind.name_cn` / `SignalKind` 是中文名的唯一实现处，这里只是图上的短标签。
+  const KIND_CN = {
+    b1: "一买", b2: "二买", b3: "三买", s1: "一卖", s2: "二卖", s3: "三卖",
+    pb: "盘整背驰买", ps: "盘整背驰卖",
+  };
+  // 买/卖**不是**前缀规则：`pb`（盘整背驰买点）不以 "b" 开头，用 `startsWith("b")`
+  // 会把买点画成卖点的颜色、标签挂到上方（实测 300201 日线非严格：4 个
+  // 「盘整背驰买」全部是跌色 #4a9e7f / label 在 top）。
+  // 这张表逐字对齐后端 `SignalKind.is_buy`（`chan/signal.py`：`("b1","b2","b3","pb")`），
+  // 判据只许有一处实现，前端照抄而不是自己发明前缀规则。
+  const BUY_KINDS = new Set(["b1", "b2", "b3", "pb"]);
+  const isBuyKind = (kind) => BUY_KINDS.has(kind);
   const STATUS_CN = { confirmed: "确认", tentative: "未确认", invalidated: "已失效" };
   const PERIOD_CN = { day: "日线", week: "周线", month: "月线", 30: "30分", 5: "5分", 60: "60分", 15: "15分" };
   // 派生周期（周/月）由**本地日线**聚合而来，不单独同步。这句话必须出现在图注里：
@@ -62,7 +75,22 @@
   };
   const MA_DEFAULT = [5, 10, 20, 60];
   const LS_MA = "chanlun.ma", LS_ADJUST = "chanlun.adjust";
+  const LS_MODE = "chanlun.mode";
   const LS_WATCH = "chanlun.watch-collapsed";
+  // 买卖点口径（D-32）。与复权口径一样是**整张图的前提**：它只放宽买卖点判据，
+  // 笔/线段/中枢的划分一个字都不变，但图上买卖点的数量会变 —— 所以它必须出现在
+  // 按钮上、图注里，并且**进请求**（服务端算买卖点，前端不自己判）。
+  const MODE_ORDER = ["strict", "loose"];
+  const MODE_LABEL = { strict: "严格", loose: "非严格" };
+  // 背驰标注的配色：**形状与颜色都要能区分趋势背驰与盘整背驰** —— 只靠颜色的话
+  // 色盲用户分不出来（第 15 课：盘整中无所谓"背驰"；两者不是同一个东西，
+  // 图上不能画成一个样）。所以 kind 同时决定形状（趋势=三角 / 盘整=菱形）与色系
+  // （趋势=深、盘整=浅），direction 决定冷暖（底背驰暖 / 顶背驰冷）。
+  // 四个色都避开买卖点的涨跌红绿与中枢的靛青，免得"背驰"被读成"买卖点"。
+  const DIV_COLOR = {
+    trend: { bottom: "#e8a33d", top: "#8a6fd4" },
+    consolidation: { bottom: "#f0c987", top: "#b9a8ee" },
+  };
 
   // 存的是看图习惯，不是"上次服务端返回了什么"：换票、换级别都该保持。
   function readChoice(key, allowed, fallback) {
@@ -91,10 +119,12 @@
     period: "day",
     limit: null,
     adjust: readChoice(LS_ADJUST, ADJUST_ORDER, "qfq"),
+    // 与 adjust 同一套两段式：localStorage 只当**默认值**，URL 有值再覆盖（见文件末尾初始化块）
+    mode: readChoice(LS_MODE, MODE_ORDER, "strict"),
     ma: new Set(readMaChoice()),
     watch: [],
     data: null,
-    layers: { strokes: true, segments: true, pivots: true, signals: true, margin: true },
+    layers: { strokes: true, segments: true, pivots: true, signals: true, divergence: true, margin: true },
   };
 
   const chart = echarts.init($("#chart"), null, { renderer: "canvas" });
@@ -111,6 +141,9 @@
     const qs = new URLSearchParams({ code: state.code, period: state.period });
     if (state.limit) qs.set("limit", String(state.limit)); // 未指定时用后端默认窗口（1200）
     qs.set("adjust", state.adjust);
+    // 口径必须进请求：买卖点与背驰都在服务端算，不带这个参数的话按钮变了图上不变。
+    // 无条件设置（与 adjust 一致），书签里的查询串因此恒有 mode=。
+    qs.set("mode", state.mode);
     qs.set("ma", maQuery());
     setStamp("加载中…");
     let resp;
@@ -163,7 +196,15 @@
       parts.push(`${PERIOD_CN[body.period] || body.period}由${PERIOD_CN[body.base_period] || body.base_period}聚合`
         + (body.partial === true ? "（最后一根未走完）" : ""));
     }
-    parts.push(TREND_BASIS);
+    // 口径不同，这最后一句必须不同：非严格模式下第一类**还会来自盘整背驰**，
+    // 照旧印「第一类买卖点取自趋势背驰」就是一句与图上结果相反的话 ——
+    // 正是 §5 第 5 条那一类事故（后端改了口径、图注还印着旧口径）。
+    // 严格模式必须**逐字**输出 TREND_BASIS：那句话在严格口径下是对的，不许改写它。
+    if (state.mode === "loose") {
+      parts.push("非严格口径：第一类之外另收盘整背驰（第27课「类第一类」；第60课：盘整背驰无所谓第一类买点，只是类比），第二类不要求前置第一类，第三类回试容忍中枢高度 10%（工程口径，无原文依据）");
+    } else {
+      parts.push(TREND_BASIS);
+    }
     return parts.join(" · ");
   }
 
@@ -185,6 +226,21 @@
     note.textContent = text;
     note.hidden = false;
     note.classList.toggle("is-warn", Boolean(eff) && eff !== state.adjust);
+  }
+
+  // 买卖点口径按钮：两态循环。与复权按钮同一个控件形态 —— 文字写当前口径，
+  // `title` 解释两种口径的差别与"点一下会切到哪"（照 applyAdjustUI 的写法，
+  // **不用 aria-pressed**：那是有"按下/弹起"语义的开关才用的，循环按钮上语义是错的）。
+  // 非严格模式额外挂 `is-loose`：口径会改变图上买卖点的数量，光靠按钮上的字不够醒目。
+  function applyModeUI() {
+    const btn = $("#mode-btn");
+    if (!btn) return;
+    const loose = state.mode === "loose";
+    btn.textContent = `口径：${MODE_LABEL[state.mode]}`;
+    btn.classList.toggle("is-loose", loose);
+    btn.title = loose
+      ? "非严格：含盘整背驰买卖点、第二类不要求前置第一类、第三类回试有容忍度（容忍度为工程口径，无原文依据）。笔/线段/中枢划分不变。点击切回严格。"
+      : "严格：第一类只取自趋势背驰，第二类需前置第一类，第三类回试不得回到中枢内。点击切到非严格。";
   }
 
   function httpTitle(status) {
@@ -456,7 +512,7 @@
     const signals = [];
     if (state.layers.signals) {
       for (const s of d.signals) {
-        const buy = s.kind.startsWith("b");
+        const buy = isBuyKind(s.kind); // 见 BUY_KINDS：pb 是买点，前缀判断会画反
         const tentative = s.status === "tentative";
         signals.push({
           value: [s.ts, s.price],
@@ -475,6 +531,30 @@
               `${KIND_CN[s.kind]}（${STATUS_CN[s.status]}）<br/>${s.ts} @ ${s.price}` +
               `<br/>确认时间：${s.confirmed_at || "尚未确认"}`,
           },
+        });
+      }
+    }
+
+    // --- 背驰标注
+    // 两种口径下**都**标注背驰：口径的差别是"非严格把盘整背驰另算作买卖点"（后端算），
+    // 不是"只有非严格才画背驰"。趋势/盘整**形状与颜色都不同**，见 DIV_COLOR 的注释。
+    const divergences = [];
+    if (state.layers.divergence) {
+      for (const div of d.divergences || []) {
+        const trend = div.kind === "trend";
+        // direction：+1 = 顶背驰，-1 = 底背驰（与笔/线段/买卖点同一套符号约定）
+        const top = div.direction > 0;
+        divergences.push({
+          value: [div.ts, div.price],
+          // 中文名只许有一处实现（后端 `DivergenceKind.name_cn`）：这里只读 payload，
+          // 不在前端写第二份中文名 —— 缺字段时退化成枚举名，而不是自己编一个。
+          name: div.kind_cn || div.kind,
+          symbol: trend ? "triangle" : "diamond",
+          symbolRotate: trend && top ? 180 : 0, // 照分型层：三角朝下 = 顶背驰
+          itemStyle: { color: DIV_COLOR[trend ? "trend" : "consolidation"][top ? "top" : "bottom"] },
+          // 说明文案直接用后端给的 reason（第15/60课的判据细节都在里面），
+          // 前端不拼第二份解释
+          reason: div.reason || "",
         });
       }
     }
@@ -627,6 +707,22 @@
           symbol: "circle", symbolSize: 9, z: 10,
         },
         {
+          name: "背驰", type: "scatter", xAxisIndex: 0, yAxisIndex: 0, data: divergences,
+          symbolSize: 11, z: 9,
+          tooltip: {
+            // 全局 tooltip 是 `trigger: "axis"`。ECharts 5.6 的 axis 路径**不调用**
+            // series/item 级的 `tooltip.formatter`（它直接走 `formatTooltip()` 的默认内容），
+            // 只认 `tooltip.valueFormatter` —— 实测见 task-8-report.md 的探针。
+            // 所以后端的 `reason` 挂在这里，hover 才真的看得到；
+            // 说明文案仍然只有后端一处实现，前端不拼第二份。
+            valueFormatter: (value, dataIndex) => {
+              const div = divergences[dataIndex];
+              if (!div) return String(value);
+              return div.reason ? `${value}｜${div.reason}` : String(value);
+            },
+          },
+        },
+        {
           name: "成交量", type: "bar", xAxisIndex: 1, yAxisIndex: 1, data: volume, barWidth: "62%",
         },
         {
@@ -703,7 +799,7 @@
       sigBlock.append(emptyLine("当前级别的结构没有触发买卖点。这只说明按现有定义没出现，不等于「没有机会」。"));
     }
     d.signals.forEach((s) => {
-      const buy = s.kind.startsWith("b");
+      const buy = isBuyKind(s.kind); // 见 BUY_KINDS：pb 是买点，前缀判断会画反
       sigBlock.append(row({
         idx: s.idx,
         title: KIND_CN[s.kind] || s.kind,
@@ -788,7 +884,7 @@
   // 根本不存在的跌停，而图上那根K线看起来是平的。
   async function loadWatch() {
     const box = $("#watch-rows");
-    let url = `/api/watchlist/structure?period=${state.period}&adjust=${state.adjust}`;
+    let url = `/api/watchlist/structure?period=${state.period}&adjust=${state.adjust}&mode=${state.mode}`;
     if (state.limit) url += `&limit=${state.limit}`;
     let body;
     try {
@@ -1126,6 +1222,16 @@
     loadWatch();
   });
 
+  // 口径：一个按钮两态。切换后买卖点与背驰都要重算 —— 它们都在服务端判，
+  // 前端不自己判买卖点，所以这里只改 state 再重取（图上买卖点数量会变）。
+  $("#mode-btn").addEventListener("click", () => {
+    state.mode = state.mode === "strict" ? "loose" : "strict";
+    remember(LS_MODE, state.mode);
+    applyModeUI();
+    load();
+    loadWatch(); // 自选池摘要也是按口径算的（Task 7b），不刷新它就会与主图自相矛盾
+  });
+
   for (const box of document.querySelectorAll(".ma-toggle")) {
     const period = parseInt(box.dataset.period, 10);
     const input = box.querySelector("input");
@@ -1141,6 +1247,9 @@
   const sp = new URLSearchParams(location.search);
   if (sp.get("code")) setCode(sp.get("code"));
   if (ADJUST_ORDER.includes(sp.get("adjust"))) state.adjust = sp.get("adjust");
+  // 口径与复权同一套两段式：localStorage 当默认值，URL 有合法值再覆盖（书签优先）。
+  // 非法值（`?mode=xx`）不认，保持默认 —— 后端那边也会 422，前端不该把坏值送出去。
+  if (MODE_ORDER.includes(sp.get("mode"))) state.mode = sp.get("mode");
   if (sp.get("period") && PERIOD_CN[sp.get("period")]) {
     state.period = sp.get("period");
     for (const b of document.querySelectorAll(".period")) {
@@ -1149,7 +1258,15 @@
       b.setAttribute("aria-selected", on ? "true" : "false");
     }
   }
+  // 图层按钮的 is-on 与 state.layers 对齐（HTML 里写死的 is-on 只是首屏兜底，
+  // 状态以 state 为准 —— 照上面 period 按钮的写法）。
+  for (const b of document.querySelectorAll(".rail-tab")) {
+    const on = Boolean(state.layers[b.dataset.layer]);
+    b.classList.toggle("is-on", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+  }
   applyAdjustUI({ adjust_effective: state.adjust, adjust_note: "" });
+  applyModeUI();
   // 自选股栏的收/展：URL 里写了 `?watch=off` / `?watch=on` 就听 URL（书签优先），
   // 否则沿用上次的选择。URL 只是一次性的覆盖，不写回 localStorage。
   const wq = sp.get("watch");

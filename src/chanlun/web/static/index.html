@@ -48,6 +48,7 @@
     <button type="button" class="rail-tab is-on" data-layer="segments" aria-pressed="true"><span>线段</span></button>
     <button type="button" class="rail-tab is-on" data-layer="pivots"   aria-pressed="true"><span>中枢</span></button>
     <button type="button" class="rail-tab is-on" data-layer="signals"  aria-pressed="true"><span>买卖点</span></button>
+    <button type="button" class="rail-tab is-on" data-layer="divergence" aria-pressed="true"><span>背驰</span></button>
     <button type="button" class="rail-tab is-on" data-layer="margin"   aria-pressed="true" title="确认刻度：结构在哪一根K线上才可被看见"><span>确认刻度</span></button>
   </nav>
 
@@ -80,6 +81,9 @@
               title="点击切换复权口径：前复权 → 后复权 → 不复权"
               aria-label="复权口径，点击切换">复权 · 前复权</button>
       <span class="adjust-note" id="adjust-note" hidden></span>
+      <button type="button" class="adjust" id="mode-btn"
+              title="点击切换买卖点口径：严格 → 非严格"
+              aria-label="买卖点口径，点击切换">口径：严格</button>
       <div class="ma-toggles" id="ma-toggles" role="group" aria-label="均线开关">
         <span class="tools-label">均线</span>
         <label class="ma-toggle" data-period="5" title="MA5">

@@ -209,6 +209,9 @@ button, input { font: inherit; color: inherit; }
   cursor: pointer;
 }
 .adjust:hover { border-color: var(--indigo); }
+/* 非严格口径会**改变图上买卖点的数量**，光靠按钮上的字不够醒目 ——
+   用户"忘记自己在非严格模式"是真实风险，所以整个按钮换成"需要注意"的琥珀色。 */
+.adjust.is-loose { border-color: var(--amber); color: var(--amber); }
 /* 口径不一致时（例如请求前复权但该票没有除权记录）在这里说清，
    不能让按钮上的字替数据撒谎。 */
 .adjust-note { font-size: 11px; color: var(--mohui); }
