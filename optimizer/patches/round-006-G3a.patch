@@ -4,12 +4,13 @@
 # source: 缠中说禅《教你炒股票108课》第20课《缠中说禅走势中枢级别扩张及第三类买卖点》
 # finding: 回试段可能是窗口右端的 TENTATIVE 线段，此时买卖点是在「回试还没走完」的时候发出来的：主干（位置口径）43 个信号里有 2 个用了未确认的回试段（b3 26→24）。
 # evidence: cd chanlun && python -m chanlun.optimizer.cli --root . --audit   # 主干口径
-#    主干 43 signals（b3 26 / s3 16 / s1 1，basis sha256=ce9f43cfa688318b，24/24 只票） → 本提案 41 signals（b3 24 / s3 16 / s1 1）
-# note: 本提案 = 主干的位置口径 + 一道「离开段与回试段都必须 CONFIRMED」的门（`_exit_pair`）。相对主干只留下当时已经确认的 41 个 —— 买点必须是在当下就能确认的，不能靠事后才知道的回试段。原补丁是按旧偏移写的（把 G1a/G1b/G1c 的改动一起带上了），2026-10-01 已按位置口径的主干重做，判据（theory/quote）未变。；2026-10-02 再次重锚：Task 5 给 `_third_kind` 加了 `mode`/`tol` 形参与容忍度判据，本补丁的 `_third_kind` hunk 上下文被打断，已按新主干重做 —— `+` 行（本提案的判据改动）逐字未动，只更新上下文；重锚后 apply/反 apply 逐字复原。另：`_exit_pair` docstring 里的「回试/回抽」不是第 20 课逐字（原文「回试」「回抽」分列，另有「回抽都是第三类买卖点」），采纳前须改为逐字摘录或去掉引号。
+#    主干 43 signals（b3 26 / s3 16 / s1 1，basis sha256=ce9f43cfa688318b，24/24 只票） → 本提案 41 signals（b3 24 / s3 16 / s1 1）（★ 该数字测于 Task 5 之前的主干；Task 5 引入 `mode`/`tol`、R1 引入 `used` 后均未重测）
+# note: 本提案 = 主干的位置口径 + 一道「离开段与回试段都必须 CONFIRMED」的门（`_exit_pair`）。相对主干只留下当时已经确认的 41 个 —— 买点必须是在当下就能确认的，不能靠事后才知道的回试段。原补丁是按旧偏移写的（把 G1a/G1b/G1c 的改动一起带上了），2026-10-01 已按位置口径的主干重做，判据（theory/quote）未变。；2026-10-02 再次重锚：Task 5 给 `_third_kind` 加了 `mode`/`tol` 形参与容忍度判据，本补丁的 `_third_kind` hunk 上下文被打断，已按新主干重做 —— `+` 行（本提案的判据改动）逐字未动，只更新上下文；重锚后 apply/反 apply 逐字复原。另：`_exit_pair` docstring 里的「回试/回抽」不是第 20 课逐字（原文「回试」「回抽」分列，另有「回抽都是第三类买卖点」），采纳前须改为逐字摘录或去掉引号。；2026-10-02 **第三次重锚**（Task 5 R1 裁决 A·F·I 之后）：这次**不能只换上下文** —— R1 裁决 F 把后缀条件由 `if tol` 改成 `if used`，而本补丁的 `+` 行里正好有 `if tol else ""` 那一行，机械重锚会让补丁在应用后**把裁决 F 回退掉**。故本次是**语义重锚**：`+` 行按「本提案的判据改动 + R1 已落地的 `used` 语义」重新表达，判据本身（`_exit_pair` 的 CONFIRMED 门 + 平铺 and 链）逐条不变；同时按上一条 note 的要求，把 `_exit_pair` docstring 的「回试/回抽」与新增注释里的「平铺 and」「这个中枢没有买卖点」三处非逐字引号去掉。另：本补丁 `# evidence:` 的 43→41 数字测于 Task 5 之前的主干，Task 5 引入 `mode`/`tol` 后未重测，采纳前须重跑。
 diff --git a/src/chanlun/chan/signal.py b/src/chanlun/chan/signal.py
+index 98593c7..d374bd4 100644
 --- a/src/chanlun/chan/signal.py
 +++ b/src/chanlun/chan/signal.py
-@@ -195,6 +195,25 @@
+@@ -202,6 +202,25 @@ def find_signals(
      return [replace(s, idx=i) for i, s in enumerate(out)]
  
  
@@ -19,8 +20,8 @@ diff --git a/src/chanlun/chan/signal.py b/src/chanlun/chan/signal.py
 +
 +    离开段是中枢的**最后一根**线段：它从 `[zd, zg]` 内部出发、在区间外结束
 +    —— 否则它会被 `find_pivots` 的延伸循环并进中枢。`p.end_idx + 1` 是紧随
-+    其后的那一段，与离开段首尾相接且方向必然相反，它就是第 20 课说的
-+    「回试/回抽」，不是离开段。
++    其后的那一段，与离开段首尾相接且方向必然相反，它就是第 20 课所说的
++    回试段（向下离开时是回抽段），不是离开段。
 +    """
 +    if p.end_idx + 1 >= len(segs):
 +        return None, None
@@ -35,49 +36,60 @@ diff --git a/src/chanlun/chan/signal.py b/src/chanlun/chan/signal.py
  def _third_kind(segs: list[Segment], pivots: Sequence[Pivot], level: str,
                  mode: SignalMode = SignalMode.STRICT) -> list[Signal]:
      """第三类买卖点：离开中枢后回抽不回中枢（第 20 课，判据是**位置**）。
-@@ -215,29 +234,27 @@
+@@ -222,11 +241,8 @@ def _third_kind(segs: list[Segment], pivots: Sequence[Pivot], level: str,
      """
      out: list[Signal] = []
      for p in pivots:
 -        leave_i, back_i = p.end_idx, p.end_idx + 1
 -        if back_i >= len(segs):
+-            continue
+-        leave, back = segs[leave_i], segs[back_i]
+-        if _dead(leave) or _dead(back):
 +        leave, back = _exit_pair(segs, p)
 +        if leave is None or back is None:
              continue
--        leave, back = segs[leave_i], segs[back_i]
--        if _dead(leave) or _dead(back):
--            continue
          # 容忍度：允许回试段小幅回到中枢内。**工程口径，无原文依据**（D-35）。
-         # 严格模式 `tol = 0.0`，`p.zg - 0.0` 与原判据逐字节等价。
+         # 严格模式 `tol = 0.0`，`p.zg - 0.0` 与原判据数值等价。
+@@ -236,24 +252,25 @@ def _third_kind(segs: list[Segment], pivots: Sequence[Pivot], level: str,
+         # `_overlaps`），只有段数上限先到，回试段才会重叠却没被并进去。
+         # 实测命中率约 1/60，见 `optimizer/theory/L20-THIRD-TOLERANCE.md`。
          tol = THIRD_TOL * (p.zg - p.zd) if mode is SignalMode.LOOSE else 0.0
 -        if leave.direction == 1 and leave.high > p.zg:
 -            if back.direction == -1 and back.low > p.zg - tol:
+-                # 后缀只在容忍度**真正起作用**时追加：严格判据本来就通过时，
+-                # 这个信号与容忍度无关，不该宣称用了它（严格模式 tol=0 ⇒ 永不追加）。
+-                used = bool(tol) and back.low <= p.zg
 -                out.append(_sig(
 -                    SignalKind.B3, back, level, p.idx,
 -                    f"向上离开中枢{p.idx}(ZG={p.zg:.3f})后回抽低点 {back.low:.3f} 不回中枢"
--                    + (f"（非严格：回试容忍 {tol:.4f}）" if tol else ""),
+-                    + (f"（非严格：回试容忍 {tol:.4f}）" if used else ""),
 -                ))
 -        elif leave.direction == -1 and leave.low < p.zd:
 -            if back.direction == 1 and back.high < p.zd + tol:
+-                used = bool(tol) and back.high >= p.zd
 -                out.append(_sig(
 -                    SignalKind.S3, back, level, p.idx,
 -                    f"向下离开中枢{p.idx}(ZD={p.zd:.3f})后回抽高点 {back.high:.3f} 不回中枢"
--                    + (f"（非严格：回试容忍 {tol:.4f}）" if tol else ""),
+-                    + (f"（非严格：回试容忍 {tol:.4f}）" if used else ""),
 -                ))
-+        # 两根判定必须用同一条「平铺 and」链：一段既穿过 ZG 又穿过 ZD 时，
-+        # 嵌套 if 会把 B3 的失败当成「这个中枢没有买卖点」，把紧随其后的
-+        # S3 一起吞掉（实测 4 例，见补丁头 evidence）。
++        # 两根判定必须用同一条平铺 and 链：一段既穿过 ZG 又穿过 ZD 时，嵌套
++        # if 会把 B3 的失败当成这个中枢没有买卖点，把紧随其后的 S3 一起吞掉
++        # （实测 4 例，见补丁头 evidence）。
 +        if leave.high > p.zg and back.direction == -1 and back.low > p.zg - tol:
++            # 后缀只在容忍度**真正起作用**时追加：严格判据本来就通过时，
++            # 这个信号与容忍度无关，不该宣称用了它（严格模式 tol=0 ⇒ 永不追加）。
++            used = bool(tol) and back.low <= p.zg
 +            out.append(_sig(
 +                SignalKind.B3, back, level, p.idx,
 +                f"向上离开中枢{p.idx}(ZG={p.zg:.3f})后回抽低点 {back.low:.3f} 不回中枢"
-+                + (f"（非严格：回试容忍 {tol:.4f}）" if tol else ""),
++                + (f"（非严格：回试容忍 {tol:.4f}）" if used else ""),
 +            ))
 +        elif leave.low < p.zd and back.direction == 1 and back.high < p.zd + tol:
++            used = bool(tol) and back.high >= p.zd
 +            out.append(_sig(
 +                SignalKind.S3, back, level, p.idx,
 +                f"向下离开中枢{p.idx}(ZD={p.zd:.3f})后回抽高点 {back.high:.3f} 不回中枢"
-+                + (f"（非严格：回试容忍 {tol:.4f}）" if tol else ""),
++                + (f"（非严格：回试容忍 {tol:.4f}）" if used else ""),
 +            ))
      return out
  
