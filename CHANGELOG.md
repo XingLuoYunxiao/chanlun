@@ -42,16 +42,17 @@
 
 ## [Unreleased]
 
-> **本节的状态与别节不同**：以下改动**已经在工作区生效，但尚未提交**
-> （`git status` 里 `chan/segment.py`、`chan/pivot.py`、`chan/macd.py`、
-> `chan/trend.py`、`chan/include.py`、`data/types.py`、
-> `web/static/app.js` 等显示为 `M`）。
+> **本节的状态与别节不同**：以下改动**已经提交**，但**还没有发版**。
 > 它们来自一次针对缠论判据的**严格性审计**，审计报告见
 > [docs/evidence/2026-10-01-chanlun-strictness-audit.md](docs/evidence/2026-10-01-chanlun-strictness-audit.md)，
 > 对应的优化师补丁为 `optimizer/patches/round-018-D1-nonpositive-price.patch`、
 > `round-018-D2-segment-standardization.patch`、`round-019-D3-standard-feature-seq.patch`、
 > `round-020-D5-left-edge-argmax.patch`。
-> **提交时把本节原样移进新版本号。** 按 §版本号规则，判据变更一律涨 `MINOR`。
+> 本节留在 `[Unreleased]` 只是因为尚未发版；**发版时把本节原样移进新版本号。**
+> 按 §版本号规则，判据变更一律涨 `MINOR`。
+>
+> 复核「已提交」这一条（在仓库根跑，输出为空即成立）：
+> `git status --porcelain -- chanlun/src/chanlun/chan/ chanlun/src/chanlun/data/types.py chanlun/src/chanlun/web/static/app.js`
 
 **主题：把"看起来对"的判据换成"原文逐字对"的判据 —— 七处引擎判据修正，
 外加一处数据清洗、一处前端文案同步（共 9 条）。**
