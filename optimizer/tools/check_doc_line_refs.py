@@ -20,8 +20,10 @@
    标识符 token（≥2 字符）算候选符号；跨度本身是引用、或含空格/``=``/``(``/``)``
    的表达式不算符号名。符号的**定义行**（``def`` / ``class`` / 顶层 ``NAME =``）
    必须落在该文档行所引的**同一个文件**的行号范围并集内，否则记「符号漂移告警」。
-4. **桶的性质**：硬判据 = 文件找不到 / 范围越界（**只有它们影响退出码**）。
-   路径歧义、符号漂移、首末行空行、缺符号无法校验都是**建议桶**。
+4. **桶的性质**：硬判据 = 文件找不到 / 范围越界 / **区间倒置**（起 > 止；
+   两端都可能落在文件范围内，只查上界看不见它）—— 硬判据**恒影响退出码**，
+   符号漂移告警只在 ``--strict-symbols`` 下影响退出码。其余都是**建议桶**：
+   路径歧义、首末行空行、缺符号无法校验、覆盖度偏弱点、引用行无可校验符号。
    非 ``.py`` 引用**只枚举、不判硬绿**（符号名写在散文里，自动规则无从解析）。
 
 用法::
@@ -124,6 +126,16 @@ class DriftScan:
         return len({w.doc_line for w in self.warnings})
 
 
+@dataclass(frozen=True)
+class Unverifiable:
+    """一条「引用行自身没有可校验符号」的披露记录（人工复核清单的一行）。"""
+
+    doc_line: int
+    refs_text: str
+    own_symbols: int
+    verdict: str
+
+
 @dataclass
 class Report:
     refs: list[Ref] = field(default_factory=list)
@@ -137,6 +149,7 @@ class Report:
     section_number: str = "3.4"
     scans: list[DriftScan] = field(default_factory=list)
     weak_coverage: list[tuple[int, int, int]] = field(default_factory=list)
+    unverifiable: list[Unverifiable] = field(default_factory=list)
 
     def py_refs(self, lo: int | None = None, hi: int | None = None) -> list[Ref]:
         out = []
@@ -331,7 +344,7 @@ def scan(doc_path: Path, root: Path, section_number: str = "3.4") -> Report:
                 report.blank_edges.append((ref, first.strip(), last.strip()))
 
     _scan_drift(report, lines, root)
-    _scan_weak_coverage(report, lines)
+    _scan_unverifiable(report, lines)
     return report
 
 
@@ -397,6 +410,34 @@ def _scan_weak_coverage(report: Report, lines: tuple[str, ...]) -> None:
     report.weak_coverage = weak
 
 
+def _scan_unverifiable(report: Report, lines: tuple[str, ...]) -> None:
+    """引用行无可校验符号：**该文档行自身**的反引号里没有任何可校验符号。
+
+    尺子与漂移扫描、覆盖度偏弱点一致（严格符号集），只把窗口从「±1 行」
+    收到「本行」。本行没有符号，就没有任何东西能交叉印证它的行号 ——
+    符号漂移扫描对它是瞎的（它只按窗口里的符号查定义行，一个符号都没有时
+    连一对都凑不出）。邻行有符号时判定列记「可旁证」，但那只说明**行号有
+    参照物**，不代表引用正确，仍要人打开代码看一眼。
+
+    本桶只披露、不接入退出码（退出码归属见 ``print_report``）。
+    """
+    by_line: dict[int, list[Ref]] = {}
+    for r in report.refs:
+        if r.ext == PY_EXT:
+            by_line.setdefault(r.doc_line, []).append(r)
+    out: list[Unverifiable] = []
+    for doc_line in sorted(by_line):
+        own = symbols_in_line(lines[doc_line - 1])
+        if own:
+            continue
+        window = range(max(1, doc_line - 1), min(len(lines), doc_line + 1) + 1)
+        near = sorted({sym for j in window for sym in symbols_in_line(lines[j - 1])})
+        verdict = "±1 窗口亦无符号" if not near else f"±1 窗口有符号可旁证：{', '.join(near)}"
+        refs_text = "；".join(f"{r.filename}:{r.ranges_text()}" for r in by_line[doc_line])
+        out.append(Unverifiable(doc_line, refs_text, len(own), verdict))
+    report.unverifiable = out
+
+
 def loose_no_symbol_at_2(report: Report, lines: tuple[str, ...]) -> int:
     """§3.4 里 ±2 行内**连一个反引号 token 都没有**的引用行数（兜底死角）。"""
     if report.section is None:
@@ -424,12 +465,16 @@ def failure_kind(ref: Ref, res: Resolved) -> str:
     """把 `status == "ok"` 的失败再分类，供打印用。
 
     口径只有一份（就写在 `scan()` 的判定顺序里），打印处不许重推 —— 否则
-    「判定进了 failed、消息却说越界」这类分叉会再长出来。
+    「判定进了 failed、消息却说越界」这类分叉会再长出来。**判定顺序与 `scan()`
+    逐字一致**：先上界越界、再区间倒置、最后下界越界；并列时以 `scan()` 先判的
+    那条为准（退出码由它决定），所以这里也把越界放在倒置前面。
     返回值：`inverted` | `out-of-range` | `ok`。
     """
+    if any(e > res.total_lines for _, e in ref.ranges):
+        return "out-of-range"
     if ref.inverted_ranges():
         return "inverted"
-    if any(e > res.total_lines for _, e in ref.ranges) or ref.below_lower_bound_ranges():
+    if ref.below_lower_bound_ranges():
         return "out-of-range"
     return "ok"
 
@@ -538,6 +583,25 @@ def print_report(
     else:
         print("  无")
 
+    print()
+    print("=== 引用行无可校验符号（本行反引号里没有可校验符号 ⇒ 行号无从交叉印证）===")
+    if report.unverifiable:
+        print("  文档行号 | 引用文本 | 该行符号数 | 判定")
+        for u in report.unverifiable:
+            print(f"  L{u.doc_line} | {u.refs_text} | {u.own_symbols} | {u.verdict}")
+        n_blind = sum(1 for u in report.unverifiable if u.verdict == "±1 窗口亦无符号")
+        print(
+            f"  共 {len(report.unverifiable)} 行：±1 窗口亦无符号 {n_blind} 行"
+            f"（窗口 0 个符号 ⇒ 必然也在「覆盖度偏弱点」桶里）、"
+            f"邻行有符号可旁证 {len(report.unverifiable) - n_blind} 行。"
+        )
+        print(
+            "  判定列的「可旁证」只说邻行有符号能当参照物，**不代表引用正确** ——"
+            " 本桶是人工复核清单，不接入退出码。"
+        )
+    else:
+        print("  无（每条引用所在的行都至少有一个可校验符号）")
+
     if verbose:
         print()
         print("=== 逐条明细 ===")
@@ -586,6 +650,7 @@ def print_report(
         f"路径歧义 {len(report.ambiguous)}、非仓库路径 {len(report.non_repo)}、"
         f"首末行空行 {len(report.blank_edges)}、"
         f"缺符号无法校验 {j1}（含 J2 {j1 - j2}）、覆盖度偏弱点 {len(report.weak_coverage)}、"
+        f"引用行无可校验符号 {len(report.unverifiable)}、"
         f"非 .py 引用 {len(report.non_py_refs())}。"
     )
     if report.failed:
@@ -602,7 +667,7 @@ def main(argv: list[str] | None = None) -> int:
             "退出码归属：失败（文件找不到 / 行号越界 / 区间倒置）恒为 1；"
             "符号漂移告警只在 --strict-symbols 下为 1。"
             "路径歧义、非仓库路径、首末行空行、缺符号无法校验（含 J2）、"
-            "覆盖度偏弱点、非 .py 引用桶都只披露，不影响退出码。"
+            "覆盖度偏弱点、引用行无可校验符号、非 .py 引用桶都只披露，不影响退出码。"
         ),
     )
     parser.add_argument("--doc", type=Path, default=DEFAULT_DOC, help="被校验的文档（默认 ARCHITECTURE.md）")
