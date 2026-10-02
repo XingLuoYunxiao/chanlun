@@ -183,7 +183,7 @@ def _leaving_legs(segs: list[Segment], pivots: Sequence[Pivot],
                   want: int) -> list[tuple[Pivot, Segment, Segment | None]]:
     """每个中枢的「离开段」与上一个中枢的「离开段」。
 
-    与 `signal.py::_entering_and_leaving`（L188-208）同构，**有意保留独立实现**：
+    与 `signal.py` 的 `_entering_and_leaving` 同构，**有意保留独立实现**：
     `signal.py` 会 import 本模块，反向 import 会成环。
     两者一致性由 `tests/chan/test_divergence.py::test_trend_divergence_matches_b1_s1`
     守住（**双向**相等，不是单向包含）。
