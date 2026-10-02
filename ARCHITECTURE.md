@@ -313,11 +313,11 @@ ts 为字符串：日线 "YYYY-MM-DD"，分钟 "YYYY-MM-DD HH:MM"
 
 ### 3.1 管线
 
-唯一装配点是 `ChanEngine._compute()`（`engine.py:161-184`）：
+唯一装配点是 `ChanEngine._compute()`（`engine.py:176-203`）：
 
 ```
 raw bars: DataFrame(ts, high, low, close)
-  │ normalize()                        engine.py:137/145
+  │ normalize()                        engine.py:152/160
   ▼
   │ merge_bars(bars)                   include.py:53       ← 包含处理（第65课）
   ▼ merged: list[MergedBar]
@@ -325,23 +325,23 @@ raw bars: DataFrame(ts, high, low, close)
   ▼ fractals: list[Fractal]
   │ build_strokes(fractals)            stroke.py:51        ← 笔（第62课+第77课）
   ▼ strokes: list[Stroke]
-  │ build_segments(strokes, policy)    segment.py:398      ← 线段（第67/78课）
+  │ build_segments(strokes, policy)    segment.py:400      ← 线段（第67/78课）
   ▼ segments: list[Segment]
   │ find_pivots(segments, level)       pivot.py:114        ← 中枢（第17/20课）
   ▼ pivots: list[Pivot]
-  │ signal_fn(bars, segments, pivots, level)   engine.py:170-171
+  │ signal_fn(bars, segments, pivots, level)   engine.py:185-186
   ▼ signals: list[Signal]              signal.py:104-122   ← 三类买卖点
 ```
 
-- **引擎不内置买卖点规则**，`signal_fn` 由调用方注入（`engine.py:45-48, 131, 170`）。
+- **引擎不内置买卖点规则**，`signal_fn` 由调用方注入（`engine.py:49-52, 145, 185-186`）。
   仓库内实际装配均为 `signal_fn=find_signals`：
-  `web/api.py:384`、`scan/scanner.py:440`、`backtest/runner.py:135`、
+  `web/api.py:403`、`scan/scanner.py:440`、`backtest/runner.py:173`、
   `optimizer/agent.py:102`。
 - `find_signals` 内部补两步：`macd(bars["close"])`（`signal.py:187-188`）、
   `classify_trends(pivots, level)`（`signal.py:287`）。
 - **`trend` 不进 `Snapshot`**：`Snapshot` 字段为
   `code, period, as_of, level, merged, fractals, strokes, segments, pivots,
-  signals, version`（`engine.py:51-67`），**无 `trends` 字段**。
+  signals, version`（`engine.py:60-79`），**无 `trends` 字段**。
 
 ### 3.2 模块 ↔ 缠论概念
 
@@ -370,7 +370,7 @@ raw bars: DataFrame(ts, high, low, close)
 | `LEVEL_UP` | `{"5":"30","30":"day","day":"week","week":"month"}` | `pivot.py:59-64` | 未知级别退化为 `"<level>+"` |
 | MACD 周期 | `fast=12, slow=26, signal=9` | `macd.py:148` | 通达信/同花顺口径 |
 | 分型窗口 | 3 根合并 K 线、**严格不等式** | `fractal.py:59-66` | 严格不等式避免"平台等高"误判 |
-| `Segment.policy` 默认 | `"lesson_67_78"` | `chan/types.py:107` | `Lesson6768Policy`（`segment.py:198`） |
+| `Segment.policy` 默认 | `"lesson_67_78"` | `chan/types.py:107` | `Lesson6768Policy`（`segment.py:200`） |
 | 左端起段选择 | 取确认线段**最多**的起点，平局取**更早** | `segment.py:298-340` | **原文空白项**，工程判据（[D-30](#d-30-被截断的左端起段取还能确认最多线段的起点)） |
 | 状态默认 | `Stroke/Segment/Pivot/Trend = CONFIRMED`；`Signal = TENTATIVE` | `chan/types.py:71,105`；`pivot.py:98`；`trend.py:48`；`signal.py:115` | 信号须经 `_seal` 升级 |
 
@@ -600,7 +600,7 @@ back.direction == -1 and back.low > first.price`（`signal.py:349-355`）。
 #### D-23 `step()` 是全量重算 + reconcile，不是局部重算
 
 **决策**：`step(prev, new_bars)` = 全量重算 + `reconcile(prev, new)`，
-`version = prev.version + 1`（`engine.py:139-157`）。
+`version = prev.version + 1`（`engine.py:154-172`）。
 
 **理由**：线段划分用**全局 DP**（最大化确认段数），新增一根 bar 原理上就可能
 改变整段划分（`engine.py:8-14`；`segment.py:282-347`）。
@@ -1131,7 +1131,7 @@ back.direction == -1 and back.low > first.price`（`signal.py:349-355`）。
 > （`Signal` 类全块）、`:340` 的 `135-136 → 187-188`（`find_signals` 里的
 > `macd(bars["close"])`）、`:375` 的 `72 → 115`（`Signal.status` 默认值）、
 > `:561` 的 `228-234 → 300-306`（`_first_kind` 内联判据段）、`:648` 的
-> `131-132 → 175-176`（`find_signals` docstring 的「同一个列表」）、`:1154` 的
+> `131-132 → 175-176`（`find_signals` docstring 的「同一个列表」）、`:1194` 的
 > `9-11 → 11-13`（「离开」是位置）、§5 未实现表三行的 `20 → 22-24`、
 > `23 → 27`、`21-22 → 25-26`（分别指文件头 docstring 的第 1/3/2 项）。
 > 依据相同：按逻辑内容对齐，不看偏移量。
@@ -1143,6 +1143,15 @@ back.direction == -1 and back.low > first.price`（`signal.py:349-355`）。
 > （J2 `14`）、非仓库路径 `1` 全部不变；唯一变化的数字是「首末行空行」`21 → 17`
 > —— 减少的 4 条正是 `:333`/`:340`/`:375` 与 §5 未实现表的盘整背驰一行，
 > 它们**旧行号**落在空行上才被计入该桶，重排后自然消失。
+>
+> **R2 复核补正（Task 10a-R2 记，⑪ 正文保留不改）**：上面那句「首末行空行 `21 → 17`」
+> 是 **10a 当时的实测值**。R2 按 §3.3(c) 逐条判定 §3.1 与 D-xx 时又清掉 3 处同源残留
+> —— `:328`（segment.py 398 行 → 400 行）、`:373`（segment.py 198 行 → 200 行）、
+> `:603`（engine.py 139-157 行 → 154-172 行）：三条的**旧行号**同样落在空行上，该桶再减 3，
+> 终态为 **首末行空行 `21 → 14`**。另修 6 处不影响该桶的同源残留
+> （`:316`/`:320`/`:332`/`:336`/`:338`/`:344`，均在 §3.1）。五个口径数字
+> （全文 `182 处 / 173 行`、§3.4 `56 处 / 55 行`、硬判据 `181 / 182`、路径歧义 `0`、
+> 非仓库路径 `1`）与退出码 `0` 在 R2 前后**一个都没变**。
 >
 
 ### 3.5 课号引用总表（代码 → 原文）
