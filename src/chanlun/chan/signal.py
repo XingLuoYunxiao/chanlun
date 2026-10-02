@@ -16,13 +16,13 @@
 ----------
 - 只吃 `CONFIRMED` 线段与中枢；触发信号的那一段若还是窗口右端的未确认尾段，
   信号标 `TENTATIVE`（`confirmed_at=None`），回测会把它挡在外面。
-- 所有力度比较只用 MACD（通达信口径，见 `macd.py`），不做「看起来像」的近似。
+- 所有力度比较只用 MACD（通达信口径，见 `macd.py`），不做凭观感的近似。
 
 已知的进一步细化空间（留给优化师按原文重新推导）：
 1. 第 39 课口径的**盘整背驰**（`divergence.py`，同向的 `Ai` 与 `Ai+2` 比力度）
    只在非严格模式（`SignalMode.LOOSE`）下产出 `pb`/`ps`；严格模式不产出
-   （D-32 / D-33）。第 24 课的「一个中枢前后两段」口径仍未单独实现；
-2. 第二类买卖点原文要求「次级别回抽」，本实现用**本级别下一段**近似，
+   （D-32 / D-33）。第 24 课按一个中枢前后两段比较力度的口径仍未单独实现；
+2. 第二类买卖点原文要求次级别回抽，本实现用**本级别下一段**近似，
    严格做法是下钻到次级别（30 分钟）去看回抽内部结构；
 3. 第 27、28 课讲的第一类买卖点区间套定位（多级别联立）没有实现。
 """
@@ -47,7 +47,7 @@ class SignalMode(str, Enum):
     """买卖点口径。
 
     **只影响买卖点与背驰标注**，不影响笔 / 线段 / 中枢的划分（D-32）。
-    禅师对划分没有「宽松版」（第 67/71/78/79 课），对判读则有分层 ——
+    禅师对划分从未给出宽松版本（第 67/71/78/79 课），对判读则有分层 ——
     第 60 课：「站在最严格意义上」……
     同课：「当然，这是按最严格的，并没有太大操作意义的分析。」
     """
@@ -71,7 +71,7 @@ THIRD_TOL = 0.1
 
 
 class SignalKind(str, Enum):
-    """买卖点类型。值用原文的「第 n 类买卖点」顺序。"""
+    """买卖点类型。值取原文三类买卖点的序号：第 n 类 → `bn` / `sn`。"""
 
     B1 = "b1"
     B2 = "b2"
@@ -79,10 +79,12 @@ class SignalKind(str, Enum):
     S1 = "s1"
     S2 = "s2"
     S3 = "s3"
-    #: 盘整背驰买点。第 60 课：「严格来说，盘整背驰无所谓第一类买点，只是这样来类比」
-    #: ⇒ 独立类型，不得并入 b1（第 60 课说的是「无所谓第一类买点」，见 D-33）。
+    #: 盘整背驰买点 = 第 027 课第 7 段的「类第一类买点」（盘整背驰**点本身**）。
+    #: 第 060 课 L45 同样把 55 这个盘整背驰点类比成第一类买点、把 57 这个回抽
+    #: 类比成第二类买点。但第 60 课先说了「严格来说，盘整背驰无所谓第一类买点，
+    #: 只是这样来类比」⇒ 只能是**限定过的**「类第一类」，独立类型，不得并入 b1。
     PB = "pb"
-    #: 盘整背驰卖点。
+    #: 盘整背驰卖点，对称。
     PS = "ps"
 
     @property
@@ -92,9 +94,9 @@ class SignalKind(str, Enum):
     @property
     def name_cn(self) -> str:
         if self is SignalKind.PB:
-            return "盘整背驰买点（类第二类）"
+            return "盘整背驰买点（类第一类）"
         if self is SignalKind.PS:
-            return "盘整背驰卖点（类第二类）"
+            return "盘整背驰卖点（类第一类）"
         n = {"1": "一", "2": "二", "3": "三"}[self.value[1]]
         return f"第{n}类买点" if self.is_buy else f"第{n}类卖点"
 
@@ -175,7 +177,12 @@ def find_signals(
 
     `mode` 只放宽买卖点判据，不改结构划分（D-32）。严格模式的结果与不传
     `mode` 时逐项相同。
+
+    `mode` 接受 `SignalMode` 成员，也接受等值字符串 `"strict"` / `"loose"`
+    —— CLI 的 `--mode`、HTTP 查询参数、前端拼的 URL 传进来的都是字符串。
+    入口处统一归一化，非法值抛 `ValueError`；内部私有函数拿到的必定是成员。
     """
+    mode = SignalMode(mode)  # 允许传字符串（CLI / HTTP 查询参数 / 前端）
     segs = list(segments)
     if macd_df is None and bars is not None and len(bars) > 0:
         macd_df = macd(bars["close"])
@@ -209,8 +216,8 @@ def _third_kind(segs: list[Segment], pivots: Sequence[Pivot], level: str,
 
     为什么不能取 `segs[p.end_idx + 1]` 当离开段：真实线段首尾相连（相邻两段
     端点价格与时间戳完全重合），中枢最后一段之后的这一段**必然是反向回抽段**
-    —— 它若整段在 ZG 之上，方向必然向下。于是「离开段方向向上且低点 > ZG」
-    在真实数据上恒不成立，本函数曾经在 148 只票 / 193 个中枢上产出 0 个信号，
+    —— 它若整段在 ZG 之上，方向必然向下。于是按离开段方向向上且低点 > ZG
+    写的判据在真实数据上恒不成立，本函数曾经在 148 只票 / 193 个中枢上产出 0 个信号，
     而在合成用例上通过，只因为那些合成线段是断开的（相邻段之间留了缺口）。
     """
     out: list[Signal] = []
@@ -222,21 +229,30 @@ def _third_kind(segs: list[Segment], pivots: Sequence[Pivot], level: str,
         if _dead(leave) or _dead(back):
             continue
         # 容忍度：允许回试段小幅回到中枢内。**工程口径，无原文依据**（D-35）。
-        # 严格模式 `tol = 0.0`，`p.zg - 0.0` 与原判据逐字节等价。
+        # 严格模式 `tol = 0.0`，`p.zg - 0.0` 与原判据数值等价。
+        #
+        # 这条容忍度**只在被 `MAX_SEGMENTS` 截断的中枢上才可能翻结论**：延伸
+        # 循环会把任何仍与 `[zd, zg]` 重叠的后续段并进中枢组（`pivot.py` 的
+        # `_overlaps`），只有段数上限先到，回试段才会重叠却没被并进去。
+        # 实测命中率约 1/60，见 `optimizer/theory/L20-THIRD-TOLERANCE.md`。
         tol = THIRD_TOL * (p.zg - p.zd) if mode is SignalMode.LOOSE else 0.0
         if leave.direction == 1 and leave.high > p.zg:
             if back.direction == -1 and back.low > p.zg - tol:
+                # 后缀只在容忍度**真正起作用**时追加：严格判据本来就通过时，
+                # 这个信号与容忍度无关，不该宣称用了它（严格模式 tol=0 ⇒ 永不追加）。
+                used = bool(tol) and back.low <= p.zg
                 out.append(_sig(
                     SignalKind.B3, back, level, p.idx,
                     f"向上离开中枢{p.idx}(ZG={p.zg:.3f})后回抽低点 {back.low:.3f} 不回中枢"
-                    + (f"（非严格：回试容忍 {tol:.4f}）" if tol else ""),
+                    + (f"（非严格：回试容忍 {tol:.4f}）" if used else ""),
                 ))
         elif leave.direction == -1 and leave.low < p.zd:
             if back.direction == 1 and back.high < p.zd + tol:
+                used = bool(tol) and back.high >= p.zd
                 out.append(_sig(
                     SignalKind.S3, back, level, p.idx,
                     f"向下离开中枢{p.idx}(ZD={p.zd:.3f})后回抽高点 {back.high:.3f} 不回中枢"
-                    + (f"（非严格：回试容忍 {tol:.4f}）" if tol else ""),
+                    + (f"（非严格：回试容忍 {tol:.4f}）" if used else ""),
                 ))
     return out
 

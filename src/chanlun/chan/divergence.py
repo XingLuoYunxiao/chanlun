@@ -251,8 +251,16 @@ def _consolidation(segs: list[Segment], pivots: Sequence[Pivot], level: str,
     不需要先有趋势、也不需要落在中枢里。
 
     注意这里**不要求创新极值**：第 39 课的判据只有「力度收缩」一条，
-    `new_extreme` 只是记录下来（第 27 课「大级别里，如果不出现新低」的另一条
-    入口要用它），不是触发条件。
+    `new_extreme` 只记录「本段是否比**同向的前一段**更极端」（向下段
+    `now.low < prev.low`、向上段 `now.high > prev.high`），**不是**触发条件。
+
+    它**不是**第 27 课第 8 段「类似的，在大级别里，如果不出现新低，但可以构成
+    类似第二类买点的买点」里的那个「不出现新低」：那句话说的是盘整背驰之后的
+    **回抽**不创出新的低点（第 60 课 L45 把 55 这个盘整背驰点类比成第一类买点、
+    把 57 这个回抽类比成第二类买点），口径落在回抽段的低点上，与「背驰段跟
+    前一同向段比极值」不是同一个比较对象。该口径由 `signal.py` 的
+    `_second_kind` 用 `back.low > d.price` 实现，见
+    `optimizer/theory/L27-LIKE-SECOND-POINT.md` 的「被否决的替代方案」。
     """
     out: list[Divergence] = []
     for i in range(2, len(segs)):

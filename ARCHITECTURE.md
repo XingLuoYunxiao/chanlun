@@ -946,6 +946,65 @@ back.direction == -1 and back.low > first.price`（`signal.py:244-269`）。
 **后果 / 变更历史**：这是本系统里少数几个**明确无原文依据**的判据之一。
 它的存在理由是可验收的胜率目标（用户要求 70%~80%），不是缠论推导。
 
+> **变更历史（2026-10-02，Task 5 修复轮 R1 补记，原文保留不改）**：
+> ① **上一段写的判据与代码不一致。** 文档原文写
+> `back.low >= p.zg - THIRD_TOL * (p.zg - p.zd)`（**含等号**），代码实际是
+> `back.low > p.zg - tol`（`signal.py` 的 `_third_kind`；严格模式 `tol = 0.0`
+> ⇒ `back.low > p.zg`）。**本轮只改文档、不改代码**：改成 `>=` 会动到已有信号，
+> 而本轮的硬约束是「默认模式与 `mode=STRICT` 必须与 Task 5 提交（`74c579b`）
+> 逐字节一致，**含 `reason`**」。等号归属记为**已知偏差** —— 字面上
+> 「其低点不跌破ZG」含等号，现行代码比原文更严一点点，留待将来单独论证。
+> ② **容忍度只可能在「被 `MAX_SEGMENTS` 截断」的中枢上翻结论。**
+> `find_pivots` 的延伸循环会把任何仍与 `[zd, zg]` 重叠的后续段并进中枢组
+> （`_overlaps` 是闭区间），只有 8 段上限先到，回试段才会「重叠却没被并进去」；
+> 未被截断的中枢上，穿透型回试会被吸收成中枢延伸，`tol` 取多大都翻不了结论。
+> 实测（`data/day` 全市场 5327 只里 `random.seed(7)` 抽 60 只）：
+> 第三类买卖点严格 **63** / 非严格 **64**，计数不同的票 **1/60 ≈ 1.7%**
+> （`sh.600850 b3 2023-08-25`，回试段进入中枢的深度是中枢高度的 0.0861
+> < `THIRD_TOL = 0.1`，且该中枢 `segment_count == 8` 正好被上限截断）。
+> 可复现脚本与输出见 `optimizer/theory/L20-THIRD-TOLERANCE.md` 判据三。
+> ③ **`reason` 里的「（非严格：回试容忍 …）」后缀改为只在容忍度真正起作用时追加**
+> （`used = bool(tol) and back.low <= p.zg`；卖点对称 `back.high >= p.zd`）。
+> 此前无条件追加，于是回试段根本没进中枢、严格判据本来就通过的信号也宣称用了容忍度。
+> 严格模式 `tol = 0.0` ⇒ 永不追加，`reason` 逐字节不变；受影响的只有非严格模式文案
+> （fixture 上 `sh.600000 2022-01-13 s3` 的 `reason` 不再带后缀）。
+> ④ **`SignalKind.PB` / `PS` 的 `name_cn` 从「（类第二类）」改为「（类第一类）」**，
+> 依据第 027 课 `chanlun108/原文/027-盘整背驰与历史性底部.md:45`
+> 「这时候就要用到这因为盘整背驰而形成的类第一类买点了」+ 第 060 课
+> `060-图解分析示范五.md:45`（55 = 盘整背驰点 ⇒ 第一类）；「类第二类」属于
+> 第 027 课 `:49` 那条路径产出的 `b2`/`s2`。判据、`SignalKind` 取值、信号数量都不变，
+> 变的只是显示名。详见 `optimizer/theory/L39-CONSOLIDATION-DIVERGENCE.md`
+> 与 `L27-LIKE-SECOND-POINT.md` 的同名更正。
+> ⑤ 上述口径由 `tests/chan/test_signal_mode.py` 钉住：截断中枢上的 `tol` 边界用例
+> （`test_third_tolerance_only_matters_on_truncated_pivot_buy` / `..._sell`，
+> 把 `pivot.MAX_SEGMENTS` 从 8 改成 9 这两条就会红 ⇒ 「② 的截断依赖」确实被测量到）、
+> 后缀只在生效时出现（`test_tolerance_suffix_only_when_it_decided`）、
+> 同一 bar 多类型不合并（`test_same_bar_multiple_kinds_is_not_duplicated`）、
+> 非严格只增不减（`test_loose_adds_but_never_removes`）。
+> ⑥ **`mode` 入参归一化（裁决 I）。** `find_signals` 函数体第一行加
+> `mode = SignalMode(mode)`：`SignalMode(str, Enum)` 的成员**等于**同名字符串
+> 但**不是**同一对象（`SignalMode.LOOSE == "loose"` 真、`is "loose"` 假），
+> 而内部三处用的是身份比较 `is SignalMode.LOOSE`。于是 CLI 的 `--mode loose`、
+> HTTP 的 `?mode=loose`、前端拼的 URL 传进来的**字符串**会让非严格模式
+> **静默退化成严格模式**（不报错、不警告）。归一化放在公开入口一次，
+> 私有 `_third_kind`/`_second_kind` 仍只接收成员。**这是有意的行为变更**：
+> `mode="loose"` 从「等于严格」变成「真的宽松」；默认与 `mode=STRICT`
+> 仍与 Task 5 提交逐字节相同。回归测试
+> `tests/chan/test_signal_mode.py::test_mode_string_is_equivalent_to_member`
+> 等 4 条，其中 `test_loose_string_actually_loosens` 是反向断言（防「整体退化」
+> 时等价测试照样通过）。
+> ⑦ 行数变化：`src/chanlun/chan/signal.py` 在 Task 5 之前是 **295** 行
+> （`62e1e20`）→ Task 5 提交后 **400** 行（`dc78eee`）→ 本轮 **416** 行。
+> §3.5 课号引用总表里的 `signal.py:行号` 写的是 **Task 5 之前**的编号，
+> 逐条实测对得上当时的代码（`:518` 的 `82-90` = 当时 `_area` 82-91；
+> `:537` 的 `147-185` = 当时 `_third_kind` 147-187；`:554` 的 `211-241` =
+> 当时 `_first_kind` 211-243；`:567` 的 `244-269` = 当时 `_second_kind` 244-271；
+> `:341`/`:487` 的 `215` / `215-224` = 当时 `classify_trends(pivots, level)`
+> 的调用点，该函数定义在 `trend.py`、`signal.py` 只调用），所以是被 Task 5
+> 与本轮的行数增长推偏的，**未在本轮一并重排** —— 留作 Task 10 的文档整理项。
+> 本轮只把 `optimizer/theory/L20-THIRD-TOLERANCE.md` 里的硬编码行号换成了
+> 符号引用（裁决 G）。
+
 ### 3.5 课号引用总表（代码 → 原文）
 
 格式：`文件:行号 — 对应逻辑`。行号以**当前工作区**为准。
