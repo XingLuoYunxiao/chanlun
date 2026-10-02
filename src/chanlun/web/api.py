@@ -199,7 +199,7 @@ def _extrapolation_note(df: pd.DataFrame, factors: pd.DataFrame) -> str:
     return f"（因子表自 {first} 起，{start} ~ {first} 为外推值）"
 
 
-def _apply_factors(df: pd.DataFrame, factors: pd.DataFrame, mode: str,
+def _apply_factors(df: pd.DataFrame, factors: pd.DataFrame, adjust: str,
                    stored: str = "raw") -> tuple[pd.DataFrame, str, str]:
     """按因子表把行情切成三态之一，并如实报告**实际生效**的口径。
 
@@ -213,13 +213,13 @@ def _apply_factors(df: pd.DataFrame, factors: pd.DataFrame, mode: str,
     if segments == 0:
         # 没有因子表时能给的只有落库口径本身，别的口径要靠因子反算，不能假装切得动
         if stored == "qfq":
-            if mode == "qfq":
+            if adjust == "qfq":
                 return df, "qfq", "本票为前复权落库（baostock），无独立除权因子：前复权即当前价格"
-            name = {"raw": "不复权", "hfq": "后复权"}[mode]
+            name = {"raw": "不复权", "hfq": "后复权"}[adjust]
             return df, "qfq", f"本票为前复权落库（baostock），且无除权因子，无法还原{name}：当前显示前复权"
         return df, "raw", "无除权记录（三态相同，价格即不复权原始价）"
     if stored == "qfq":
-        if mode == "qfq":
+        if adjust == "qfq":
             # 前复权是**原样返回**（`unapply_adjust` 对 qfq 直接 return）：这条路上
             # 一次换算都没发生。写成"按因子反算"会让人以为图上的价是算出来的，
             # 而它其实就是落库价 —— 说明本身不能先误导一次。
@@ -227,16 +227,16 @@ def _apply_factors(df: pd.DataFrame, factors: pd.DataFrame, mode: str,
                 f"前复权：库内即前复权（{segments} 段除权因子可切不复权/后复权，"
                 f"成交量/成交额不复权）{extrapolated}"
             )
-        name = {"raw": "不复权", "hfq": "后复权"}[mode]
-        adjusted = adjust_mod.unapply_adjust(df, factors, mode)
-        return adjusted, mode, (
+        name = {"raw": "不复权", "hfq": "后复权"}[adjust]
+        adjusted = adjust_mod.unapply_adjust(df, factors, adjust)
+        return adjusted, adjust, (
             f"{name}：由库内前复权价按 {segments} 段除权因子反算（成交量/成交额不复权）{extrapolated}"
         )
-    if mode == "raw":
+    if adjust == "raw":
         return df, "raw", f"不复权：原始价（本票有 {segments} 段除权因子，可切前/后复权）"
-    name = {"qfq": "前复权", "hfq": "后复权"}[mode]
-    adjusted = adjust_mod.apply_adjust(df, factors, mode)
-    return adjusted, mode, (
+    name = {"qfq": "前复权", "hfq": "后复权"}[adjust]
+    adjusted = adjust_mod.apply_adjust(df, factors, adjust)
+    return adjusted, adjust, (
         f"{name}：按 {segments} 段除权因子缩放开高低收（成交量/成交额不复权）{extrapolated}"
     )
 
@@ -589,14 +589,14 @@ def bars(request: Request, code: str, period: str = "day",
          adjust: str = "qfq", ma: str | None = None) -> dict[str, Any]:
     cfg = _cfg(request)
     key = normalize_code(code)
-    mode = normalize_adjust_or_400(adjust)
+    adj = normalize_adjust_or_400(adjust)
     periods = parse_ma(ma)
-    df, effective, note, _ = _period_frame(key, period, adjust=mode, meta_db=cfg.data.meta_db)
+    df, effective, note, _ = _period_frame(key, period, adjust=adj, meta_db=cfg.data.meta_db)
     if len(df) > limit:
         df = df.tail(limit).reset_index(drop=True)
     return {
         "code": key, "period": period, "count": len(df), "bars": _bars_payload(df),
-        "adjust": mode, "adjust_effective": effective, "adjust_note": note,
+        "adjust": adj, "adjust_effective": effective, "adjust_note": note,
         "ma": ma_payload(df, periods), "ma_periods": list(periods),
     }
 
@@ -744,8 +744,10 @@ def watchlist_structure(request: Request, period: str = "day", limit: int = DEFA
     不传 `mode` 的既有调用路径**逐字节不变**；非法值由 `Query(pattern=...)` 挡成 422。
 
     **别把它和 `adjust`（复权口径）搞混**：函数体里那个复权值原先也叫 `mode`，
-    同名会互相覆盖（查询参数一进来就被复权值顶掉，`SignalMode("qfq")` 直接 500），
-    所以复权值改叫 `adj` —— 与 `/api/structure` 的写法一致。
+    同名会互相覆盖（查询参数一进来就被复权值顶掉，把 `"qfq"` 顶进 `SignalMode(...)`）。
+    这里**不会**因此报 500：下面的 `except (..., ValueError)` 会把它降级成一行
+    `{"missing": true, "error": ...}`（200）—— 比 500 更难发现，所以复权值改叫 `adj`，
+    与 `/api/structure` 的写法一致（那边没有这层兜底，`SignalMode("qfq")` 才是 500）。
     """
     cfg = _cfg(request)
     adj = normalize_adjust_or_400(adjust)
