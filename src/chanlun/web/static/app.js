@@ -157,7 +157,7 @@
   // 单次 `getOption()` 预热后中位 1.1–1.2 ms（min 0.8 / max 3.4），返回的 option
   // JSON 39.6 万–40.8 万字符（复审给的数字是 0.72 ms / 348875 字符，同一量级）；
   // 30 次真实鼠标移动 **1:1** 触发 30 次调用 ⇒ 按 30–60 次移动/秒算是单核的 3–7%，
-  // 并按 0.8 MB × 30/秒 ≈ 每秒二十多 MB 的速度产生短命对象。
+  // 并按 0.4 MB（UTF-8 实测 39.6 万–40.8 万字节）× 30/秒 ≈ 每秒 12 MB 的速度产生短命对象。
   // 两者**逐字节等价**：`draw()` 里 `xAxes` 的 `axisBase.data` 就是 `ts` 本身
   // （四个窗格共用同一个数组），而 `state.data = body`（load）到 `draw()` 之间
   // **没有 `await`**，不存在缓存与 `divergences` 不同步的窗口。
@@ -177,7 +177,8 @@
   // ------------------------------------------------------------------ 取数
   // 在途请求的序号。点一次周期 tab 会发**两个**请求（主图 `load()` + 自选
   // `loadWatch()`，见文件末尾 `.period` 的 click），而 `load()` 之间没有保护时
-  // **后到的旧响应会覆盖 `state.data`** ⇒ 页面停在旧周期的数据上、徽标为空。
+  // **后到的旧响应会覆盖 `state.data`** ⇒ 页面停在旧周期的数据上，徽标显示的是
+  // **旧周期**的数字（旧周期 0 处时才为空）。
   // 复审实测这是**确定性**的、不是偶发：逐请求计时 `/api/structure?period=week`
   // 5863→6461 ms 而 `period=day` 5879→5939 ms —— 先发的旧请求后完成。
   // 每次 `load()` 领一个号，`await` 回来后号变了就把自己整段丢掉（不碰 state、
@@ -343,14 +344,14 @@
   // 背驰，不是"现在画了几处"。为 0 时不显示数字，免得制造噪音。
   //
   // ★ 这个数字**不是全史**，`title` 里因此不许无条件写"全史"：
-  // `divergences` 取自**被裁剪过的**快照（`api.py:419`
+  // `divergences` 取自**被裁剪过的**快照（`api.py:416`
   // `snap.clipped_to(第一根 bar 的 ts, last_ts)`），裁剪边界就是 `limit` 送出的那批 bar，
   // 所以它**随 `limit` 变**。实测 `sz.399001` 日线：默认 1200 根 -> 3 处，
   // `limit=9000`（全史 8648 根）-> 31 处 —— 差 10 倍。默认视野下写"全史 3 处"，
   // 用户会以为这只票历史上只背驰过 3 次。
   // （对照：图注里 `counts_total` 那句"全史 N 段"**是对的**，那个数不随 limit 变。）
   // 判据：送出的 bar 数 vs 该票全史根数 —— 两个字段都在 payload 顶层
-  // （`api.py:537-538` 的 `bars` / `bars_total`），实测都存在。
+  // （`api.py:533` 的 `bars` 与 `api.py:537` 的 `bars_total`），实测都存在。
   // **取不到时不许猜**：按"已加载区间"兜底，宁可少说，不说量不出来的话。
   function applyDivergenceBadge(body) {
     const btn = document.querySelector('.rail-tab[data-layer="divergence"]');
@@ -1043,7 +1044,14 @@
   // 价格与涨跌幅由后端在**和图表同一个复权口径**下算好（api._change_payload）：
   // 不复权帧在除权日有一根几十个点的缺口，拿它算涨跌幅会在自选栏里报出一根
   // 根本不存在的跌停，而图上那根K线看起来是平的。
+  // 自选栏自己的在途序号。**与 `loadSeq` 分开**：周期 click 里 `load(); loadWatch();`
+  // 是同步连发，共用一个计数器时后者的 `++` 会把前者**有效**的响应判成过期 ——
+  // 主图丢掉自己的响应、永远停在旧周期。乱序只发生在**同一端点**的先后两次请求之间，
+  // 两个端点各管各的号；一次周期点击把两个号**同时**推一格，上一周期的两个晚到响应
+  // 于是各自判过期。
+  let watchSeq = 0;
   async function loadWatch() {
+    const seq = ++watchSeq;
     const box = $("#watch-rows");
     let url = `/api/watchlist/structure?period=${state.period}&adjust=${state.adjust}&mode=${state.mode}`;
     if (state.limit) url += `&limit=${state.limit}`;
@@ -1051,9 +1059,14 @@
     try {
       body = await (await fetch(url)).json();
     } catch (err) {
+      // 同 `load()`：旧请求连不上时也不许写"读取失败"，那是上一次点击的事。
+      if (seq !== watchSeq) return;
       box.innerHTML = '<div class="watch-empty">自选股读取失败：连不上本地服务（8888 端口）。</div>';
       return;
     }
+    // ★ 从这里往下每一行都在改界面（含 `!body.items` 的报错与首屏定位）：
+    // 旧响应必须整段丢弃。
+    if (seq !== watchSeq) return;
     if (!body.items) {
       box.innerHTML = `<div class="watch-empty">自选股读取失败：${body.detail || "接口返回了无法解析的内容。"}</div>`;
       return;
