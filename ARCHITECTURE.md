@@ -1054,7 +1054,7 @@ back.direction == -1 and back.low > first.price`（`signal.py:349-355`）。
 > 当时 `_first_kind` 211-243；`:567` 的 `244-269` = 当时 `_second_kind` 244-271；
 > `:341`/`:487` 的 `215` / `215-224` = 当时 `classify_trends(pivots, level)`
 > 的调用点，该函数定义在 `trend.py`、`signal.py` 只调用），所以是被 Task 5
-> 与本轮的行数增长推偏的。
+> 与本轮的行数增长推偏的，**未在本轮一并重排** —— 留作 Task 10 的文档整理项。
 > 本轮只把 `optimizer/theory/L20-THIRD-TOLERANCE.md` 里的硬编码行号换成了
 > 符号引用（裁决 G）。
 
