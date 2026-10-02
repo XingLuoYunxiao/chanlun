@@ -1,0 +1,542 @@
+[
+ {
+  "num": 1,
+  "qa": 2,
+  "comments": 1676
+ },
+ {
+  "num": 2,
+  "qa": 1,
+  "comments": 755
+ },
+ {
+  "num": 3,
+  "qa": 2,
+  "comments": 702
+ },
+ {
+  "num": 4,
+  "qa": 3,
+  "comments": 702
+ },
+ {
+  "num": 5,
+  "qa": 0,
+  "comments": 643
+ },
+ {
+  "num": 6,
+  "qa": 7,
+  "comments": 532
+ },
+ {
+  "num": 7,
+  "qa": 35,
+  "comments": 741
+ },
+ {
+  "num": 8,
+  "qa": 54,
+  "comments": 616
+ },
+ {
+  "num": 9,
+  "qa": 73,
+  "comments": 686
+ },
+ {
+  "num": 10,
+  "qa": 72,
+  "comments": 712
+ },
+ {
+  "num": 11,
+  "qa": 60,
+  "comments": 683
+ },
+ {
+  "num": 12,
+  "qa": 35,
+  "comments": 761
+ },
+ {
+  "num": 13,
+  "qa": 52,
+  "comments": 586
+ },
+ {
+  "num": 14,
+  "qa": 44,
+  "comments": 690
+ },
+ {
+  "num": 15,
+  "qa": 42,
+  "comments": 816
+ },
+ {
+  "num": 16,
+  "qa": 61,
+  "comments": 919
+ },
+ {
+  "num": 17,
+  "qa": 47,
+  "comments": 1283
+ },
+ {
+  "num": 18,
+  "qa": 9,
+  "comments": 761
+ },
+ {
+  "num": 19,
+  "qa": 39,
+  "comments": 668
+ },
+ {
+  "num": 20,
+  "qa": 24,
+  "comments": 729
+ },
+ {
+  "num": 21,
+  "qa": 49,
+  "comments": 814
+ },
+ {
+  "num": 22,
+  "qa": 29,
+  "comments": 582
+ },
+ {
+  "num": 23,
+  "qa": 52,
+  "comments": 659
+ },
+ {
+  "num": 24,
+  "qa": 39,
+  "comments": 767
+ },
+ {
+  "num": 25,
+  "qa": 52,
+  "comments": 639
+ },
+ {
+  "num": 26,
+  "qa": 42,
+  "comments": 882
+ },
+ {
+  "num": 27,
+  "qa": 39,
+  "comments": 830
+ },
+ {
+  "num": 28,
+  "qa": 68,
+  "comments": 774
+ },
+ {
+  "num": 29,
+  "qa": 25,
+  "comments": 853
+ },
+ {
+  "num": 30,
+  "qa": 31,
+  "comments": 649
+ },
+ {
+  "num": 31,
+  "qa": 68,
+  "comments": 677
+ },
+ {
+  "num": 32,
+  "qa": 39,
+  "comments": 764
+ },
+ {
+  "num": 33,
+  "qa": 34,
+  "comments": 669
+ },
+ {
+  "num": 34,
+  "qa": 4,
+  "comments": 28
+ },
+ {
+  "num": 35,
+  "qa": 1,
+  "comments": 579
+ },
+ {
+  "num": 36,
+  "qa": 7,
+  "comments": 559
+ },
+ {
+  "num": 37,
+  "qa": 2,
+  "comments": 480
+ },
+ {
+  "num": 38,
+  "qa": 31,
+  "comments": 616
+ },
+ {
+  "num": 39,
+  "qa": 15,
+  "comments": 557
+ },
+ {
+  "num": 40,
+  "qa": 24,
+  "comments": 679
+ },
+ {
+  "num": 41,
+  "qa": 3,
+  "comments": 489
+ },
+ {
+  "num": 42,
+  "qa": 46,
+  "comments": 649
+ },
+ {
+  "num": 43,
+  "qa": 15,
+  "comments": 523
+ },
+ {
+  "num": 44,
+  "qa": 11,
+  "comments": 633
+ },
+ {
+  "num": 45,
+  "qa": 37,
+  "comments": 717
+ },
+ {
+  "num": 46,
+  "qa": 30,
+  "comments": 724
+ },
+ {
+  "num": 47,
+  "qa": 3,
+  "comments": 550
+ },
+ {
+  "num": 48,
+  "qa": 34,
+  "comments": 657
+ },
+ {
+  "num": 49,
+  "qa": 29,
+  "comments": 803
+ },
+ {
+  "num": 50,
+  "qa": 2,
+  "comments": 621
+ },
+ {
+  "num": 51,
+  "qa": 42,
+  "comments": 680
+ },
+ {
+  "num": 52,
+  "qa": 31,
+  "comments": 846
+ },
+ {
+  "num": 53,
+  "qa": 28,
+  "comments": 756
+ },
+ {
+  "num": 54,
+  "qa": 18,
+  "comments": 889
+ },
+ {
+  "num": 55,
+  "qa": 28,
+  "comments": 671
+ },
+ {
+  "num": 56,
+  "qa": 18,
+  "comments": 1017
+ },
+ {
+  "num": 57,
+  "qa": 13,
+  "comments": 987
+ },
+ {
+  "num": 58,
+  "qa": 3,
+  "comments": 1300
+ },
+ {
+  "num": 59,
+  "qa": 3,
+  "comments": 896
+ },
+ {
+  "num": 60,
+  "qa": 4,
+  "comments": 809
+ },
+ {
+  "num": 61,
+  "qa": 2,
+  "comments": 991
+ },
+ {
+  "num": 62,
+  "qa": 0,
+  "comments": 1087
+ },
+ {
+  "num": 63,
+  "qa": 0,
+  "comments": 583
+ },
+ {
+  "num": 64,
+  "qa": 0,
+  "comments": 634
+ },
+ {
+  "num": 65,
+  "qa": 10,
+  "comments": 1261
+ },
+ {
+  "num": 66,
+  "qa": 0,
+  "comments": 1805
+ },
+ {
+  "num": 67,
+  "qa": 0,
+  "comments": 1497
+ },
+ {
+  "num": 68,
+  "qa": 0,
+  "comments": 1195
+ },
+ {
+  "num": 69,
+  "qa": 1,
+  "comments": 1041
+ },
+ {
+  "num": 70,
+  "qa": 0,
+  "comments": 663
+ },
+ {
+  "num": 71,
+  "qa": 0,
+  "comments": 423
+ },
+ {
+  "num": 72,
+  "qa": 0,
+  "comments": 1
+ },
+ {
+  "num": 73,
+  "qa": 0,
+  "comments": 769
+ },
+ {
+  "num": 74,
+  "qa": 0,
+  "comments": 740
+ },
+ {
+  "num": 75,
+  "qa": 0,
+  "comments": 834
+ },
+ {
+  "num": 76,
+  "qa": 0,
+  "comments": 697
+ },
+ {
+  "num": 77,
+  "qa": 0,
+  "comments": 858
+ },
+ {
+  "num": 78,
+  "qa": 0,
+  "comments": 799
+ },
+ {
+  "num": 79,
+  "qa": 0,
+  "comments": 956
+ },
+ {
+  "num": 80,
+  "qa": 0,
+  "comments": 13
+ },
+ {
+  "num": 81,
+  "qa": 0,
+  "comments": 820
+ },
+ {
+  "num": 82,
+  "qa": 0,
+  "comments": 807
+ },
+ {
+  "num": 83,
+  "qa": 0,
+  "comments": 907
+ },
+ {
+  "num": 84,
+  "qa": 0,
+  "comments": 794
+ },
+ {
+  "num": 85,
+  "qa": 0,
+  "comments": 835
+ },
+ {
+  "num": 86,
+  "qa": 0,
+  "comments": 992
+ },
+ {
+  "num": 87,
+  "qa": 0,
+  "comments": 594
+ },
+ {
+  "num": 88,
+  "qa": 0,
+  "comments": 551
+ },
+ {
+  "num": 89,
+  "qa": 0,
+  "comments": 618
+ },
+ {
+  "num": 90,
+  "qa": 0,
+  "comments": 652
+ },
+ {
+  "num": 91,
+  "qa": 0,
+  "comments": 704
+ },
+ {
+  "num": 92,
+  "qa": 0,
+  "comments": 606
+ },
+ {
+  "num": 93,
+  "qa": 0,
+  "comments": 620
+ },
+ {
+  "num": 94,
+  "qa": 0,
+  "comments": 1002
+ },
+ {
+  "num": 95,
+  "qa": 0,
+  "comments": 981
+ },
+ {
+  "num": 96,
+  "qa": 0,
+  "comments": 985
+ },
+ {
+  "num": 97,
+  "qa": 0,
+  "comments": 726
+ },
+ {
+  "num": 98,
+  "qa": 0,
+  "comments": 606
+ },
+ {
+  "num": 99,
+  "qa": 0,
+  "comments": 615
+ },
+ {
+  "num": 100,
+  "qa": 0,
+  "comments": 595
+ },
+ {
+  "num": 101,
+  "qa": 0,
+  "comments": 876
+ },
+ {
+  "num": 102,
+  "qa": 0,
+  "comments": 762
+ },
+ {
+  "num": 103,
+  "qa": 0,
+  "comments": 767
+ },
+ {
+  "num": 104,
+  "qa": 0,
+  "comments": 952
+ },
+ {
+  "num": 105,
+  "qa": 0,
+  "comments": 712
+ },
+ {
+  "num": 106,
+  "qa": 0,
+  "comments": 954
+ },
+ {
+  "num": 107,
+  "qa": 0,
+  "comments": 945
+ },
+ {
+  "num": 108,
+  "qa": 0,
+  "comments": 1182
+ }
+]
