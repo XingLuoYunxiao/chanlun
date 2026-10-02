@@ -77,6 +77,20 @@ class Ref:
     def ranges_text(self) -> str:
         return ", ".join(f"{s}-{e}" for s, e in self.ranges)
 
+    def inverted_ranges(self) -> tuple[tuple[int, int], ...]:
+        """起 > 止 的区间（写反了）。
+
+        这是**独立于「越界」的硬判据**：`mod.py:10-3` 两端都在文件范围内，
+        只查上界会静默放过它；`mod.py:99-3` 更糟 —— 起点越界、终点不越界，
+        于是溜到 `res.lines[s - 1]` 处抛 `IndexError`（崩溃不是判定）。
+        """
+        return tuple((s, e) for s, e in self.ranges if e < s)
+
+    def below_lower_bound_ranges(self) -> tuple[tuple[int, int], ...]:
+        """行号 < 1 的区间。文档行号是 1-based，`0` 会让 `res.lines[s - 1]`
+        退化成 Python 负索引，静默指到文件尾部。"""
+        return tuple((s, e) for s, e in self.ranges if s < 1)
+
 
 @dataclass
 class Resolved:
@@ -300,6 +314,16 @@ def scan(doc_path: Path, root: Path, section_number: str = "3.4") -> Report:
             if any(e > res.total_lines for _, e in ref.ranges):
                 report.failed.append(ref)
                 continue
+            # 区间倒置（起 > 止）：两端都可能落在文件范围内，只查上界看不见它。
+            # 必须在下面 `res.lines[s - 1]` 之前拦掉 —— `99-3` 的起点越界、终点
+            # 不越界，旧实现正是在那里抛 IndexError（退出码 1 来自崩溃，不是判据）。
+            if ref.inverted_ranges():
+                report.failed.append(ref)
+                continue
+            # 行号 < 1：`res.lines[s - 1]` 会退化成负索引，静默指到文件尾部。
+            if ref.below_lower_bound_ranges():
+                report.failed.append(ref)
+                continue
             report.passed += 1
             s, e = ref.ranges[0]
             first, last = res.lines[s - 1], res.lines[e - 1]
@@ -396,6 +420,20 @@ def _rel(path: Path, root: Path) -> str:
         return path.as_posix()
 
 
+def failure_kind(ref: Ref, res: Resolved) -> str:
+    """把 `status == "ok"` 的失败再分类，供打印用。
+
+    口径只有一份（就写在 `scan()` 的判定顺序里），打印处不许重推 —— 否则
+    「判定进了 failed、消息却说越界」这类分叉会再长出来。
+    返回值：`inverted` | `out-of-range` | `ok`。
+    """
+    if ref.inverted_ranges():
+        return "inverted"
+    if any(e > res.total_lines for _, e in ref.ranges) or ref.below_lower_bound_ranges():
+        return "out-of-range"
+    return "ok"
+
+
 def print_report(
     report: Report,
     doc_path: Path,
@@ -429,13 +467,25 @@ def print_report(
         res = report.results[(r.doc_line, r.span[0])]
         if res.status == "missing":
             print(f"    ({r.doc_line}, '{r.filename}:{r.ranges_text()}' 找不到)")
-    print(f"  out-of-range: {sum(1 for r in report.failed if report.results[(r.doc_line, r.span[0])].status == 'ok')}")
+    ok_failed = [r for r in report.failed if report.results[(r.doc_line, r.span[0])].status == "ok"]
+    print(f"  out-of-range: {sum(1 for r in ok_failed if failure_kind(r, report.results[(r.doc_line, r.span[0])]) == 'out-of-range')}")
+    print(f"  inverted: {sum(1 for r in ok_failed if failure_kind(r, report.results[(r.doc_line, r.span[0])]) == 'inverted')}")
     for r in report.failed:
         res = report.results[(r.doc_line, r.span[0])]
-        if res.status == "ok":
-            print(
-                f"    ({r.doc_line}, '{r.filename}:{r.ranges_text()}' 越界：{_rel(res.path, root)} 共 {res.total_lines} 行)"
-            )
+        if res.status != "ok":
+            continue
+        kind = failure_kind(r, res)
+        if kind == "inverted":
+            bad = ", ".join(f"{s}-{e}" for s, e in r.inverted_ranges())
+            print(f"    ({r.doc_line}, '{r.filename}:{r.ranges_text()}' 区间倒置：{bad}（起 > 止，写反了）)")
+        elif kind == "out-of-range":
+            if r.below_lower_bound_ranges():
+                bad = ", ".join(f"{s}-{e}" for s, e in r.below_lower_bound_ranges())
+                print(f"    ({r.doc_line}, '{r.filename}:{r.ranges_text()}' 越界：{bad} 低于下界（行号从 1 起）)")
+            else:
+                print(
+                    f"    ({r.doc_line}, '{r.filename}:{r.ranges_text()}' 越界：{_rel(res.path, root)} 共 {res.total_lines} 行)"
+                )
 
     non_py = report.non_py_refs()
     print()
@@ -494,8 +544,12 @@ def print_report(
         for r in report.refs:
             res = report.results[(r.doc_line, r.span[0])]
             mark = {"ok": "OK", "ambiguous": "歧义", "missing": "找不到", "non-repo": "非仓库"}[res.status]
-            if res.status == "ok" and any(e > res.total_lines for _, e in r.ranges):
-                mark = "越界"
+            if res.status == "ok":
+                kind = failure_kind(r, res)
+                if kind == "inverted":
+                    mark = "区间倒置"
+                elif kind == "out-of-range":
+                    mark = "越界"
             print(f"  L{r.doc_line} {r.filename}:{r.ranges_text()} → {mark}")
 
     print()
@@ -520,6 +574,20 @@ def print_report(
         f"缺符号无法校验 {j1} 条（其中 ±2 行内有符号的 J2 {j1 - j2} 条），"
         f"非仓库路径 {len(report.non_repo)} 条，首末行空行 {len(report.blank_edges)} 条"
     )
+    # 退出码归属：这一行**只陈述既有判定**（判定逻辑就在下面三行，不许改），
+    # 目的是让读输出的人知道「哪些桶能改退出码、哪些桶永远不能」——
+    # 尤其是「缺符号无法校验」（含 J2）**没有**退出码通路，它只是披露。
+    print(
+        "  ── 退出码归属：失败（文件找不到 / 行号越界 / 区间倒置）⇒ 恒 exit 1；"
+        f"符号漂移告警 {warn_rows} 行 ⇒ 仅 --strict-symbols 时 exit 1。"
+    )
+    print(
+        "     其余各桶**不接入退出码**（只披露、不因它失败）："
+        f"路径歧义 {len(report.ambiguous)}、非仓库路径 {len(report.non_repo)}、"
+        f"首末行空行 {len(report.blank_edges)}、"
+        f"缺符号无法校验 {j1}（含 J2 {j1 - j2}）、覆盖度偏弱点 {len(report.weak_coverage)}、"
+        f"非 .py 引用 {len(report.non_py_refs())}。"
+    )
     if report.failed:
         return 1
     if strict and len(report.scans) > 1 and report.scans[1].warnings:
@@ -528,12 +596,24 @@ def print_report(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="ARCHITECTURE.md 行号引用校验器")
+    parser = argparse.ArgumentParser(
+        description="ARCHITECTURE.md 行号引用校验器",
+        epilog=(
+            "退出码归属：失败（文件找不到 / 行号越界 / 区间倒置）恒为 1；"
+            "符号漂移告警只在 --strict-symbols 下为 1。"
+            "路径歧义、非仓库路径、首末行空行、缺符号无法校验（含 J2）、"
+            "覆盖度偏弱点、非 .py 引用桶都只披露，不影响退出码。"
+        ),
+    )
     parser.add_argument("--doc", type=Path, default=DEFAULT_DOC, help="被校验的文档（默认 ARCHITECTURE.md）")
     parser.add_argument("--root", type=Path, default=REPO_ROOT, help="仓库根（默认本文件上溯两级）")
     parser.add_argument("--section", default="3.4", help="符号漂移扫描的小节号（默认 3.4）")
     parser.add_argument("--verbose", action="store_true", help="打印每条引用明细")
-    parser.add_argument("--strict-symbols", action="store_true", help="把符号漂移告警升级为失败")
+    parser.add_argument(
+        "--strict-symbols",
+        action="store_true",
+        help="把符号漂移告警升级为失败（只影响符号漂移这一桶；缺符号无法校验不在其内）",
+    )
     args = parser.parse_args(argv)
 
     lines = _read_lines(args.doc)
