@@ -203,7 +203,7 @@
       return showNotice("连不上本地服务", `请确认服务在本机 8888 端口运行：${err}`, "python -m chanlun serve");
     }
     const body = await resp.json().catch(() => ({}));
-    // ★ 从这里往下每一行都在改界面：旧响应必须整段丢弃。
+    // ★ 从这里往下都有副作用（写 state、重绘图表/图注/自选栏、弹提示）：旧响应必须整段丢弃。
     if (seq !== loadSeq) return;
     if (!resp.ok) {
       // 404 = 这个周期本地真没有数据。命令行提示是给终端用户的，看盘的人需要能点的东西。
@@ -1064,7 +1064,7 @@
       box.innerHTML = '<div class="watch-empty">自选股读取失败：连不上本地服务（8888 端口）。</div>';
       return;
     }
-    // ★ 从这里往下每一行都在改界面（含 `!body.items` 的报错与首屏定位）：
+    // ★ 从这里往下整段都有副作用（写自选栏 DOM、写 `state.watch`、首屏 `setCode()` + `load()`）：
     // 旧响应必须整段丢弃。
     if (seq !== watchSeq) return;
     if (!body.items) {
