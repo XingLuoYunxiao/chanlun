@@ -170,6 +170,7 @@
     }
     state.data = body;
     applyAdjustUI(body);
+    applyDivergenceBadge(body);
     hideNotice();
     draw();
     renderLedger();
@@ -241,6 +242,23 @@
     btn.title = loose
       ? "非严格：含盘整背驰买卖点、第二类不要求前置第一类、第三类回试有容忍度（容忍度为工程口径，无原文依据）。笔/线段/中枢划分不变。点击切回严格。"
       : "严格：第一类只取自趋势背驰，第二类需前置第一类，第三类回试不得回到中枢内。点击切到非严格。";
+  }
+
+  // 背驰图层按钮上的**全史**计数徽标。默认视野常常一条背驰都画不到（窗口只含
+  // 最近一小段K线），按钮亮着而图上空的，会被读成"这功能坏了" —— 把"全史有多少条"
+  // 写在按钮上，用户才分得清"数据里就没有"与"功能没生效"。
+  // 数字取 payload 的 `divergences` 长度（**全史**，不是窗口过滤后的数量）：
+  // 它不监听 dataZoom，所以永不陈旧；也与图层开关无关 —— 它说的是数据里有多少条
+  // 背驰，不是"现在画了几条"。为 0 时不显示数字，免得制造噪音。
+  function applyDivergenceBadge(body) {
+    const btn = document.querySelector('.rail-tab[data-layer="divergence"]');
+    if (!btn) return;
+    const n = body && body.divergences ? body.divergences.length : 0;
+    const badge = $("#divergence-badge");
+    if (badge) badge.textContent = n ? String(n) : "";
+    btn.title = n
+      ? `背驰标注：全史 ${n} 条（这里只画与当前窗口相交的部分，默认视野可能一条都不含）。开关只决定画不画，不影响这个数字。`
+      : "背驰标注：这只票的全史没有背驰（与当前窗口无关）。";
   }
 
   function httpTitle(status) {
@@ -715,10 +733,19 @@
             // 只认 `tooltip.valueFormatter` —— 实测见 task-8-report.md 的探针。
             // 所以后端的 `reason` 挂在这里，hover 才真的看得到；
             // 说明文案仍然只有后端一处实现，前端不拼第二份。
-            valueFormatter: (value, dataIndex) => {
-              const div = divergences[dataIndex];
-              if (!div) return String(value);
-              return div.reason ? `${value}｜${div.reason}` : String(value);
+            //
+            // **不要用第二个参数（那个"过滤后序号"）去索引 `divergences`**：
+            // `dataZoom.filterMode` 默认是 `"filter"`，ECharts 传进来的是
+            // **过滤后**的序号，而 `divergences` 是**全量**数组 —— 两者错位，
+            // hover 到的是**别人**的说明。
+            // 实测（sh.600000 日线严格，默认视野）：唯一可见的是 2026-09-23 那条，
+            // 显示的却是 2021-11-10 那条的说明。首屏即可见。
+            // 改成按**值**反查（传进来的 `value` 就是该数据项的 `value[1]`），
+            // 与下标、与窗口、与过滤模式全都无关。
+            valueFormatter: (value) => {
+              const div = divergences.find((x) => x.value[1] === value);
+              const text = f2(value); // 同页其它数值都走 f2，别让 tooltip 露原始浮点
+              return div && div.reason ? `${text}｜${div.reason}` : text;
             },
           },
         },
