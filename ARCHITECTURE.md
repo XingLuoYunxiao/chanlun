@@ -861,6 +861,24 @@ back.direction == -1 and back.low > first.price`（`signal.py:244-269`）。
 全部历史可见信号。`engine.py` §3/§4 与 `state.py::backtestable` 的 docstring
 声称已记下「什么时候才知道它成立」，与实测 100% 反例不符，已更正。
 
+> **更正（2026-10-02，Task 2 实施时补记，原文保留不改）**：
+> ① **上一段对 `state.py::backtestable` 的归因是错的。**「什么时候才知道它成立」
+> 这句原话**只存在于 `engine.py:24`**（当时模块 docstring 的第 4 点）；
+> `state.py::backtestable` 的 docstring 里**从来没有**这句。它自己的措辞是
+> 「回测/盘中扫描唯一允许读取的入口：只返回无未来函数的结构」，而这句话对**同一个
+> 理由同样不成立**：`confirmed_at <= as_of` 的结构仍可能是本 bar 才第一次可见。
+> 因此实际改动是：把 `state.py::backtestable` 的 docstring 改成只陈述它真正保证的
+> 东西（按 `status is CONFIRMED` / `confirmed_at is not None` / `confirmed_at <= as_of`
+> 过滤），并注明需要「首次可见」的调用方必须自己跟踪观测过程
+> （见 `backtest/runner.py` 的 `seen`/`primed` 差分）。`engine.py` 原第 3 点
+> （step ≡ full 不变量、`confirmed_at` 不倒退）本身没有不实陈述，予以保留
+> （仅在开头补「快照是纯函数输出」一句）；被更正的是原第 4 点。
+> ② **上一段的数字不复现。** 按同样的命令重跑，实际是 **20 次「首次可见」触发 →
+> 11 笔成交 / 3 个回合 / 胜率 1/3 = 33.33%**（期末另有 5 笔持仓未平仓，故回合数
+> 少于成交数的一半），不是「22 次触发 / 9 个回合 / 4/9」。旧判据 0 笔成交这一条
+> 可复现。命令与逐条触发明细见
+> `.superpowers/sdd/2026-10-02-strict-loose-mode/task-2-report.md`。
+
 #### D-35 第三类买卖点的容忍度为工程口径，且仅在非严格模式生效
 
 **决策**：`LOOSE` 模式下第三类买卖点的回试判据改为

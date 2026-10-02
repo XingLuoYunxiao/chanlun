@@ -6,12 +6,15 @@
 runner 交给策略的 `snapshot` 已经过 `state.backtestable(..., as_of=bar.ts)` 过滤，
 策略拿不到 tentative 结构；`merged`/`fractals` 例外（见下）。
 
-为什么策略在 `confirmed_at == bar.ts` 时才动手
-----------------------------------------------
-引擎一次 `full()` 会算出全部（含未来）结构，`confirmed_at` 才是「现实里这一刻
-能不能知道」的唯一标记。若在第 t 根 bar 处理 `confirmed_at < ts` 的历史信号，
-就等于在回测起点一次性把之前所有陈年信号全部补仓，结果会明显偏向策略。
-只在「本 bar 刚获得确认」时动作，等价于收盘后看到确认、次日开盘下单。
+触发判据：「本 bar 第一次可见」（D-34）
+--------------------------------------
+`Signal.confirmed_at` 是**结构自身的确认完成时刻**，不是「引擎第一次产出它的
+时刻」—— 实测 100% 早于首次可见（`sh.600000` 121/121、`sh.601088` 158/158、
+`sz.000001` 146/146），所以拿 `confirmed_at == bar.ts` 当「今日新可知」在结构上
+永不成立（回测恒 0 笔成交）。真正判断「今天刚知道」的只能是**观测过程**：
+`runner.py` 逐 bar 重算时跟踪已见信号键，只把**本 bar 第一次可见**的信号放进
+`snapshot.signals`。于是策略既不漏新信号，也不会在回测起点把陈年历史信号一次性
+补仓（首根 bar 只登记、不交易），等价于收盘后看到信号、次日开盘下单。
 
 关于 `fractals`（重要）
 -----------------------
@@ -98,14 +101,19 @@ class ChanSignalStrategy:
     """缠论三类买卖点策略（本任务的主策略）。
 
     规则刻意保持简单，只为了验证**管线**而不是为了跑出好看的数字：
-    - 在 `signal.confirmed_at == bar.ts` 时动作（learn today → trade next open）；
+    - 收到「本 bar 第一次可见」的信号时动作（learn today → trade next open）；
     - 买点：不重复加仓（同一票只持一份）、持仓数不超过 `max_positions`；
     - 卖点：清仓；
     - 单笔用当前现金的 `cash_pct` 比例下单。
+
+    触发判据的契约见 `ARCHITECTURE.md` D-34：`snapshot.signals` 由
+    `runner.py` 过滤成**本 bar 第一次可见**的信号，本策略不再自己判断
+    「今天刚确认」—— `Signal.confirmed_at` 是结构自身的确认完成时刻，
+    实测 100% 早于引擎首次产出它的时刻，拿它当「新可知」恒定不成立。
     """
 
-    buy_kinds: tuple[str, ...] = ("b1", "b2", "b3")
-    sell_kinds: tuple[str, ...] = ("s1", "s2", "s3")
+    buy_kinds: tuple[str, ...] = ("b1", "b2", "b3", "pb")
+    sell_kinds: tuple[str, ...] = ("s1", "s2", "s3", "ps")
     max_positions: int = 5
     cash_pct: float = 0.2
     _seen: set = field(default_factory=set, repr=False, compare=False)
@@ -113,8 +121,6 @@ class ChanSignalStrategy:
     def on_bar(self, ctx: Context, bar: Any, snapshot: Any) -> list[Order]:
         orders: list[Order] = []
         for sig in snapshot.signals:
-            if sig.confirmed_at != bar.ts:
-                continue  # 只看「今天刚确认」的信号，历史信号不补动作
             kind = sig.kind.value
             held = ctx.position(bar.code) is not None
             if sig.is_buy and kind in self.buy_kinds:
@@ -182,7 +188,7 @@ STRATEGIES: dict[str, StrategySpec] = {
     "chan": StrategySpec(
         name="chan",
         label="缠论三类买卖点",
-        note="缠论策略：仅在买卖点被确认的当根 bar 决策，次日开盘成交。",
+        note="缠论策略：仅在买卖点首次可见的当根 bar 决策，次日开盘成交。",
         factory=ChanSignalStrategy,
     ),
     "fractal": StrategySpec(

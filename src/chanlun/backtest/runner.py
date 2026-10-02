@@ -25,6 +25,16 @@ bar 的 ts，且返回帧的最大 ts 不得越过 `end`。
 第 t 根 bar 收盘后策略决策 → 委托排进队列 → 第 t+1 根 bar 的**开盘价**成交
 （`Broker.execute_open`）。因此 T+1 与「次日开盘成交」是同一条流水线的自然
 结果，而不是额外补的规则。
+
+触发判据：本 bar「首次可见」（D-34）
+-----------------------------------
+物理截断保证了「看不到未来」，但**不**保证「今天才第一次看到」：逐 bar 重算
+全量时，历史上早就成立的结构每根 bar 都会再次出现。而 `Signal.confirmed_at`
+是结构自身的确认完成时刻、不是首次可见时刻（实测 100% 早于首次可见），
+拿它当「今日新可知」永不成立。所以主循环自己维护观测过程：用
+`signal_key(code, sig)` 给每个信号记身份，`seen` 存已见过的键，`primed` 标记
+首根 bar（首根只登记、不交易，否则开局会把全部历史信号一次性买满），
+只把**本 bar 第一次出现**的信号交给 `_view(..., signals=fresh)` → 策略。
 """
 
 from __future__ import annotations
@@ -75,8 +85,20 @@ def _bare(code: str) -> str:
     return c.split(".", 1)[1] if "." in c else c
 
 
-def _view(snapshot: Any, as_of: str) -> Any:
-    """把引擎快照收窄成「当前 bar 时刻真正可知」的视图。
+def signal_key(code: str, sig: Any) -> tuple[str, str, str, float]:
+    """信号身份：代码 + 类型 + 时间 + 价格。
+
+    不用列表下标 —— `_view` 每根 bar 都重算，`Signal.idx` 会随新信号插入而变，
+    拿它做「见过没有」的键会把老信号误判成新信号。
+    """
+    return (code, str(sig.kind.value), str(sig.ts), round(float(sig.price), 4))
+
+
+def _view(snapshot: Any, as_of: str, signals: Sequence[Any] | None = None) -> Any:
+    """把全量快照裁成「站在 `as_of` 这一天才知道的样子」。
+
+    `signals=None` 表示取该时刻**全部可见**信号（旧行为，供不关心「首次可见」的
+    调用方使用）；回测主循环显式传入**本 bar 第一次可见**的那几个（D-34）。
 
     只有 `status is CONFIRMED and confirmed_at <= as_of` 的结构能进来，
     tentative/invalidated 一律消失。`merged`/`fractals` 原样保留：它们是纯几何
@@ -88,7 +110,8 @@ def _view(snapshot: Any, as_of: str) -> Any:
         strokes=tuple(backtestable(snapshot.strokes, as_of)),
         segments=tuple(backtestable(snapshot.segments, as_of)),
         pivots=tuple(backtestable(snapshot.pivots, as_of)),
-        signals=tuple(backtestable(snapshot.signals, as_of)),
+        signals=tuple(backtestable(snapshot.signals, as_of) if signals is None
+                      else signals),
     )
 
 
@@ -159,6 +182,10 @@ def run(
               for code, ts_list in timelines.items()}
     engines = {code: make_engine(code) for code in timelines}
     last_close: dict[str, float] = {}
+    #: 每只票已经「见过」的信号键。回测是逐 bar 重算全量，同一根 bar 上
+    #: 历史上早就成立的信号会反复出现，只有第一次见到的才算「今天新知道」。
+    seen: dict[str, set[tuple]] = {}
+    primed: set[str] = set()
 
     all_ts = sorted({ts for ts_list in timelines.values() for ts in ts_list})
     equity_points: list[EquityPoint] = []
@@ -183,7 +210,19 @@ def run(
             # 上一根 bar 挂的委托，用本 bar 开盘价撮合
             broker.execute_open(bar)
             last_close[code] = bar.close  # 先更新现价，权益按本 bar 收盘 mark-to-market
-            snapshot = _view(engines[code].full(frame), bar.ts)
+            full_snap = engines[code].full(frame)
+            visible = backtestable(full_snap.signals, bar.ts)
+            bag = seen.setdefault(code, set())
+            if code not in primed:
+                # 预热：第一根 bar 上可见的都是「开仓之前就存在」的历史信号，
+                # 只登记、不交易，否则开局会一次性买满。
+                primed.add(code)
+                bag.update(signal_key(code, s) for s in visible)
+                fresh: tuple[Any, ...] = ()
+            else:
+                fresh = tuple(s for s in visible if signal_key(code, s) not in bag)
+                bag.update(signal_key(code, s) for s in fresh)
+            snapshot = _view(full_snap, bar.ts, fresh)
             ctx = Context(ts=bar.ts, cash=broker.cash,
                           equity=broker.equity(last_close),
                           positions=tuple(broker.positions.values()))

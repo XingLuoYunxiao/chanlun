@@ -129,9 +129,17 @@ def reconcile(prev_snapshot: Any, new_snapshot: Any) -> Any:
 
 
 def backtestable(items: Iterable[Any], as_of: str) -> list[Any]:
-    """回测/盘中扫描唯一允许读取的入口：只返回无未来函数的结构。
+    """回测/盘中扫描的按时间过滤入口：只保留 `confirmed_at <= as_of` 的结构。
 
     条件：`status is CONFIRMED` 且 `confirmed_at is not None` 且 `confirmed_at <= as_of`。
+
+    注意 `confirmed_at` 是**结构自身的确认完成时刻**，不是「首次可见时刻」——
+    实测两者系统性不等（`sh.600000` 121/121、`sh.601088` 158/158、
+    `sz.000001` 146/146 的结构都早于首次可见，见 D-34）。所以本函数保证的是
+    「该结构自己已经确认完成」，**不保证**它在本 bar 之前就被引擎产出过：
+    一个 `confirmed_at <= as_of` 的结构仍可能今天才第一次出现。调用方若需要
+    真正的「首次可见」，必须自己跟踪观测过程（见 `backtest/runner.py` 的
+    `seen`/`primed` 差分与 D-34）。
     """
     return [
         item for item in items

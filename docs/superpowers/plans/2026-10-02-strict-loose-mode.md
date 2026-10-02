@@ -645,7 +645,7 @@ Expected: **不再是 `0 笔成交 / 0 个回合`**。把实际的「笔成交 /
    回测必须用「观测过程」判断新可知，见 `backtest/runner.py` 与 D-34。
 ```
 
-`src/chanlun/chan/state.py::backtestable` 的 docstring 里「已把什么时候才知道它成立记下来了」改成「`confirmed_at` 是结构自身的确认完成时刻；调用方若需要『首次可见』必须自己跟踪观测过程（D-34）」。
+`src/chanlun/chan/state.py::backtestable` 的 docstring **没有**「已把什么时候才知道它成立记下来了」这句 —— 该句原话只存在于 `engine.py:24`；它自己的措辞是「只返回无未来函数的结构」，而这对同一个理由同样不成立（`confirmed_at <= as_of` 的结构仍可能是本 bar 才第一次可见）。改成陈述它真正保证的东西：「按 `status is CONFIRMED` / `confirmed_at is not None` / `confirmed_at <= as_of` 过滤；`confirmed_at` 是结构自身的确认完成时刻，调用方若需要『首次可见』必须自己跟踪观测过程（见 `backtest/runner.py` 与 D-34）」。
 
 - [ ] **Step 9: 提交**
 
