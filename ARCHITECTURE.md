@@ -330,15 +330,15 @@ raw bars: DataFrame(ts, high, low, close)
   │ find_pivots(segments, level)       pivot.py:114        ← 中枢（第17/20课）
   ▼ pivots: list[Pivot]
   │ signal_fn(bars, segments, pivots, level)   engine.py:170-171
-  ▼ signals: list[Signal]              signal.py:61-79     ← 三类买卖点
+  ▼ signals: list[Signal]              signal.py:104-122   ← 三类买卖点
 ```
 
 - **引擎不内置买卖点规则**，`signal_fn` 由调用方注入（`engine.py:45-48, 131, 170`）。
   仓库内实际装配均为 `signal_fn=find_signals`：
   `web/api.py:384`、`scan/scanner.py:440`、`backtest/runner.py:135`、
   `optimizer/agent.py:102`。
-- `find_signals` 内部补两步：`macd(bars["close"])`（`signal.py:135-136`）、
-  `classify_trends(pivots, level)`（`signal.py:215`）。
+- `find_signals` 内部补两步：`macd(bars["close"])`（`signal.py:187-188`）、
+  `classify_trends(pivots, level)`（`signal.py:287`）。
 - **`trend` 不进 `Snapshot`**：`Snapshot` 字段为
   `code, period, as_of, level, merged, fractals, strokes, segments, pivots,
   signals, version`（`engine.py:51-67`），**无 `trends` 字段**。
@@ -372,7 +372,7 @@ raw bars: DataFrame(ts, high, low, close)
 | 分型窗口 | 3 根合并 K 线、**严格不等式** | `fractal.py:59-66` | 严格不等式避免"平台等高"误判 |
 | `Segment.policy` 默认 | `"lesson_67_78"` | `chan/types.py:107` | `Lesson6768Policy`（`segment.py:198`） |
 | 左端起段选择 | 取确认线段**最多**的起点，平局取**更早** | `segment.py:298-340` | **原文空白项**，工程判据（[D-30](#d-30-被截断的左端起段取还能确认最多线段的起点)） |
-| 状态默认 | `Stroke/Segment/Pivot/Trend = CONFIRMED`；`Signal = TENTATIVE` | `chan/types.py:71,105`；`pivot.py:98`；`trend.py:48`；`signal.py:72` | 信号须经 `_seal` 升级 |
+| 状态默认 | `Stroke/Segment/Pivot/Trend = CONFIRMED`；`Signal = TENTATIVE` | `chan/types.py:71,105`；`pivot.py:98`；`trend.py:48`；`signal.py:115` | 信号须经 `_seal` 升级 |
 
 ### 3.4 结构层决策记录
 
@@ -484,7 +484,7 @@ G2a 的 9 段上限随之作废。
 **为什么不只写"趋势按 `[DD,GG]` 判"**：本页**没有"走势类型"分节** ——
 `/api/structure` 的响应里没有 `trends` 字段（只有 `fractals`/`strokes`/`segments`/
 `pivots`/`signals`），ledger 也只有线段/中枢/买卖点三节。趋势判据在页面上是
-**隐形**的，但它决定第一类买卖点出不出现：`signal.py:215-224` 用
+**隐形**的，但它决定第一类买卖点出不出现：`signal.py:287-296` 用
 `classify_trends` 取出上涨/下跌的中枢组，组内不足两个中枢就跳过 ——
 `down_pivots`/`up_pivots` 为空时 **B1/S1 一个都不会生成**。
 所以旧口径（趋势恒为 0）等于把第一类买卖点**静默关掉**，而页面上看不出任何异常。
@@ -515,7 +515,7 @@ G2a 的 9 段上限随之作废。
 （`docs/evidence/2026-10-01-chanlun-strictness-audit.md` §2.9）。
 
 **触发段颜色**取该段自身方向：`hist_area(macd_df, seg.src_start, seg.src_end,
-seg.direction)`（`signal.py:82-90`）。
+seg.direction)`（`signal.py:125-133`）。
 
 **背驰判据** `is_divergence`：后段创新极值**且**面积**严格缩小**才成立；
 未创新极值不算、面积相等不算（`macd.py:246-276`）。
@@ -534,7 +534,7 @@ seg.direction)`（`signal.py:82-90`）。
 #### D-19 第三类买卖点用"位置"口径
 
 **决策**：离开段 = `segs[p.end_idx]`，回试段 = `segs[p.end_idx + 1]`
-（`signal.py:147-185`）。
+（`signal.py:205-257`）。
 
 **依据**：第 20 课原文：
 
@@ -558,7 +558,7 @@ seg.direction)`（`signal.py:82-90`）。
 **已知空白**：**盘整背驰（一个中枢前后两段比较）没有实现**（`signal.py:6-7, 22-24`）。
 
 **内联而非复用**：第一类买卖点处**内联**同一判据而非调用 `is_divergence`
-（`signal.py:228-234`）。
+（`signal.py:300-306`）。
 
 #### D-21 第二类买卖点是近似
 
@@ -645,7 +645,7 @@ back.direction == -1 and back.low > first.price`（`signal.py:349-355`）。
 
 **下标口径**：`start_idx` / `end_idx` 相对**传给 `find_pivots` 的线段列表**，
 不是过滤后的确认段子列表（`pivot.py:90-92, 119-121`）。
-`signal.py` 必须传同一列表（`signal.py:131-132`）。
+`signal.py` 必须传同一列表（`signal.py:175-176`）。
 
 **不变量**：`dd <= zd < zg <= gg`、≥ 3 段、≤ 8 段、相邻中枢不回溯
 （`pivot.py:272-303`）。
@@ -1113,6 +1113,37 @@ back.direction == -1 and back.low > first.price`（`signal.py:349-355`）。
 > 缺符号无法校验 **29** 条（其中 ±2 行内有符号的 J2 **14** 条）。
 > ⑦ 的原句保留不改，此处记结果。命令见 §3.5 末尾的「行号由工具守门」。
 >
+> ⑪ **⑩ 的「已在 Task 10a 逐条改指当前代码」在 10a 当时并不成立。** ⑦ 记的 6 处里
+> 10a 只重排了 2 处（`:554` 的 `211-241 → 300-305`、`:567` 的 `244-269 → 349-355`）；
+> 另 4 处（`:518` 的 `82-90`、`:537` 的 `147-185`、`:341` 的 `215`、`:487` 的
+> `215-224`）当时仍指 Task 5 之前的编号，落点已漂到别的函数上。这 4 处由
+> Task 10a-R2 的独立对抗性复审发现，**按逻辑内容对齐**（不是按行数偏移加）重排：
+>
+> | 位置 | 旧行号 | 新行号 | 新行号处的代码 |
+> |---|---|---|---|
+> | §3.4 D-17（`:518`） | `82-90` | `125-133` | `def _area(...)` 全函数（`hist_area(..., seg.direction)`） |
+> | §3.4 D-19（`:537`） | `147-185` | `205-257` | `def _third_kind(...)` 全函数 |
+> | §3.1 管线（`:341`） | `215` | `287` | `_first_kind` 里的 `trends = classify_trends(pivots, level)` |
+> | §3.4 D-16（`:487`） | `215-224` | `287-296` | 同一行 + 组内不足两个中枢就 `continue` |
+>
+> 同一轮还清掉**同一来源**（`signal.py` 因 Task 5 与本轮增长而漂移）的另外 9 处
+> —— 它们不在 ⑦ 的清单里，是 Task 10a 的漏网：`:333` 的 `61-79 → 104-122`
+> （`Signal` 类全块）、`:340` 的 `135-136 → 187-188`（`find_signals` 里的
+> `macd(bars["close"])`）、`:375` 的 `72 → 115`（`Signal.status` 默认值）、
+> `:561` 的 `228-234 → 300-306`（`_first_kind` 内联判据段）、`:648` 的
+> `131-132 → 175-176`（`find_signals` docstring 的「同一个列表」）、`:1154` 的
+> `9-11 → 11-13`（「离开」是位置）、§5 未实现表三行的 `20 → 22-24`、
+> `23 → 27`、`21-22 → 25-26`（分别指文件头 docstring 的第 1/3/2 项）。
+> 依据相同：按逻辑内容对齐，不看偏移量。
+>
+> ⑦ ⑨ ⑩ 一字未动（`AGENTS.md` 的只增不改）。**终态**：⑦ 记的 6 处行号**全部**
+> 指向当前代码 —— ⑩ 的「逐条」在 10a 当时为未完成，在终态为真（⑩ 原句保留、
+> 不作更正，其时间点由本条补正）。重排后重跑工具：全文 `182 处 / 173 行`、
+> 硬判据通过 `181 / 182`、失败 `0`、符号漂移告警 `4`、缺符号无法校验 `29`
+> （J2 `14`）、非仓库路径 `1` 全部不变；唯一变化的数字是「首末行空行」`21 → 17`
+> —— 减少的 4 条正是 `:333`/`:340`/`:375` 与 §5 未实现表的盘整背驰一行，
+> 它们**旧行号**落在空行上才被计入该桶，重排后自然消失。
+>
 
 ### 3.5 课号引用总表（代码 → 原文）
 
@@ -1151,7 +1182,7 @@ back.direction == -1 and back.low > first.price`（`signal.py:349-355`）。
 | `macd.py:6-8` | 24 | 面积看红/绿柱子；两个走势类型须同向 |
 | `macd.py:180-202` | 24 | `hist_area(..., color)` 分色累加（D-17） |
 | `signal.py:6-7` | 24 | 趋势背驰 vs 盘整背驰 |
-| `signal.py:9-11` | 20 | 「离开」是位置 |
+| `signal.py:11-13` | 20 | 「离开」是位置 |
 | `signal.py:126-127` | 24 | 向上看红柱子，向下看绿柱子 |
 | `signal.py:209-210` | 20 | 第三类买点定义 |
 | `signal.py:265` | 24 | 比较力度的对象是离开段 |
@@ -1343,9 +1374,9 @@ bs_adjust = "2"
 
 | 项 | 状态 | 位置 |
 |---|---|---|
-| 盘整背驰（第 24 课，一个中枢前后两段比较） | **未实现** | `signal.py:20` |
-| 第一类买卖点区间套定位（第 27/28 课，多级别联立） | **未实现** | `signal.py:23` |
-| 第二类买卖点下钻次级别 | **近似**，用本级别下一段代替 | `signal.py:21-22` |
+| 盘整背驰（第 24 课，一个中枢前后两段比较） | **未实现** | `signal.py:22-24` |
+| 第一类买卖点区间套定位（第 27/28 课，多级别联立） | **未实现** | `signal.py:27` |
+| 第二类买卖点下钻次级别 | **近似**，用本级别下一段代替 | `signal.py:25-26` |
 | 九段式中枢（离开后又回到中枢） | **未实现** | `pivot.py:48-49` |
 | 通达信分钟格式（`.lc5`/`.lc1`） | **故意不实现** | `tdx.py:14-15, 68-72` |
 | ST 5% 涨跌停 | **未实现** | `broker.py` docstring |
