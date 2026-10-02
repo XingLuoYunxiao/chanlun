@@ -15,10 +15,41 @@
   续段挂在头部匹配的**尾部**，沿用同一个文件名（文档大量用
   `` `pivot.py:31-33, 165-167` `` 这种简写；漏掉续段会把「符号其实在范围里」误报成漂移）。
 
+**★ 分两个桶（控制者 2026-10-02 加，起因见下）**
+  - **`.py` 桶 = 硬判据**：唯一路径解析 + 行号落在文件长度内 + 符号定义行落在引用范围内。
+  - **非 `.py` 桶（目前只有 `.js`）= 只枚举、不判硬绿**：因为那些引用的**符号名写在
+    文档的散文里**（如 `TREND_BASIS`、rAF、跌停），引用串本身**不带符号名**，
+    自动规则无从解析 ⇒ 只能人工逐条核对。
+  - **两个桶都要打印**。加这个桶是因为：本文件原先的头部正则**硬编码了 `\\.py`**，
+    于是 `ARCHITECTURE.md` 里 **5 处 `app.js:NN` 引用全部被静默跳过** ——
+    其中 `:478` 明明落在 §3.4 扫描区内。**一个只扫 `.py` 的探针会把 `.js` 的错
+    报成「全绿」**，这正是本项目反复踩的「测量不到 ⇒ 误以为没问题」。
+
 **符号漂移扫描范围 = §3.4（ARCHITECTURE.md:377-1007）**，窗口 ±N 行。
 窗口内取**反引号跨度**里的标识符 token（`` `Snapshot.clipped_to` `` → `Snapshot` 与
 `clipped_to` **两个都算**，任一定义行落在范围内即通过）。
 符号的**定义行**必须落在「**该文档行**所引的、**同一个文件**的所有行号范围之并集」内。
+
+**★ 跳过规则从 `.py:` 子串改成 `REFLIKE` 正则 —— 双向都修了（控制者 2026-10-02，A/B 实测）**
+
+原规则 `if ".py:" in s: continue` 只要跨度里**含子串** `.py:` 就跳过。改成
+`REFLIKE = <路径>.<扩展名>:\\s*<数字>` 后，**两个方向各修一个错**：
+
+| 方向 | 例子 | 旧规则 | 新规则 | 后果 |
+|---|---|---|---|---|
+| 该跳没跳 | `` `app.js:36` `` | 不跳（无 `.py:`）⇒ 贡献 `app`/`js` 假符号 | 跳过 ✓ | 少了假符号 |
+| **不该跳却跳了** | `` `state.py::backtestable` `` | **跳过**（含 `.py:`） | 不跳 ✓ | **找回了真符号** |
+
+第二行是**更严重**的一侧：`文件.py::符号` 是本项目自己的「某符号在某文件」记法，
+`ARCHITECTURE.md` 里共 **14 处**（其中 **12 处**落在 §3.4 扫描区内），
+**旧规则把它们全部排除在符号检查之外** —— 又是一次「测量不到 ⇒ 误以为没问题」。
+
+A/B 实测（同目录临时副本，其余全同）：无符号行集合只有 **`ARCHITECTURE.md:887`** 一行翻转
+（其 ±1 邻行 `:886` 就是 `` `state.py::backtestable` ``），
+故 `缺符号 J(±1)` **30 → 29**、`±2 缺符号` **16 → 15**。
+**这两个新值才是正确值**；旧值 30/16 含上述假阴性。
+其余字段不受影响：`首末行空行 B = 23`、`J2 = 14`、`缺符号(±0) = 47`、
+`±2 完全无符号 = 0`、`§3.4 引用行数 = 55`。
 """
 from __future__ import annotations
 
@@ -34,9 +65,14 @@ SRC = PROJ / "src" / "chanlun"
 DOC = PROJ / "ARCHITECTURE.md"
 
 BT = re.compile(r"`([^`]+)`")
-HEAD = re.compile(r"([A-Za-z0-9_./\-]+)\.py:\s*(\d+)(?:\s*[-–]\s*(\d+))?")
+# 头部：<路径>.<扩展名>:NN[-MM]。★ 扩展名是分组 2（原先硬编码 \.py，会漏掉所有 .js 引用）。
+HEAD = re.compile(
+    r"([A-Za-z0-9_./\-]+)\.([A-Za-z0-9]+):\s*(\d+)(?:\s*[-–]\s*(\d+))?")
 CONT = re.compile(r"(?:^|[,\s])(\d+)(?:\s*[-–]\s*(\d+))?(?=\s*(?:[,)]|$))")
 TOK = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# 形如 `xxx.yy:NN` 的跨度不是符号来源（任何扩展名都跳过，否则 `app.js:36`
+# 会贡献 `app`/`js` 两个假符号）。
+REFLIKE = re.compile(r"[A-Za-z0-9_./\-]+\.[A-Za-z0-9]+:\s*\d")
 
 SEC34 = (377, 1007)          # §3.4 的文档行范围（控制者从标题行读出）
 OUTSIDE = ("/tmp/",)         # 非仓库路径例外
@@ -51,7 +87,7 @@ def resolve(rp: str):
         if p.is_file():
             return p, tag
     name = Path(rp).name
-    if not name.endswith(".py"):
+    if "." not in name:                 # 防御：调用方漏给扩展名时才补 .py
         name += ".py"
     cands = sorted(SRC.rglob(name))
     if len(cands) == 1:
@@ -90,8 +126,8 @@ def extract(lines: list[str]):
     for ln, text in enumerate(lines, 1):
         spans = [(m.start(1), m.end(1), m.group(1)) for m in BT.finditer(text)]
         for h in HEAD.finditer(text):
-            fname = h.group(1) + ".py"
-            ranges = [(int(h.group(2)), int(h.group(3) or h.group(2)))]
+            fname = h.group(1) + "." + h.group(2)
+            ranges = [(int(h.group(3)), int(h.group(4) or h.group(3)))]
             tail = text[h.end():]
             for s0, s1, body in spans:          # 头部落在哪个跨度里，就只取到跨度末尾
                 if s0 <= h.start() and h.end() <= s1:
@@ -106,14 +142,17 @@ def extract(lines: list[str]):
 def main() -> int:
     lines = DOC.read_text(encoding="utf-8").splitlines()
     refs = extract(lines)
-    n34 = [r for r in refs if SEC34[0] <= r[0] <= SEC34[1]]
-    print(f"引用总数：全文 {len(refs)} 处 / {len({r[0] for r in refs})} 行；"
+    # ★ 分桶：硬判据只对 .py 有意义（非 .py 的引用串不带符号名，见模块 docstring）。
+    pyrefs = [r for r in refs if r[1].endswith(".py")]
+    other = [r for r in refs if not r[1].endswith(".py")]
+    n34 = [r for r in pyrefs if SEC34[0] <= r[0] <= SEC34[1]]
+    print(f"引用总数（.py 桶）：全文 {len(pyrefs)} 处 / {len({r[0] for r in pyrefs})} 行；"
           f"§3.4 {len(n34)} 处 / {len({r[0] for r in n34})} 行")
 
-    # ---------------- 硬判据 ----------------
+    # ---------------- 硬判据（仅 .py 桶） ----------------
     buckets: dict[str, list] = {}
     ok = 0
-    for ln, fname, ranges in refs:
+    for ln, fname, ranges in pyrefs:
         path, how = resolve(fname)
         if path is None:
             buckets.setdefault(how, []).append((ln, fname, ranges))
@@ -124,11 +163,26 @@ def main() -> int:
             buckets.setdefault("out-of-range", []).append((ln, fname, bad, total))
             continue
         ok += 1
-    print(f"硬判据通过 {ok} / {len(refs)}")
+    print(f"硬判据通过 {ok} / {len(pyrefs)}")
     for k, v in sorted(buckets.items()):
         print(f"  {k}: {len(v)}")
         for item in v:
             print(f"    {item}")
+
+    # ---------------- 非 .py 桶：只枚举，人工核对 ----------------
+    print(f"\n=== 非 .py 引用（{len(other)} 处 / {len({r[0] for r in other})} 行）"
+          f"—— 不判硬绿，必须人工逐条核对 ===")
+    for ln, fname, ranges in other:
+        path, how = resolve(fname)
+        if path is None:
+            print(f"  L{ln}: {fname}:{ranges}  → 解析失败({how})")
+            continue
+        total = len(path.read_text(encoding="utf-8").splitlines())
+        rng = ", ".join(f"{a}-{b}" if a != b else f"{a}" for a, b in ranges)
+        print(f"  L{ln}: {fname}:{rng}  → {path.relative_to(PROJ)}（{total} 行）")
+        for a, b in ranges:
+            for i in range(a, min(b, total) + 1):
+                print(f"        {i:>5}| {path.read_text(encoding='utf-8').splitlines()[i - 1]}")
 
     # ---------------- 符号漂移（仅 §3.4） ----------------
     print("\n=== 符号漂移扫描（§3.4，ARCHITECTURE.md:%d-%d）===" % SEC34)
@@ -146,7 +200,7 @@ def main() -> int:
             for i in range(lo, hi + 1):
                 for span in BT.finditer(lines[i - 1]):
                     s = span.group(1)
-                    if ".py:" in s or re.search(r"[\s=()]", s):
+                    if REFLIKE.search(s) or re.search(r"[\s=()]", s):
                         continue
                     syms.update(t for t in TOK.findall(s) if len(t) > 1)
             if not syms:
@@ -175,7 +229,7 @@ def main() -> int:
     # ---------------- 汇总行其余字段 ----------------
     print("\n=== 汇总行字段（钉死规则：不要求反引号 + 续段合并计）===")
     blank = []
-    for ln, fname, ranges in refs:
+    for ln, fname, ranges in pyrefs:     # ★ 与硬判据同桶；`.js` 的引用在上面单独枚举
         path, how = resolve(fname)
         if path is None:
             continue
@@ -201,7 +255,7 @@ def main() -> int:
         for i in range(max(1, ln - win), min(len(lines), ln + win) + 1):
             for span in BT.finditer(lines[i - 1]):
                 s = span.group(1)
-                if ".py:" in s or re.search(r"[\s=()]", s):
+                if REFLIKE.search(s) or re.search(r"[\s=()]", s):
                     continue
                 out.update(t for t in TOK.findall(s) if len(t) > 1)
         return out
