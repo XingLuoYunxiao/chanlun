@@ -379,6 +379,10 @@ def find_divergences(bars, segments, pivots, level="day", macd_df=None) -> tuple
 - 新增 `SignalKind.PB`（盘整背驰买点）/ `SignalKind.PS`（盘整背驰卖点），
   `is_buy` / `name_cn` 同步；`name_cn` 用原文措辞：
   「盘整背驰买点（类第二类）」—— 依据第 027 课 L49 的「类似第二类买点」。
+  > **本节此句已被 plan `:17` 更正（历史原文按纪律保留）**：`pb` / `ps` 的
+  > `name_cn` 实为「（类第一类）」，依据第 027 课第 7 段 L45 的原话
+  > 「这因为盘整背驰而形成的类第一类买点了」+ 第 060 课 L45；L49 的
+  > 「类似第二类买点」说的是盘整背驰**之后的回抽**，由 `b2` / `s2` 承担。
 - `find_signals(bars, segments, pivots, level="day", macd_df=None, mode=SignalMode.STRICT)`
 - `_third_kind(..., mode)`：
   - `STRICT`：**完全不动**（现行已满足第20课 L59/L69，见 §3.5）
