@@ -154,10 +154,21 @@ sh.000001 上证指数 · 日线 · 截至 2026-09-30
 
 ### 4.2 CSS（下面是**实现后**的真实内容）
 
+> **★ 2026-10-03 第二次订正**：本节初稿（`flex: 1 1 auto; min-width: 0` +
+> `@media (max-width: 860px)` 补丁）**实现后仍很难看**，用户当场否掉。
+> 下面是订正后的真实内容；根因与教训见 §6.2。
+
 ```css
+body {
+  grid-template-rows: auto auto auto minmax(360px, 1fr);  /* ★ 弹性行必须最后一轨 */
+}
+.brand { flex: none; white-space: nowrap; }   /* 中文被压窄 = 逐字竖排，不是缩排 */
+.field { flex: none; }
 .period  { flex: none; white-space: nowrap; padding: 8px 14px; }  /* 按钮永不被压缩折行 */
 .periods { flex: none; overflow: hidden; }                        /* 按钮条永不被裁切 */
-.stamp   { flex: 1 1 auto; min-width: 0; }   /* 挤压力转给图注自己折行，而非抢按钮空间 */
+.go      { flex: none; white-space: nowrap; } /* 缺它「看结构」会竖排成 58.3×78 */
+.stamp   { flex: 1 1 380px; min-width: 380px; }  /* 只有它允许被挤，且挤到 380px 就整条掉行 */
+.topbar  { flex-wrap: wrap; row-gap: 10px; }  /* 全局，不再用手算断点 */
 .stamp-detail {                              /* 顶栏之外，全宽独立一行 */
   padding: 0 20px 8px; font-family: var(--mono); font-size: 12px;
   white-space: pre-line;                     /* 保留 \n，其余空白折叠 */
@@ -165,16 +176,28 @@ sh.000001 上证指数 · 日线 · 截至 2026-09-30
   min-height: 42px;    /* = 17×2 + 8 padding（`* { box-sizing: border-box }`） */
 }
 
-@media (max-width: 860px) {                  /* 补上 760–810px 的溢出缝 */
-  .topbar { flex-wrap: wrap; row-gap: 10px; }
-  .stamp  { flex: 1 1 100%; width: 100%; text-align: left; }
+/* ★ 761–980px：把 `.stage` 从 46px 的书脊列里捞出来（既有 bug，见 §6.3） */
+@media (max-width: 980px) and (min-width: 761px) {
+  .stage { order: 1; } .watch-rail { order: 2; } .ledger { order: 3; }
 }
 ```
 
-`.stamp { flex: 1 1 auto; min-width: 0 }` 是关键：**不冻结它，而是让它在自己盒子里折行**，
-所以永远不会横向溢出；同时 `.period` 已经 `flex: none`，按钮不再被牵连。
+**关键不是「冻结图注」，而是「冻结除图注外的每一格」。** 初稿让 `.query` 承担全部
+收缩（`flex: 1`，且没有 `min-width: 0`），结果收缩压力顺着 flex 链传给了
+`.brand` 和 `.stamp`：`.go` 被挤成 `58.3 × 78px`（「看结构」竖着排）、
+`.brand` 被压到 65.8px（「缠论」上下叠）。中文没有「缩排」，只有**逐字竖排** ——
+所以对中文 UI 来说，「允许被压缩」等于「允许变成竖排」。
+现在挤压力只落在 `.stamp`（纯文本，自己折行是自然的），
+`.stamp` 到 380px 就整条掉到第二行（`.topbar` 全局 `flex-wrap`）。
 
-### 4.3 窄屏断点 860px 的由来
+### 4.3 窄屏断点 860px 的由来 —— **已删除，此节保留为历史**
+
+> **★ 已作废（2026-10-03 第二次订正）。** 那个 `@media (max-width: 860px)` 补丁
+> **已从 `styles.css` 删除**。下面的算术没错，但它是在**错误的前提下**做的：
+> 它假定顶栏必须挤在一行里，于是去手算「什么时候挤不下」。
+> 真正的问题是**顶栏本来就不该挤在一行** —— 让 `.topbar` 全局 `flex-wrap`，
+> 由 `.stamp` 的 380px `flex-basis` 自己决定何时掉行，比任何手算魔数都准，
+> 也不会在窗口宽度落在魔数附近时出错。
 
 顶栏最小需求 = 40（padding）+ 56（gap）+ 158.9（brand）+ 555（`.query` 的 min-content）
 ≈ **810px**。既有断点在 760px（`styles.css:611-613`），中间 760–810px 会溢出。
@@ -251,7 +274,7 @@ sh.000001 上证指数 · 日线 · 截至 2026-09-30
 | 文件 | 改动 |
 |---|---|
 | `src/chanlun/web/static/index.html` | 新增 `#stamp-detail`（`:42`，`</header>` 之后） |
-| `src/chanlun/web/static/styles.css` | `.periods`（`:106`）/ `.period`（`:107`）加 `flex: none` + `nowrap`；`.stamp`（`:135`）加 `flex: 1 1 auto; min-width: 0`；新增 `.stamp-detail`（`:149`）；新增 `@media (max-width: 860px)`（`:643`） |
+| `src/chanlun/web/static/styles.css` | `.periods`（`:106`）/ `.period`（`:107`）加 `flex: none` + `nowrap`；**订正后**：`body` 行模板弹性行移到最后（`:51`）、`.brand` / `.field` / `.go` 各加 `flex: none` + `nowrap`、`.topbar` 全局 `flex-wrap`、`.stamp` 改 `flex: 1 1 380px; min-width: 380px`、新增 `.stamp-detail`、新增 `@media (max-width: 980px) and (min-width: 761px)` 的 `order` 规则；**删除**初稿的 `@media (max-width: 860px)` |
 | `src/chanlun/web/static/app.js` | `setStamp` 拆出 `setStampDetail`；`basisLine` 拆出 `derivedNote`，`basisLine` 只返回口径 |
 
 **不动的**：`src/chanlun/**/*.py`（⇒ **不用重启看盘页**，只需浏览器刷新）。
@@ -272,6 +295,21 @@ sh.000001 上证指数 · 日线 · 截至 2026-09-30
 > 红是红了，但红在错误的理由上（`assert 0 == 1`）。加了 `must_contain` 选中主调用点后
 > 才红在该红的地方。**红测试必须红在预期理由上**，否则它没在守护任何东西。
 
+**第二次订正又补两条**（见 §6.2）：
+
+| 护栏 | 拦什么 |
+|---|---|
+| `test_topbar_controls_cannot_be_squeezed_into_vertical_text` | `.brand` / `.field` / `.go` 缺 `flex: none` + `nowrap`；`.stamp` 缺 380px 下限；`.topbar` 缺 `flex-wrap` |
+| `test_body_grid_rows_cover_every_body_child` | `body` 行数 ≠ 会产生盒子的子元素数，**或**弹性行不在最后一轨 |
+
+> **`test_body_grid_rows_cover_every_body_child` 的第一版是错的，值得记一笔。**
+> 它一开始只数轨道数（`4 == 4`）。用 HEAD 的旧 CSS 做反向验证时才发现：
+> **旧值 `auto auto minmax(360px, 1fr) auto` 也是 4 轨**，这条护栏对真正的 bug
+> 完全免疫 —— 真正错的是那条 `1fr` 落在第 3 轨（免责声明）而不是最后一轨。
+> 改成断言**形状**（前 N-1 轨必须 `auto`、最后一轨必须含 `1fr`）后，
+> 旧 CSS 才如预期变红。**护栏写完必须拿「修复前的输入」跑一遍**，
+> 否则它可能只是在数一个恰好相等的数。
+
 另：`tests/optimizer/test_check_doc_line_refs.py:481` 钉着 `app.js` 的行数与三处被引区间，
 本次 `app.js` 1461 → 1483 行，已同步更新。
 
@@ -287,6 +325,70 @@ sh.000001 上证指数 · 日线 · 截至 2026-09-30
   这正是本项目要治的「把会漂的数字抄进另一份文件」。三处 `app.js` 引用按**内容**重锚（+9）。
 - `docs/evidence/2026-10-03-topbar-layout-probe.mjs`：复测探针入库，使 §5 的数字可复现。
 
+#### 6.2.1 第二次订正：**「不跳」不等于「好看」，而我只测了前者**
+
+> 用户看完第一版后当场否掉：
+> 「不是吧？这改成什么什么样子了？你自己截图看一下好吧？那已经丑的不能再丑了，
+> 这大部分的这个留白，还有上方这个看结构，这三个字竖着放那，你觉得合适吗？」
+
+**这是本次任务最重要的一条教训。** 第一版的验收判据是
+「顶栏高在每个宽度下三个周期完全相同」+「无裁切」+「无横向溢出」——
+三条**全部通过**，54 行取样全绿。但页面**很难看**，而且难看的成因**没有一条**
+被那三个指标覆盖：
+
+| 缺陷 | 为什么原判据看不见 |
+|---|---|
+| 免责声明下 245px 空白 | 不是横向溢出，是**纵向**多出来的行高；顶栏高度也完全没变 |
+| 「看结构」竖排成 58.3×78 | `.period` 的尺寸被断言了，`.go` 的**没被断言** |
+| 「缠论」竖排 | 同上，`.brand` 也没被断言 |
+| `.stamp` 被压成 129.3px 细缝 | 它**确实**在折行（原判据要的就是它折行），只是折得太窄 |
+
+⇒ **两条纪律**：
+
+1. **布局改动不许只用「高度 / 裁切 / 溢出」验收 —— 必须看一张真人视角的截图。**
+   这三个指标是**必要**条件，不是**充分**条件。第一版正是「所有测试都绿、页面是坏的」。
+   本次补拍 1280px 截图后才看见那四个缺陷。
+2. **中文 UI 里「允许被压缩」= 「允许变成竖排」。** 英文单词被压窄只是缩排或换行；
+   中文没有词内空白，盒子一窄于一个字宽就**逐字竖排**。所以对中文顶栏，
+   除唯一那个「本来就要折行的纯文本格」之外，**每一格都必须 `flex: none`**。
+
+**根因一：`body` 的行模板把弹性行给错了人。** `body` 是 grid，行模板
+`auto auto minmax(360px, 1fr) auto` 是 4 轨，`body` 也正好有 4 个会产生盒子的子元素
+（顶栏 / 详情行 / 免责声明 / 工作区）—— **数目完全对得上**，所以「数轨道数」的护栏
+也拦不住。错的是**顺序**：插 `#stamp-detail` 时只想着「加一格」，
+把新的 `auto` 追加到了末尾，于是 `1fr` 从工作区那一格**前移**到了免责声明那一格。
+免责声明吃掉整屏剩余高度，工作区掉进隐式行。
+⇒ 修法：`auto auto auto minmax(360px, 1fr)`，**弹性行永远在最后一轨**。
+
+**根因二：`.query { flex: 1 }` 的 min-content 地板。** 它让收缩压力全部传给
+`.brand` 和 `.stamp`，而这两个都没有 `flex: none`。
+⇒ 修法：顶栏里除 `.stamp` 外全部 `flex: none` + `nowrap`，挤压力只落在 `.stamp`；
+`.stamp` 给 `flex-basis: 380px`（实测阈值：低于它，图注会折成 3 行把顶栏撑高），
+`.topbar` 全局 `flex-wrap` —— **手算断点（§4.3 的 860px）就此删除**。
+
+**复测结果**（同一探针、同一 54 行）：仍**全部恒定**；顶栏高 **103 → 77px**（≥1280px），
+「看结构」`58.3×78 → 90.7×38`，「缠论」恒 `158.9×28`。
+即：**修好看的过程没有牺牲任何原有不变量**。
+
+### 6.3 顺带查出的既有 bug：≤980px 时 K 线图只有 46px 宽
+
+**与顶栏改动无关**（用运行时注入 HEAD 版 CSS 的 A/B 复现过：900px 下新旧
+`grid-template-columns` 都是 `46px 854px`，`.stage` 都是 46px 宽，只有 y 坐标不同）。
+但它是同一类「页面看起来是坏的」，且是**截图才看见的**，所以一并记下并修掉。
+
+`.work` 在 ≤980px 变成 `46px minmax(0, 1fr)`，`.watch-rail` 抢了
+`grid-column: 1 / -1`（整行），auto-placement 的游标被推到下一行，
+`.stage`（没有 `grid-column`）就落进没人要的 46px 书脊列。
+实测 900px：`#chart` = `[0, 1274, 46, 420]`，书脊右边 854px 全空。
+
+修法：在 `@media (max-width: 980px) and (min-width: 761px)` 里用 `order`
+把 `.stage` 提到 `.watch-rail` 之前 —— auto-placement 走的是 **order-modified 文档序**，
+所以顺序变成 书脊 r1c1 / 图 r1c2 / 自选股 r2 整行 / 结构清单 r3。
+`.ledger` 也必须显式给 `order`，否则它（默认 0）会排到 `.stage` 前面。
+**限定 761px 以上**：≤760px 只有一列、自带另一套排布，不去动它。
+
+修后 `#chart` 在 980/900/800/761px = **934 / 854 / 754 / 715px**，全宽度无横向溢出。
+
 ---
 
 ## 7. 未决 / 已知残留
@@ -295,7 +397,11 @@ sh.000001 上证指数 · 日线 · 截至 2026-09-30
    残留：详情行在 ≤1024px **非严格**口径下是 3 行（59px），严格是 2 行（42px）；
    但**同一宽度下三个周期完全一致**，周期切换不再跳动。
    改变视口宽度时会跳一次 —— 换宽度本来就要重排，可接受。
-2. `@media (max-width: 860px)` 的阈值是**算出来的**（§4.3），未在 810–860px 逐档实测。
+2. ~~`@media (max-width: 860px)` 的阈值是**算出来的**（§4.3），未在 810–860px 逐档实测。~~
+   **已作废**：该断点已删除（§4.3）。手算魔数换成了 `.stamp` 的 380px `flex-basis` +
+   全局 `flex-wrap`，掉行位置由内容自己决定，不存在「阈值附近没测到」的问题。
+   380px 本身仍是实测值（低于它会折成 3 行），已在 1600/1440/1366/1280/1200/1024/
+   900/860/800 九档复测。
 3. **760 / 700px 两档没有真实浏览器数据**：初稿模拟表里的 `173 / 184` 已删除，
    不许当实测引用。
 4. `src/chanlun/web/app.py:56` 硬编码 `version="0.1.0"`（违反 AGENTS.md §2）——
