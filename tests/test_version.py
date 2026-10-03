@@ -88,6 +88,50 @@ def test_no_hardcoded_version_assignment_in_source():
     assert not offenders, f"发现硬编码版本号：{offenders}"
 
 
+def test_no_hardcoded_version_literal_in_source():
+    """src 下不许把版本号当字面量写进 `version=`。
+
+    `test_no_hardcoded_version_assignment_in_source` 只拦 `__version__ = "..."`，
+    拦不住**换了个地方的**硬编码。真犯过：`web/app.py` 的
+    `FastAPI(title="缠论看盘", version="0.1.0", ...)` —— `pyproject.toml` 涨到
+    `0.2.0` 之后它仍写着 `0.1.0`，于是 `/api/health` 报 `0.2.0`、`/api/docs`
+    的 OpenAPI 却报 `0.1.0`，两边都不报错。
+
+    只匹配**带引号且以数字开头**的 `version=`，所以 `engine.py` 的
+    `version=1`（快照序号，不是包版本）不受影响。
+    """
+    offenders = []
+    pattern = re.compile(r"""\bversion\s*=\s*["']\d""")
+    for path in SRC.rglob("*.py"):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if pattern.search(line):
+                offenders.append(f"{path.relative_to(ROOT)}:{lineno}")
+    assert not offenders, f"发现硬编码版本号字面量：{offenders}"
+
+
+def test_web_app_declared_version_matches_single_source(tmp_path, monkeypatch):
+    """FastAPI 应用自报的版本号必须等于单一真相来源。
+
+    这是上面那条静态规则的**行为版**：静态规则只能拦住「字面量」这一种写法，
+    拦不住 `version=SOME_OTHER_CONSTANT`；而 `app.version` 是用户真能看到的东西
+    （`/api/docs` 的 OpenAPI 文档头部），必须与 `/api/health`、CLI 一致。
+    """
+    import dataclasses
+
+    from chanlun.config import load_config
+    from chanlun.data import store
+    from chanlun.web.app import create_app
+
+    base = load_config()
+    conf = dataclasses.replace(base, data=dataclasses.replace(base.data, root=tmp_path))
+    monkeypatch.setattr(store, "DATA_ROOT", tmp_path)
+
+    app = create_app(conf)
+    assert app.version == chanlun.__version__, (
+        f"FastAPI 自报 {app.version!r}，单一来源是 {chanlun.__version__!r}"
+    )
+
+
 def test_cli_version_flag(capsys):
     """`python -m chanlun --version` 不必先选子命令就能答出来。"""
     from chanlun.__main__ import main
