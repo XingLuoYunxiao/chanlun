@@ -80,7 +80,7 @@ ARCHITECTURE.md 的决策记录用 `D-xx` 编号，四段式：
 ```toml
 [project]
 name = "chanlun"
-version = "0.1.0"
+version = "0.2.0"
 ```
 
 其它地方一律**读取**，不许复制：
@@ -90,9 +90,16 @@ version = "0.1.0"
 - `src/chanlun/__init__.py` —— 再导出 `__version__` / `version_info`。
 - `python -m chanlun --version`
 - `GET /api/version`、`GET /api/health` 的 `version` 字段
+- `GET /openapi.json` 的 `info.version`（FastAPI 的 `version=` 参数）
+  —— 这一条**曾漏写**，结果 `web/app.py` 里硬编码的 `"0.1.0"` 一直没人管：
+  `pyproject.toml` 涨到 `0.2.0` 后，同一个进程自报了**两个版本号**。
 
 **禁止**在 `src/` 下出现 `__version__ = "..."` 这类硬编码。
-`tests/test_version.py::test_no_hardcoded_version_assignment_in_source` 会拦住它。
+`tests/test_version.py::test_no_hardcoded_version_assignment_in_source` 会拦住它；
+另外两条护栏覆盖上面漏写的那一条：
+`test_no_hardcoded_version_literal_in_source`（静态拦以数字开头的 `version=` 字面量）
+与 `test_web_app_declared_version_matches_single_source`（行为比对
+`app.version == chanlun.__version__`）。
 
 ### 什么时候涨哪一位
 
@@ -104,7 +111,7 @@ version = "0.1.0"
 
 ### 0.x 期的特别约定
 
-当前基线是 **`0.1.0`**，**继续留在 `0.x` 系列**（用户 2026-10-01 决定）。
+当前基线是 **`0.2.0`**，**继续留在 `0.x` 系列**（用户 2026-10-01 决定）。
 
 按 SemVer，`0.y.z` 是初期开发，任何东西都可能随时变，破坏性变更放在 `MINOR` 位。
 本项目的额外约定：
