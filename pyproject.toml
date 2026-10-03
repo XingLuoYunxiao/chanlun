@@ -16,7 +16,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+# `httpx2` 是 `starlette.testclient` 的运行时依赖（`tests/web/` 用它起 ASGI 客户端），
+# 但它**不在** starlette 的 install_requires 里：不装的话 `pytest` 连 `tests/web/`
+# 都收集不了 —— `RuntimeError: The starlette.testclient module requires the httpx2
+# package to be installed.`。starlette 1.7 的 `testclient.py` 优先 `import httpx2`，
+# 退回 `httpx` 会发 `StarletteDeprecationWarning`，所以这里声明前者。
+dev = ["pytest", "httpx2"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
