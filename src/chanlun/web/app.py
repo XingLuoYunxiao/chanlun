@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ..config import Config, load_config
 from ..data import store
+from ..version import __version__
 from . import api
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -53,7 +54,7 @@ def create_app(cfg: Config | None = None, port: int | None = None) -> FastAPI:
     conf = cfg or load_config()
     store.DATA_ROOT = Path(conf.data.root)
 
-    app = FastAPI(title="缠论看盘", version="0.1.0", docs_url="/api/docs", redoc_url=None)
+    app = FastAPI(title="缠论看盘", version=__version__, docs_url="/api/docs", redoc_url=None)
     app.state.cfg = conf
     app.state.port = int(port or conf.web.port)
     app.include_router(api.router)
