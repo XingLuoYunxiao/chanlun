@@ -12,11 +12,21 @@
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+# 不会产生盒子的标签：它们即使出现在 body 里也不占 grid 轨道。
+NO_BOX_TAGS = frozenset({"script", "style", "link", "template"})
+VOID_TAGS = frozenset(
+    {
+        "area", "base", "br", "col", "embed", "hr", "img", "input",
+        "link", "meta", "param", "source", "track", "wbr",
+    }
+)
 
 STATIC = Path(__file__).resolve().parents[2] / "src" / "chanlun" / "web" / "static"
 
@@ -257,6 +267,117 @@ def test_stamp_shows_the_name_next_to_the_code():
 
 
 # ---------------- 顶栏那一行必须恒定（Request B） ----------------
+def _css_rule(css: str, selector: str) -> str:
+    """抠出 `selector { ... }` 的声明体（只认后面直接跟 `{` 的那条规则）。"""
+    m = re.search(r"(?m)^" + re.escape(selector) + r"\s*\{([^}]*)\}", css)
+    assert m, f"styles.css 里找不到 {selector} 规则"
+    return m.group(1)
+
+
+def _grid_tracks(value: str) -> list[str]:
+    """把 `grid-template-rows` 切成轨道列表。
+
+    **不能直接 `split()`**：`minmax(360px, 1fr)` 里面有个空格，会被拆成两截。
+    按括号深度切词才对。
+    """
+    tracks, depth, cur = [], 0, ""
+    for ch in value:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if depth == 0 and ch.isspace():
+            if cur:
+                tracks.append(cur)
+                cur = ""
+        else:
+            cur += ch
+    if cur:
+        tracks.append(cur)
+    return tracks
+
+
+def _body_grid_items(html: str) -> int:
+    """数 body 的子元素里**会产生盒子**的那几个。
+
+    `<script>` / `<style>` 是 `display:none`，不占 grid 轨道 —— 顶栏那 4 个才是。
+    """
+    body = html[html.index("<body>") + len("<body>") : html.rindex("</body>")]
+    while "<!--" in body:  # 注释里的标签不算
+        i = body.index("<!--")
+        body = body[:i] + body[body.index("-->", i) + 3 :]
+    depth, count = 0, 0
+    for m in re.finditer(r"<(/?)([A-Za-z][-A-Za-z0-9]*)([^>]*?)(/?)>", body):
+        closing, tag, selfclose = m.group(1), m.group(2).lower(), m.group(4)
+        if closing:
+            depth -= 1
+            continue
+        if depth == 0 and tag not in NO_BOX_TAGS:
+            count += 1
+        if not selfclose and tag not in VOID_TAGS:
+            depth += 1
+    return count
+
+
+def test_body_grid_rows_cover_every_body_child():
+    """body 的行模板必须**一格一个子元素、且最后一格才是弹性行**。
+
+    2026-10-03 往 body 里插了 `#stamp-detail`，`grid-template-rows` 从
+    `auto auto minmax(360px, 1fr)` 改成了 `auto auto minmax(360px, 1fr) auto` ——
+    **轨道数正好也是 4，数目对得上**，但那条 `1fr` 落在了第 3 轨（**免责声明**）上，
+    工作区只拿到 `auto`。后果：免责声明撑满整屏剩余高度，`.work` 被挤进隐式行，
+    免责声明下面凭空多出 245px 空白。
+
+    ⇒ 只数轨道数**拦不住这个 bug**（旧值也是 4）。必须断言形状：
+    前 N-1 格都是 `auto`，**最后一格才是弹性行**（工作区吃掉剩余高度）。
+
+    这类错位不会让别的测试变红，也不会横向溢出
+    （`documentElement.scrollWidth` 仍等于视口宽），只能靠这条护栏拦。
+    """
+    body_rule = _css_rule(_css(), "body")
+    m = re.search(r"grid-template-rows\s*:\s*([^;]+);", body_rule)
+    assert m, f"body 没有 grid-template-rows：{body_rule!r}"
+    tracks = _grid_tracks(m.group(1))
+    kids = _body_grid_items(_html())
+    assert len(tracks) == kids, (
+        f"body 有 {kids} 个会产生盒子的子元素，但 grid-template-rows 有 "
+        f"{len(tracks)} 格（{tracks}）；插一个子元素就要同步加一格"
+    )
+    assert "1fr" in tracks[-1], (
+        f"最后一格（工作区）必须是弹性行，实际是 {tracks[-1]!r}：{tracks}；"
+        "弹性行落到别处就会让那个元素撑满整屏、工作区掉进隐式行，多出大片空白"
+    )
+    fixed = [t for t in tracks[:-1] if "1fr" in t]
+    assert not fixed, f"除工作区外还有弹性行 {fixed}：{tracks}"
+
+
+def test_topbar_controls_cannot_be_squeezed_into_vertical_text():
+    """顶栏里除 `.stamp` 外每一格都不许被压窄 —— 中文一压就**逐字竖排**。
+
+    实测（2026-10-03，1280px）：`.go` 没有 `flex:none` / `nowrap` 时被压到
+    **58.3 × 78px**，「看结构」三个字竖着排；`.brand` 被压到 65.8px 宽时
+    「缠论」上下叠。两者都是因为 `.query { flex: 1 }` 的 min-content 地板
+    把全部挤压力传给了它们。
+
+    修法是：挤压力只落在 `.stamp`（纯文本，自己折行是自然的），
+    `.stamp` 靠 `flex-basis` 决定何时整条掉到第二行（`.topbar` 全局 flex-wrap）。
+    """
+    css = _css()
+    for sel, decls in (
+        (".go", ("flex: none", "white-space: nowrap")),
+        (".brand", ("flex: none", "white-space: nowrap")),
+        (".field", ("flex: none",)),
+    ):
+        block = _css_rule(css, sel)
+        for decl in decls:
+            assert decl in block, f"{sel} 少了 `{decl}`，会被挤成竖排：{block!r}"
+    stamp = _css_rule(css, ".stamp")
+    assert "min-width: 380px" in stamp, (
+        f".stamp 没有 380px 的下限，会被压成一条细缝：{stamp!r}"
+    )
+    assert "flex-wrap: wrap" in _css_rule(css, ".topbar"), "顶栏不会换行"
+
+
 def test_topbar_stamp_is_pinned_to_two_short_lines():
     """切日/周/月、切严格/非严格时，顶栏那一行不许自适应变动。
 
