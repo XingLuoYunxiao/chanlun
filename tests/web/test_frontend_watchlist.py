@@ -54,6 +54,35 @@ def _guarded_block(body: str, header: str) -> str:
     return _fn_body(body[at:], header)
 
 
+def _call_args(js: str, name: str, must_contain: str | None = None) -> str:
+    """抠出 `name(...)` 的实参（跳过 `function name(...)` 定义处）。
+
+    同名函数常有多处调用（`setStamp` 就有「加载中…」「—」和主图注三处），
+    所以可以用 `must_contain` 指定实参里必须出现的标记来选中目标那一处。
+    """
+    start = 0
+    while True:
+        at = js.index(f"{name}(", start)
+        if js[:at].rstrip().endswith("function"):
+            start = at + 1
+            continue
+        i = js.index("(", at)
+        depth = 0
+        for j in range(i, len(js)):
+            if js[j] == "(":
+                depth += 1
+            elif js[j] == ")":
+                depth -= 1
+                if depth == 0:
+                    args = js[i + 1 : j]
+                    break
+        else:
+            raise AssertionError(f"调用没配平: {name}")
+        if must_contain is None or must_contain in args:
+            return args
+        start = at + 1
+
+
 # ---------------- 左侧常驻自选股栏 ----------------
 def test_watchlist_is_a_left_rail_before_the_chart():
     html = _html()
@@ -225,6 +254,29 @@ def test_stamp_shows_the_name_next_to_the_code():
     line = [l for l in js.splitlines() if "截至" in l and "body.code" in l]
     assert line, "找不到图注那一行"
     assert "body.name" in line[0], f"图注里没带名称：{line[0]!r}"
+
+
+# ---------------- 顶栏那一行必须恒定（Request B） ----------------
+def test_topbar_stamp_is_pinned_to_two_short_lines():
+    """切日/周/月、切严格/非严格时，顶栏那一行不许自适应变动。
+
+    顶栏是 flex 行：里面任何一个元素的**宽度或行数**一变，就会去挤 `.period`
+    按钮；按钮是 `flex: 0 1 auto`，被挤到内容宽度以下就折行，整行高度跟着跳
+    （实测 36px → 56px，顶栏 93px → 110px）。
+
+    所以判据是：**会变长、会时有时无的文案不许进顶栏**。
+    「全史」计数与口径说明必须写在顶栏之外的 `#stamp-detail` 里。
+    """
+    js, html = _js(), _html()
+    args = _call_args(js, "setStamp", must_contain="body.code")
+    assert "basisLine" not in args, f"口径说明又跑回顶栏了：{args!r}"
+    assert "全史" not in args, f"「全史」计数又跑回顶栏了：{args!r}"
+    # 源码里正好一个 `\n` 分隔 -> 恒定 2 行（多一行就多一次高度跳的机会）
+    assert args.count("\\n") == 1, f"顶栏图注不是恒定 2 行：{args!r}"
+    # 详情行必须在 topbar **之外**，否则它照样是那一行的一部分
+    assert 'id="stamp-detail"' in html, "index.html 里没有详情行"
+    assert html.index('id="stamp-detail"') > html.index("</header>"), "详情行还在顶栏里面"
+    assert "stamp-detail" in js, "app.js 没有往详情行写东西"
 
 
 # ---------------- 趋势口径标注（决策 #2） ----------------
