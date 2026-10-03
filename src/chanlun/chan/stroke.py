@@ -65,6 +65,14 @@ def build_strokes(
         a, b = seq[i], seq[i + 1]
         direction = 1 if a.kind is FractalKind.BOTTOM else -1
         is_last = i + 1 == len(seq) - 1
+        # 锁定分型 = 下一笔的终点分型 `seq[i + 2]`。它「走出来」的时刻是它的
+        # **可知时刻**（右侧合并K线走完），不是它的极值 bar 时刻。取后者会
+        # 早 1~9 根 bar —— 实测 494 笔里 0 笔能在那个时刻复现自己的锁定分型。
+        # 手工构造的分型没有可知时刻，退回事件时刻（合成数据的既有行为）。
+        confirmed_at: str | None = None
+        if not is_last:
+            locking = seq[i + 2]
+            confirmed_at = locking.confirmed_at or locking.ts
         strokes.append(
             Stroke(
                 idx=i,
@@ -76,7 +84,7 @@ def build_strokes(
                 src_start=a.src_idx,
                 src_end=b.src_idx,
                 status=Status.TENTATIVE if is_last else Status.CONFIRMED,
-                confirmed_at=(None if is_last else seq[i + 2].ts),
+                confirmed_at=confirmed_at,
             )
         )
     return strokes
