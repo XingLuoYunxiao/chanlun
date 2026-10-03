@@ -49,11 +49,17 @@ class Fractal:
 
     kind: FractalKind
     midx: int         # 分型中间合并K线的 idx
-    ts: str           # 极值所在原始 bar 的时间
+    ts: str           # 极值所在原始 bar 的时间（**事件时刻**）
     high: float       # 中间合并K线的高
     low: float        # 中间合并K线的低
     price: float      # 顶=high, 底=low
     src_idx: int      # 极值所在原始 bar 索引
+    # **可知时刻**：第 62 课要求右侧那根合并K线走出来，分型才成立，所以这里
+    # 记 `merged[midx + 1].ts`（右侧合并K线的完成时间）。它**不是** `ts` ——
+    # `ts` 是极值 bar 的事件时刻，系统性早 1~9 根 bar（实测 0/494 笔能在
+    # `ts` 处复现自己的锁定分型，见 D-36）。手工构造的分型没有合并K线序列
+    # 可依，留 None，由消费方显式退化处理，不在这里猜。
+    confirmed_at: str | None = None
 
 
 @dataclass(frozen=True)
