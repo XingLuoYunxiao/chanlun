@@ -1291,8 +1291,10 @@ JSONResponse(status_code=404, content={"detail": exc.detail,
 
 ### 4.2 前端（`web/static/`）
 
-单页 SPA：`index.html`（118 行）+ `app.js` + `styles.css`（约 620 行），
-ECharts 5.5.1 canvas 渲染。
+单页 SPA：`index.html` + `app.js` + `styles.css`，ECharts 5.5.1 canvas 渲染。
+（**故意不写行数**：这里曾写「`index.html`（118 行）……`styles.css`（约 620 行）」，
+到 2026-10-03 实际已是 122 / 649 行 —— 和 `app.js` 的行数引用一样，
+把会漂的数字抄进另一份文件就是会腐烂，见 `optimizer/tools/check_doc_line_refs.py`。）
 
 **DOM 骨架**：查询表单 → 周期按钮（日/周/月/30/5）→ 图层书脊
 （笔/线段/中枢/买卖点/涨跌幅）→ 自选左栏 → 复权按钮 → 均线开关 → 图表 → 提示 → 台账。
@@ -1303,13 +1305,29 @@ ECharts 5.5.1 canvas 渲染。
   （`syncable: false`），给一个必然 400 的按钮比不给更糟 ——
   用户点了、等了、被拒，才知道这条路是死的（`app.js:209-212`）。
 - **结构必须画在同一口径上**，否则"前复权的 K 线 + 不复权的笔"是两张图的叠加
-  （`app.js:1388-1389`）。
+  （`app.js:1410-1411`）。
 - **取数不等渲染**：`requestAnimationFrame` 在后台标签页会停摆，把它放在加载路径上
-  会导致页面永远停在"尚未加载"（`app.js:1453-1458`）。
+  会导致页面永远停在"尚未加载"（`app.js:1475-1480`）。
 - **首屏定位只做一次**：`?code=` 优先；否则打开在自选池第一只，且只做一次
   （`initialCodePinned`）。
 - 不复权帧在除权日有一根几十个点的缺口，拿它算涨跌幅会在自选栏里报出一根
-  根本不存在的跌停，而图上那根 K 线看起来是平的（`app.js:1044-1046`）。
+  根本不存在的跌停，而图上那根 K 线看起来是平的（`app.js:1066-1068`）。
+- **顶栏那一行恒定、详情行恒定两行**（2026-10-03）。日/周/月切换时 `.topbar` 的高度、
+  `.period` 的尺寸、`#stamp` 的行数**都不许变** —— 变一点下面整张图就跟着上下跳。
+  于是：
+  - `#stamp` 只放**恒定 2 行**的短信息（代码/名称/周期/截至 + 线段/中枢/买卖点计数）。
+  - 「全史」计数与口径说明走**顶栏之外**的 `#stamp-detail`（`index.html` 里紧随
+    `</header>`，全宽独立一行）。该行也恒定 2 行：**第一行** = 全史计数 + 周期来源，
+    **第二行** = 口径。周期来源（「周线由日线聚合」）必须并进第一行 ——
+    留在第二行会给口径加一个随周期长短不同的前缀，窄屏下折行数就不一样。
+  - `.periods` / `.period` 都是 `flex: none` + `white-space: nowrap`：宁可整条换行，
+    也不许压缩（压缩会把最后一个按钮裁掉，见 `styles.css` 的 `.periods { overflow: hidden }`）。
+  - ≤860px 时 `.topbar` 自己 `flex-wrap` 换行、`.stamp` 独占一行；**不动** 760px 断点的
+    `.work` / `.rail` 布局。
+  实测（`/tmp/probe12.mjs`，无头 Chrome 真机，禁缓存）：9 个宽度 1600→800 × 3 个周期 ×
+  2 个口径，`.period` 恒 `59.8×36`、`.periods` 恒 `298.6`、无裁切、无横向溢出，
+  顶栏高与详情行高在**每个宽度下三个周期完全相同**。回归护栏：
+  `tests/web/test_frontend_watchlist.py::test_topbar_stamp_is_pinned_to_two_short_lines`。
 
 **localStorage 键**：`chanlun.ma` / `chanlun.adjust` / `chanlun.watch-collapsed`。
 
