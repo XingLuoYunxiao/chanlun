@@ -26,6 +26,10 @@
 - **改了 `src/chanlun/**/*.py` 要重启看盘页**（`web/app.py` 用 `uvicorn.run(...)` 且没有 `--reload`）；只改 `web/static/` 下的文件刷新浏览器即可。
 - **UI 文案必须从真实浏览器 DOM dump 里读**，不许看截图。
 - **不要运行 `optimizer/tools/run_patch_tests.py` / `record_rounds.py`，不要起新一轮。**（AGENTS.md §5「优化器的状态」）
+- **前瞻收益测量必须以 `confirmed_at`（该结构被确认的日子）为基准，绝不能用 `ts`（背驰极值日）。** 实测两者滞后中位 **85** 个交易日、最大 **732**（Task 9 预检 修正 0）。键在 `ts` 上的收益是**前视**的，一律作废。任何引用都必须写明**入场方式**（确认日收盘 / 次日开盘）与**持有根数**。
+- **产数字的脚本必须先入库（`optimizer/tools/`）才能引用它的数字。** 反例：第一版盘整背驰探针的输出 `ratio_sweep_raw.csv` **没有留下生成脚本** ⇒ 不可复现 ⇒ 前视偏差躲过了好几轮评审。
+- **任何胜率数字必须标注「可实现」还是「上界」。** `confirmed_at` 本身仍**不是**可实现的：`state.py:136-142` 与 `backtest/strategy.py:109-112` 写明它是「结构自身的确认完成时刻」，**100% 早于「首次可见」**（`sh.600000` 121/121、`sh.601088` 158/158、`sz.000001` 146/146），而回测只在**首次可见**那根 bar 成交（D-34）。⇒ **58.3% 只能写成「上界」**；唯一可当作可实现值的胜率是回测出来的 **42.55%**。
+- **测试夹具 `tests/chan/fixtures/bars.parquet` 恒为 4 票面板**（`sh.600000` / `sh.601088` / `sz.300059` / `sz.300750`，各 1212 行）。**任何消费方必须先按 `code` 过滤**，否则会把四只票的 bar 混成一条序列（不报错，只是结果全错）。
 
 ### 对设计文档的一处实测更正（执行时以本节为准）
 
@@ -177,8 +181,11 @@ Run: `cd /Users/zzz/workspace/chanlun && head -40 optimizer/theory/L78-SEGMENT-S
 
 ## 被否决的替代方案
 
-- **只在中枢内比较（窄口径）**：实测 220 次机会 vs 全局口径 233 次，
-  差距很小；第 39 课的「同级别分解」并没有把比较限制在中枢内，故取全局口径，
+- **只在中枢内比较（窄口径）**：**旧探针口径**（面积收缩**且**要求创新极值，
+  `/tmp/exp/panzheng.py`）实测 220 次机会 vs 全局口径 233 次，差距很小；
+  ⚠️ 这两个数**不代表本实现的口径** —— 本实现的盘整背驰判据只有力度收缩，
+  实测约 5 次/只（59 只 317 次）。引用 220/233 **必须**带上「额外要求创新极值」这个限定。
+  第 39 课的「同级别分解」并没有把比较限制在中枢内，故取全局口径，
   另以 `Divergence.in_pivot` 属性记录第 049 课的区分：第 049 课原话
   「中枢震荡中出现的类似盘整背驰的走势段，与中枢完成的向上移动出现的背驰段是不同的」，
   禅师用的是「类似盘整背驰的走势段」—— 第三种措辞，与「背驰」「盘整背驰」都不同。
@@ -333,7 +340,8 @@ Run: `cd /Users/zzz/workspace/chanlun && head -40 optimizer/theory/L78-SEGMENT-S
 
 **被否决的替代方案**：① 并入 `b1`/`s1` —— 违反第 60 课原话；
 ② 只在中枢内比较 —— 第 39 课未把比较限制在中枢内，且实测差距很小
-（窄口径 220 次 vs 全局 233 次），故取全局口径，并以 `Divergence.in_pivot` 保留第 049 课的区分：
+（**旧探针口径**：面积收缩**且**要求创新极值；窄口径 220 次 vs 全局 233 次。
+⚠️ 本实现不含创新极值要求，实测约 5 次/只，引用 220/233 必须带此限定），故取全局口径，并以 `Divergence.in_pivot` 保留第 049 课的区分：
 第 049 课原话「中枢震荡中出现的类似盘整背驰的走势段，与中枢完成的向上移动出现的背驰段是不同的」
 —— 禅师用的是「类似盘整背驰的走势段」，第三种措辞，与「背驰」「盘整背驰」都不同。
 
@@ -1081,8 +1089,9 @@ print(f'{n_code} 只：趋势背驰 {n_t}，盘整背驰 {n_c}')
 " 2>&1 | grep -v '^normalize:'
 ```
 
-Expected: 盘整背驰数量显著多于趋势背驰（此前独立探针测得窄口径 220 / 全局 233 次机会，
-60 只上应落在几十到一两百的量级）。**若盘整背驰为 0，说明面积口径写错了，回 Step 3 检查 `hist_area` 的 `color` 参数。**
+Expected: 盘整背驰数量显著多于趋势背驰（旧探针口径 —— 面积收缩**且**要求创新极值 ——
+测得窄口径 220 / 全局 233 次机会；本实现只要求力度收缩，实测约 **5 次/只**，
+故 60 只上应落在**几百**的量级，而非几十）。**若盘整背驰为 0，说明面积口径写错了，回 Step 3 检查 `hist_area` 的 `color` 参数。**
 
 - [ ] **Step 6: 提交**
 
@@ -1929,128 +1938,34 @@ git commit -m "feat(web): 顶部口径切换按钮与背驰标注图层"
 
 - [ ] **Step 1: 写测量工具**
 
-Create `optimizer/tools/measure_loose_winrate.py`：
+**脚本已写好并在版本控制内**：`optimizer/tools/measure_loose_winrate.py`。
 
-```python
-"""口径胜率验收：严格 vs 非严格（全市场抽样）。
+> **★ 本节原先那份草稿是错的，已删除。** 实测跑等价性检查时抓到：
+> 草稿的 `_mem_read` 用**调用方传进来的 `code` 字符串**做缓存键，而
+> **`runner` 传给 `store.read` 的是裸代码**（`'601952'`），抽样器收集到的却是
+> **带市场前缀**的代码（`'sh.601952'`）⇒ 每次查不到 ⇒ 静默返回空 `DataFrame`
+> ⇒ **0 笔成交，且不报任何错**。若没做等价性检查，这会直接产出一份「胜率」垃圾。
+>
+> **修法**：缓存键改用 `store.path_for(code, period)`（与 `store.read` 的解析逻辑
+> 逐字一致，两种写法解析到同一个 `Path`），并且**查不到就大声报错**，绝不静默降级。
+> 另加两道守卫：项目根解析失败即退出（脚本放错目录时 `parents[2]` 会变成 `/`）、
+> 抽到 0 只票即退出。
+>
+> **等价性检查结果（`--n 3`，`loose`）**：真实 `store.read` 21 笔 / 10 回合，
+> 内存替身 21 笔 / 10 回合，**逐字段完全相同** ✅。
 
-**这不是优化器轮次**，是用户要求的可失败测量（AGENTS.md §5「证据质量规则」）。
-它不改主干、不提案、不写 journal。
+草稿的其余 5 处缺陷也一并修掉了：`--n` 默认 120 → **150**；`one()` 记墙钟时间；
+`--out` 有默认值；输出里声明票池来源（硬写的 `ROOT / "data"`，不是 `load_config()`）
+与 bar 数 min/median/max。
 
-复现：
-    cd /Users/zzz/workspace/chanlun
-    PYTHONPATH=src ../.venv-chanlun/bin/python optimizer/tools/measure_loose_winrate.py \
-        --n 120 --start 2018-01-01
+**已核实为正确、照用的部分**（控制者逐条核过）：`_mem_read` 与
+`data/store.py::read` 签名逐字相同；切片语义与 `types.py::truncate` 逐条对齐；
+`runner.py:51` 是 `from ..data import store`、在 `:127`/`:182`/`:217` 用
+`store.read(...)` ⇒ 替换模块属性即可生效；`run()` 的 `mode`/`initial_cash` 在 `*`
+**之前**；`metrics()` 是扁平 dict 且含 `per_signal_type`；`per_signal_type` 形状见
+`metrics.py::_group`；**`benchmark_code=None` 必须保留**（否则 runner 会去读基准票，
+而那张帧不在 `FRAMES` 里）。
 
-为什么要把行情预读进内存：`runner.run` 每根 bar 都 `store.read(code, period, end=ts)`
-（物理截断，见 D-34），N 只票 × M 根 bar 次 parquet 读取会把测量拖到不可接受。
-这里把每只票的整帧读一次，再替换 `store.read` 为内存切片 —— **切片语义与
-`store.read` 的 `start/end/limit` 必须一致**，否则测的不是同一个回测。
-"""
-
-from __future__ import annotations
-
-import argparse
-import json
-import random
-import sys
-from pathlib import Path
-
-import pandas as pd
-
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "src"))
-
-from chanlun.backtest import runner as runner_mod          # noqa: E402
-from chanlun.backtest.metrics import metrics               # noqa: E402
-from chanlun.backtest.runner import run                    # noqa: E402
-from chanlun.backtest.strategy import ChanSignalStrategy   # noqa: E402
-from chanlun.data import store                             # noqa: E402
-
-FRAMES: dict[tuple[str, str], pd.DataFrame] = {}
-
-
-def _mem_read(code, period, start=None, end=None, limit=None):
-    df = FRAMES.get((code, period))
-    if df is None:
-        return pd.DataFrame()
-    if start:
-        df = df[df["ts"] >= start]
-    if end:
-        df = df[df["ts"] <= end]
-    if limit:
-        df = df.tail(limit)
-    return df.reset_index(drop=True)
-
-
-def pick(n: int, min_bars: int, seed: int) -> list[str]:
-    store.DATA_ROOT = ROOT / "data"
-    codes: list[str] = []
-    for market in ("sh", "sz"):
-        codes += [f"{market}.{p.stem}" for p in sorted((store.DATA_ROOT / "day" / market).glob("*.parquet"))]
-    random.seed(seed)
-    random.shuffle(codes)
-    out: list[str] = []
-    for c in codes:
-        df = store.read(c, "day")
-        if len(df) < min_bars:
-            continue
-        FRAMES[(c, "day")] = df.reset_index(drop=True)
-        out.append(c)
-        if len(out) >= n:
-            break
-    return out
-
-
-def one(mode: str, codes: list[str], start: str | None) -> dict:
-    res = run(ChanSignalStrategy(), codes, start=start, period="day",
-              benchmark_code=None, mode=mode)
-    m = metrics(res)
-    return {
-        "mode": mode,
-        "trades": len(res.trades),
-        "round_trips": len(res.round_trips),
-        "win_rate": m.get("win_rate"),
-        "payoff_ratio": m.get("payoff_ratio"),
-        "expectancy_pct": m.get("expectancy_pct"),
-        "per_signal_type": m.get("per_signal_type"),
-        "notes": list(res.notes),
-    }
-
-
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--n", type=int, default=120, help="抽样标的数（验收要求 >=100）")
-    ap.add_argument("--start", default="2018-01-01")
-    ap.add_argument("--min-bars", type=int, default=250)
-    ap.add_argument("--seed", type=int, default=7)
-    ap.add_argument("--out", default="")
-    args = ap.parse_args()
-
-    codes = pick(args.n, args.min_bars, args.seed)
-    print(f"抽样 {len(codes)} 只（>=250 根日线，seed={args.seed}，start={args.start}）")
-    store.read = _mem_read
-    runner_mod.store.read = _mem_read
-
-    rows = [one(m, codes, args.start) for m in ("strict", "loose")]
-    print(f"{'口径':<8}{'成交':>7}{'回合':>7}{'胜率':>9}{'盈亏比':>9}{'期望%':>9}")
-    for r in rows:
-        wr = "—" if r["win_rate"] is None else f"{r['win_rate']:.1%}"
-        print(f"{r['mode']:<8}{r['trades']:>7}{r['round_trips']:>7}{wr:>9}"
-              f"{(r['payoff_ratio'] or 0):>9.2f}{(r['expectancy_pct'] or 0):>9.2f}")
-    for r in rows:
-        print(f"\n[{r['mode']}] 分类：{json.dumps(r['per_signal_type'], ensure_ascii=False)}")
-
-    if args.out:
-        Path(args.out).write_text(json.dumps(rows, ensure_ascii=False, indent=2),
-                                  encoding="utf-8")
-        print(f"\n已写入 {args.out}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-```
 
 > **先验证内存切片与真实 `store.read` 等价**（否则整个测量无效）：
 > `runner.run` 在 `--n 3` 下，替换前后 `trades`/`round_trips` 必须完全相同。
@@ -2069,11 +1984,25 @@ Expected: 两种口径都有成交。**若 `loose` 的成交数不大于 `strict
 
 ```bash
 cd /Users/zzz/workspace/chanlun && PYTHONPATH=src ../.venv-chanlun/bin/python \
-  optimizer/tools/measure_loose_winrate.py --n 120 \
+  optimizer/tools/measure_loose_winrate.py --n 150 \
   --out /tmp/winrate.json 2>&1 | grep -v '^normalize:' | tee /tmp/winrate.log
 ```
 
-Expected: **回合数 ≥ 100**（否则样本不足以谈胜率）。
+**★ 用 150 只，不是 120**，且**不要再往上加**。两条实测约束：
+
+1. **`strict` 到不了 100 回合**：100 只票实测 `strict` 只有 **5 个回合**
+   （`loose` 47 个）。设计时写的「回合数 ≥ 100」**是错的** —— 它把两个口径混在一起谈了。
+   `strict` 的回合数只能作**方向性参考**，样本量由 `loose` 决定。
+2. **墙钟时间是硬约束**：`runner.run` 是 **O(bars²)**（`runner.py:204` 在
+   `for ts in all_ts` 里每根 bar 重读一次 `full()`，没有按票缓存快照）。
+   实测 100 只票 `strict` 1353 s + `loose` 1561 s ≈ **49 分钟**；
+   Task 6 加了 `divergence_fn` 后单票 13.6 s → 15.1 s（+11%）
+   ⇒ **150 只 ≈ 82 分钟**，200 只 ≈ 97 分钟。**不要为了「样本更大」把时间翻倍** ——
+   下一节会说明为什么加样本**改变不了结论**。
+
+Expected: 两种口径都有成交；`loose` 的成交/回合数**显著大于** `strict`
+（100 只票实测：成交 15 → 99，回合 5 → 47）。**若 `loose` 不大于 `strict`，
+先回去查 Task 5/6，不要往下跑。**
 
 - [ ] **Step 4: 写证据文档**
 
@@ -2082,17 +2011,77 @@ Create `docs/evidence/2026-10-02-strict-loose-winrate.md`，写清：
 - 复现命令（Step 3 的整行）；
 - 抽样规则（seed、min_bars、start、标的数）；
 - 严格 / 非严格的成交、回合、胜率、盈亏比、期望、分类明细；
-- **结论要如实**：
-  - 若非严格胜率落在 **70%~80%** ⇒ 达标；
-  - 若 **< 70%** ⇒ 在**已批准的判据集内**调参（只允许调 `THIRD_TOL` 与盘整背驰的力度阈值），**不得**新增无原文依据的判据，并如实记录仍未达标；
-  - 若 **> 80%** ⇒ 说明过滤过严、信号太少，同样要如实记录，并报告实际信号数是否仍满足用户「买卖点太少了」的诉求。
+- **★ 结论必须如实 —— 而且结论已经知道了。** 100 只票实测：
+  **`loose` 20 胜 / 27 负 / 47 回合 = 42.55%**，正态近似 95% CI
+  **`[28.4%, 56.7%]`** ⇒ **CI 上界 56.7% 仍低于 70%，差距 13.3pp**。
+  **样本量不是原因**：固定 `p0 = 0.4255`、`r = 47/100`、`k = round(n·p0)`、
+  `n = round(codes·r)` 推算，100/150/200/300/400 只票的 CI 上界依次是
+  56.7% / 54.5% / 52.6% / 50.7% / 49.6% —— **全部低于 70%**。
+  加样本只会**收紧** CI，**不可能**产出达标结论。
+- **★ 原因定位（必须写进证据文档）**：短板在**入场判据本身**，出场规则是次要因素。
+  - 按**确认日入场**、固定持有 60 根：中位 **+2.90%**、**58.3% 为正**
+    ⇒ 这是**入场判据优势的乐观上界**；
+  - 无条件（全部 bar）60 根：中位 −1.05%、47.3%；
+  - 同票随机日期 60 根：中位 +0.36%、50.3%；
+  - 回测实测：42.55%、平均持仓 200.85 根。
+  ⇒ 从 58.3% 到 42.55% 的 **15.8pp** 才是出场规则的账。
+  **⚠️ 58.3% 是上界，不是可实现值**：`state.py:136-142` 与
+  `strategy.py:109-112` 都写明 `confirmed_at` 是「结构自身的确认完成时刻」，
+  **100% 早于首次可见**（实测 `sh.600000` 121/121、`sh.601088` 158/158、
+  `sz.000001` 146/146）；回测只在**首次可见**那根 bar 成交（`runner.py` 的
+  `seen`/`primed` 差分，D-34）⇒ 真实入场价更高 ⇒ **真实优势低于 58.3%**。
+  **唯一可引用的可实现胜率数字是回测的 42.55%。**
+- **★ 三选一必须原样交回用户，不许替用户决定**：
+  - **(a) 接受现状** —— 这是一个**正期望**系统：期望 **+7.14%／回合**、
+    赔率 **1.94**、按平均亏损算期望 ≈ **+0.249**；只是胜率低、靠盈亏比赚钱。
+  - **(b) 改出场规则**（固定持有 / 移动止损 / 分批止盈）—— 能回收那 **15.8pp**，
+    **但到不了 70~80%**。
+  - **(c) 换/加更强的入场判据** —— **唯一**可能摸到 70~80% 的路，
+    但**属于新设计，超出本次「口径开关」的范围，需要用户另行授权**。
+- **★ Task 9 只测量、只报告**：**不得**改出场规则、**不得**改入场判据、
+  **不得**为了让数字好看而调参。测量与报告是本任务的全部。
+- **★ 必写一节「已作废的口径」**（不许省）：把 `ts` 口径下作废的数字列出来
+  （87.1% / +20.69%、+12.59% / 97.9%、+13.32pp、按月/按票去扎堆那几组、
+  22.0%），说明它们**全部**是把收益锚在 `Divergence.ts`（背驰极值日）上算的，
+  而那一天的收益在**当时根本不可能知道** —— `ts` → `confirmed_at` 的滞后
+  实测中位 **85** 个交易日、均值 125、p75 157、最长 **732**，滞后 >250 交易日的占 **10.1%**。
 - **样本量的局限必须写明**：单次抽样、单一区间、无交易成本之外的滑点假设。
+
+- **★ 四张对照表必须齐全**（缺一张就不算做完；**没有对照组的数字不许进文档**）：
+
+  | # | 对照组 | 口径 | 用途 |
+  |---|---|---|---|
+  | ① | 无条件（全部 bar） | 全样本 | 「随便哪天买」的基线 |
+  | ② | 同票随机日期（seed = `hash(code) & 0xFFFF`） | 全样本 | **最关键的对照** —— 排除了「这段时间整个市场在涨」 |
+  | ③ | 全部局部低点 | 全样本 | 选点质量参考 |
+  | ④ | 按 `confirmed_at` 收盘/次日开盘入场 | 全样本 | **主表** |
+
+  **③ 必须标注「带前视，仅作选点质量参考」**（局部低点的判定用到了未来的 K 线）。
+  实测 60 根：① 中位 −1.05% / 47.3%；② 中位 +0.36% / 50.3%；
+  ④ 中位 +2.90% / 58.3%。**超额（中位差）：④ 对 ① +3.95pp、④ 对 ② +2.54pp；
+  20 根时 ④ 对 ② 只有 +0.11pp ≈ 零。** 这两个超额才是入场判据的真实价值。
+
+- **★ 去扎堆稳健性必须在 `confirmed_at` 口径下重做**：旧的按月/按票/剔除最集中
+  两个月的数字**全部作废、禁止转抄**（它们锚在 `ts` 上）。重做时**要额外报「滞后」
+  这个新的扎堆维度**（`ts` → `confirmed_at` 的交易日差，中位 85 / p75 157）。
+
+- **★ 前瞻收益测量脚本必须先入库才能引用它的数字**：
+  把 `/tmp/exp/pb_confirm_entry.py` 移进 `optimizer/tools/`
+  （建议名 `measure_pb_confirm_entry.py`）并一起提交。
+  **理由是本项目真实踩过的坑**：作废的 `ratio_sweep_raw.csv`
+  全仓找不到生成脚本（`grep -ln "ratio_sweep_raw" /tmp/exp/*.py` 为空），
+  正因为不可复现，前视偏差才躲过了好几轮复查。
+
+- **★ 每个数字都要有一条可直接粘贴的复现命令**，命令里必须含
+  seed / 样本量 / 票池口径（`≥250 根日线`）/ 入场方式 / 持有根数。
+  **修正 0 那两张表（`ts` vs `confirmed_at` 的滞后分布、四列前后对照）也要有。**
 
 - [ ] **Step 5: 提交**
 
 ```bash
 cd /Users/zzz/workspace && git add \
   chanlun/optimizer/tools/measure_loose_winrate.py \
+  chanlun/optimizer/tools/measure_pb_confirm_entry.py \
   chanlun/docs/evidence/2026-10-02-strict-loose-winrate.md
 git commit -m "test(backtest): 口径胜率验收测量与证据"
 ```
