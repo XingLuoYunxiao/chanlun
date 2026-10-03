@@ -48,26 +48,46 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* 四行 = body 的**四个元素子元素**：顶栏 / 详情行 / 免责声明 / 工作区。
+   （两个 <script> 是 display:none，不占格。）
+
+   ★ **往 body 里加一个直接子元素，就必须同步加一格。** 少一格时，多出来的那个
+   元素会顶替 `.work` 拿到 `minmax(360px, 1fr)` 这一行，工作区被挤进隐式行 ——
+   页面上表现为免责声明下面凭空多出几百像素空白。2026-10-03 加 `#stamp-detail`
+   时真踩过：免责声明抢走 1fr 行，图区掉下去，中间一片大留白。
+   `tests/web/test_frontend_watchlist.py::test_body_grid_rows_cover_body_children`
+   盯着这个数。 */
 body {
   display: grid;
-  grid-template-rows: auto auto minmax(360px, 1fr) auto;
+  grid-template-rows: auto auto auto minmax(360px, 1fr);
   min-height: 100vh;
 }
 
 button, input { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--indigo); outline-offset: 2px; }
 
-/* ---------------- 顶栏 ---------------- */
+/* ---------------- 顶栏 ----------------
+   顶栏里除了 `.stamp`，**每一个都 `flex: none` + `nowrap`**。
+   它们都是内容定宽的东西（品牌名、两个输入框、周期条、按钮）—— 一旦允许收缩，
+   中文就会**逐字竖排**：实测 `.go`（「看结构」）被压到 58.3px 宽时高 78px，
+   「缠论」被压到 65.8px 宽时也竖起来。挤压力只能落在 `.stamp` 身上，
+   它是纯文本，在自己盒子里折行是自然的。
+
+   `.topbar` 全局 `flex-wrap`：一行塞不下时，`.stamp` 整条掉到第二行拿满宽，
+   而不是被压成一条细缝。什么时候掉由 `.stamp` 的 `flex-basis`（380px）决定，
+   不需要断点 —— 所以原先那个 `@media (max-width: 860px)` 补丁已删除。 */
 .topbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 28px;
+  row-gap: 10px;
   padding: 12px 20px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
 }
 
-.brand { display: flex; align-items: baseline; gap: 10px; }
+.brand { display: flex; align-items: baseline; gap: 10px; flex: none; white-space: nowrap; }
 .brand-main {
   font-size: 20px;
   font-weight: 600;
@@ -79,8 +99,8 @@ button, input { font: inherit; color: inherit; }
   letter-spacing: 0.3em;
 }
 
-.query { display: flex; align-items: flex-end; gap: 14px; flex: 1; }
-.field { display: flex; flex-direction: column; gap: 4px; }
+.query { display: flex; align-items: flex-end; gap: 14px; flex: 1 1 auto; }
+.field { display: flex; flex-direction: column; gap: 4px; flex: none; }
 .field-label {
   font-size: 10px;
   color: var(--mohui);
@@ -120,6 +140,8 @@ button, input { font: inherit; color: inherit; }
 .period:hover { color: var(--rice); }
 
 .go {
+  flex: none;
+  white-space: nowrap;
   padding: 8px 20px;
   background: var(--panel-2);
   border: 1px solid var(--indigo);
@@ -129,12 +151,14 @@ button, input { font: inherit; color: inherit; }
 }
 .go:hover { background: #232c37; }
 
-/* 顶栏这一格**不冻结**、而是让它在自己盒子里折行：冻结宽度会在窄窗口横向溢出
-   （实测 .stamp 固定 696.6px 时文档需 1430px > 1366px 视口）。
-   min-width:0 允许它缩到内容宽度以下，挤压力就落在它自己身上，不传回给按钮。 */
+/* 顶栏里**唯一允许收缩**的一格。它是纯文本，在自己盒子里折行是自然的；
+   `flex-basis` / `min-width` 都是 380px：这一行至少要有 380px 才值得跟
+   输入框挤在同一行，否则整条掉到第二行拿满宽（`.topbar` 的 flex-wrap 负责）。
+   380px 是实测值：再窄「线段 10 (确认 9 / 未确认 1) · 中枢 2 · 买卖点 7」
+   就会折成 3 行，顶栏跟着长高。 */
 .stamp {
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 1 1 380px;
+  min-width: 380px;
   font-family: var(--mono);
   font-size: 12px;
   color: var(--rice-dim);
@@ -637,18 +661,30 @@ button, input { font: inherit; color: inherit; }
   .watch-rail.is-collapsed .watch-head h2 { writing-mode: horizontal-tb; text-orientation: mixed; }
 }
 
-/* 顶栏最小需求 ≈ 40(padding) + 56(gap) + 158.9(brand) + 555(.query 的 min-content)
-   ≈ 810px，而既有断点在 760px —— 中间这段会横向溢出。860px 留出余量。
-   这一档**只动顶栏**，不碰 .work / .rail 的 760px 断点。 */
-@media (max-width: 860px) {
-  .topbar { flex-wrap: wrap; row-gap: 10px; }
-  .stamp { flex: 1 1 100%; width: 100%; text-align: left; }
+/* ★ 761–980px：把 `.stage` 从 46px 的书脊列里捞出来。
+   这一档 `.watch-rail` 抢了 `grid-column: 1 / -1`（整行），auto-placement 的游标
+   被推到下一行，`.stage` 就落进没人要的第一列 —— 实测 900px 时 `#chart` 只有
+   **46px 宽**，书脊右边 854px 全空（页面上表现为一大片黑）。这是既有 bug，
+   与顶栏改动无关（新旧 CSS 在该宽度下 `grid-template-columns` 字节一致）。
+   用 `order` 把 `.stage` 提到 `.watch-rail` 前面：auto-placement 走的是
+   order-modified 文档序 ⇒ 书脊 r1c1、图 r1c2、自选股 r2 整行、结构清单 r3。
+   `.ledger` 也必须给 order，否则它（默认 0）会排到 `.stage` 前面。
+   **不覆盖 ≤760px** —— 那一档只有一列，自带另一套排布。 */
+@media (max-width: 980px) and (min-width: 761px) {
+  .stage { order: 1; }
+  .watch-rail { order: 2; }
+  .ledger { order: 3; }
 }
+
+/* 原先这里有一个 `@media (max-width: 860px)` 补丁（把 .topbar 改成 flex-wrap、
+   .stamp 改成整行）。它已删除：`.topbar` 现在**全局** flex-wrap，`.stamp` 的
+   380px flex-basis 自己决定什么时候掉行，不再需要手算断点。
+   代价是 860px 附近顶栏会多一行的位置由内容宽度决定，而不是由一个魔数决定。 */
 
 @media (max-width: 760px) {
   .topbar { flex-wrap: wrap; gap: 14px; }
   .query { flex-wrap: wrap; }
-  .stamp { width: 100%; text-align: left; }
+  .stamp { text-align: left; }
   .work { grid-template-columns: 1fr; }
   .work.is-watch-collapsed { grid-template-columns: 1fr; }
   .rail { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
