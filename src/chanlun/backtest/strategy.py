@@ -9,19 +9,23 @@ runner 交给策略的 `snapshot` 已经过 `state.backtestable(..., as_of=bar.t
 触发判据：「本 bar 第一次可见」（D-34）
 --------------------------------------
 `Signal.confirmed_at` 是**结构自身的确认完成时刻**，不是「引擎第一次产出它的
-时刻」—— 实测 100% 早于首次可见（`sh.600000` 121/121、`sh.601088` 158/158、
-`sz.000001` 146/146），所以拿 `confirmed_at == bar.ts` 当「今日新可知」在结构上
-永不成立（回测恒 0 笔成交）。真正判断「今天刚知道」的只能是**观测过程**：
-`runner.py` 逐 bar 重算时跟踪已见信号键，只把**本 bar 第一次可见**的信号放进
+时刻」。D-36 之前 `confirmed_at` 系统性早于真实可知时刻，于是实测「100% 早于首次
+可见」（`sh.600000` 121/121、`sh.601088` 158/158、`sz.000001` 146/146）—— 那个
+「100%」是 D-36 缺陷的观测面，不是独立事实。D-36 修好后两者**会**重合（夹具
+`sz.300059` 上 221 个可见信号里已有 1 个 `confirmed_at` 恰等于当日 ts），所以
+「拿 `confirmed_at == bar.ts` 当今日新可知」在旧实现下恒 0 笔成交、在新实现下
+**能用但不稳**。真正判断「今天刚知道」的仍然只能是**观测过程**：`runner.py` 逐
+bar 重算时跟踪已见信号键，只把**本 bar 第一次可见**的信号放进
 `snapshot.signals`。于是策略既不漏新信号，也不会在回测起点把陈年历史信号一次性
 补仓（首根 bar 只登记、不交易），等价于收盘后看到信号、次日开盘下单。
 
 关于 `fractals`（重要）
 -----------------------
-`Fractal` 没有 `status`/`confirmed_at` 字段（引擎认为分型是纯几何量），
-所以 `backtestable()` 会把它们全部丢掉。按第 62 课，分型要等**右侧那根合并
-K 线走出来**才成立，因此这里用 `merged[midx + 1].ts` 作为分型的确认时间，
-由 `confirmed_fractals()` 提供。机械策略用它，缠论策略不用它。
+`Fractal` 没有 `status` 字段，所以 `backtestable()` 会把它们全部丢掉。
+按第 62 课，分型要等**右侧那根合并 K 线走出来**才成立；这个「可知时刻」自
+D-36 起由 `Fractal.confirmed_at` 承载（= `merged[midx + 1].ts`），
+`confirmed_fractals()` 直接读它，只在手工构造的分型上退回现算。
+机械策略用它，缠论策略不用它。
 """
 
 from __future__ import annotations
@@ -86,10 +90,13 @@ def confirmed_fractals(snapshot: Any, as_of: str) -> list[tuple[Any, str]]:
     by_idx = {m.idx: i for i, m in enumerate(merged)}
     out: list[tuple[Any, str]] = []
     for f in getattr(snapshot, "fractals", ()) or ():
-        i = by_idx.get(f.midx)
-        if i is None or i + 1 >= len(merged):
-            continue  # 右侧合并 K 线还没出现 → 分型未成立
-        confirm_ts = merged[i + 1].ts
+        confirm_ts = getattr(f, "confirmed_at", None)
+        if confirm_ts is None:
+            # 手工构造的分型没有可知时刻 → 现算；右侧合并 K 线没出现则未成立
+            i = by_idx.get(f.midx)
+            if i is None or i + 1 >= len(merged):
+                continue
+            confirm_ts = merged[i + 1].ts
         if confirm_ts <= as_of:
             out.append((f, confirm_ts))
     return out
