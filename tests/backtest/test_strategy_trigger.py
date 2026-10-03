@@ -1,4 +1,10 @@
-"""D-34 回归：回测触发判据必须是「首次可见」，不是「结构确认时刻」。"""
+"""D-34 回归：回测触发判据必须是「首次可见」，不是「结构确认时刻」。
+
+注意 D-36（`confirmed_at` 改取真实可知时刻）之后，本文件第一条测试的**理由**变了：
+旧实现下 `confirmed_at` 系统性早于首次可见，`confirmed_at == bar.ts` 在结构上
+永不成立；修掉 D-36 后两者会重合（本文件第 2 条测试给出实测）。触发判据仍然
+用「首次可见」，因为它来自观测过程，不依赖 `confirmed_at` 恰好精确。
+"""
 
 from __future__ import annotations
 
@@ -11,7 +17,8 @@ from chanlun.backtest.runner import run
 from chanlun.backtest.strategy import ChanSignalStrategy
 from chanlun.chan.engine import ChanEngine
 from chanlun.chan.signal import find_signals
-from chanlun.chan.state import backtestable
+from chanlun.chan.state import object_id
+from chanlun.chan.types import Status
 
 FIXTURE = Path(__file__).resolve().parents[1] / "chan" / "fixtures" / "bars.parquet"
 
@@ -42,21 +49,40 @@ def test_fresh_trigger_produces_trades(seed_store):
     )
 
 
-def test_confirmed_at_never_equals_bar_ts(seed_store):
-    """守住根因：confirmed_at 是结构自身的确认完成时刻，系统性早于首次可见。
+def test_confirmed_at_is_reproducible_at_its_own_timestamp(seed_store):
+    """D-36 回归：`confirmed_at` 必须是**结构自身的可知时刻**，不是极值 bar 时刻。
 
-    若本测试开始失败（hits > 0），说明 confirmed_at 的语义变了，
-    D-34 的论证需要重新做一遍，不能默默保留旧结论。
+    可失败判据：把 K 线截断到 `confirmed_at` 当天重算，该笔必须已经**存在且已确认**。
+    旧实现取锁定分型的极值 bar 时刻（系统性早 1~9 根 bar），在那个时刻重算时反向
+    的那一笔还没成形 —— 实测 494 笔里 **0 笔**能通过本判据（夹具上约一半）。
     """
     df = _fixture_bars()
-    total = hits = 0
-    for k in range(250, len(df) + 1, 5):
-        frame = df.iloc[:k]
-        ts = str(frame.iloc[-1]["ts"])
-        eng = ChanEngine(BARE, "day", signal_fn=find_signals, level="day")
-        for sig in backtestable(eng.full(frame).signals, ts):
-            total += 1
-            if sig.confirmed_at == ts:
-                hits += 1
-    assert total > 0, "夹具上没有可见信号，本测试没有在测量任何东西"
-    assert hits == 0, f"{hits}/{total} 个信号的 confirmed_at 等于当日 ts —— D-34 根因不再成立"
+    pos = {str(t): i for i, t in enumerate(df["ts"].tolist())}
+
+    eng = ChanEngine(BARE, "day", signal_fn=find_signals, level="day")
+    confirmed = [
+        s for s in eng.full(df).strokes
+        if s.status is Status.CONFIRMED and s.confirmed_at
+    ]
+    assert confirmed, "夹具上没有已确认的笔，本测试没有在测量任何东西"
+
+    seen: dict[str, set] = {}
+    ok = bad = 0
+    for st in confirmed:
+        key = st.confirmed_at
+        if key not in seen:
+            k = pos.get(key)
+            seen[key] = set() if k is None else {
+                object_id(s)
+                for s in ChanEngine(BARE, "day", signal_fn=find_signals,
+                                    level="day").full(df.iloc[: k + 1]).strokes
+                if s.status is Status.CONFIRMED
+            }
+        if object_id(st) in seen[key]:
+            ok += 1
+        else:
+            bad += 1
+    assert ok == len(confirmed), (
+        f"{bad}/{len(confirmed)} 笔在自己的 confirmed_at 当天还不存在 —— "
+        "confirmed_at 又退回成早于可知时刻的估计值了"
+    )
