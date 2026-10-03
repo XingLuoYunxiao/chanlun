@@ -1446,10 +1446,10 @@ M4 逐根前视），数字可从该命令复现。**本轮未修，故不得在
 
 ### 4.1 Web（`web/`）
 
-`web/app.py`（78 行）建 FastAPI 应用 + 端口占用检查；`create_app()` / `serve()`。
-`web/api.py`（约 913 行）承载全部路由。
+`web/app.py`（79 行）建 FastAPI 应用 + 端口占用检查；`create_app()` / `serve()`。
+`web/api.py`（987 行）承载全部路由。
 
-**11 条路由**：
+**13 条路由**：
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -1492,6 +1492,16 @@ JSONResponse(status_code=404, content={"detail": exc.detail,
 
 **决策**：
 - 端口固定 8888，被占用时启动失败并明确报错，不静默切换。
+- **OpenAPI 的 `info.version` 与 `/api/health`、`/api/version` 同源**：
+  `create_app()` 传的是 `src/chanlun/version.py` 导出的 `__version__`，不是字面量。
+  原先这里写死 `"0.1.0"`，`pyproject.toml` 涨到 `0.2.0` 之后没跟着动 ⇒
+  同一个进程里 `GET /openapi.json` 的 `info.version` 报 `0.1.0`、
+  `/api/health` 与 `/api/version` 报 `0.2.0`。**实测三个端点**：
+  修复前 `0.1.0 / 0.2.0 / 0.2.0`，修复后 `0.2.0 / 0.2.0 / 0.2.0`。
+  这一条曾**只登记不修**（`[0.2.0]` 已知空白第 7 条），因为 `web/app.py` 当时
+  不在任务白名单内；现已修，护栏见 `tests/test_version.py` 的两条新用例
+  （一条静态拦「以数字开头的 `version=` 字面量」，一条行为比对 `app.version`
+  与 `__version__`）。
 - `/api/watchlist` **不做改名/改代码**：代码是这只票的身份，改名只是显示；
   顺序是用户唯一的排序诉求，就只做顺序（`web/api.py:633-636`）。
 - 存在性判据用**落库周期**：周/月没有自己的 parquet，`store.exists(code, "week")`
