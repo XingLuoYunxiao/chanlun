@@ -478,12 +478,15 @@ def test_real_architecture_doc_is_green_and_enumerates_app_js(tool):
     assert code == 0, out
     assert "失败 0 条" in out
     assert "非 .py 引用（5 处 / 5 行）" in out
-    assert out.count("（1461 行）") == 5, out
+    assert out.count("（1483 行）") == 5, out
     # ★ 这里**故意不钉文档行号**（`L478` 之类）：文档一增删就漂，而这类
     #   「把行号抄进另一份文件」正是本任务要治的病。钉**被引用的 app.js 行区间**
     #   —— 它们才是这 5 条引用各自的身份证。
+    # 2026-10-03：顶栏布局稳定化改了 app.js（1461 → 1483，+22 行），后三处区间随之整体
+    #   下移 +9，这里和 ARCHITECTURE.md §4.2 同步更新（前三处在该插入点之前，未动）。
+    #   区间是按**内容**重锚的，不是拿 +9 硬加出来的。
     for ref in ("src/chanlun/web/static/app.js:54", "app.js:209-212",
-                "app.js:1388-1389", "app.js:1453-1458", "app.js:1044-1046"):
+                "app.js:1066-1068", "app.js:1410-1411", "app.js:1475-1480"):
         assert ref in out, ref
     # 枚举行必须带文档行号字段（只钉形状，不钉值）
     assert len(re.findall(r"^  L\d+: ", out, re.M)) >= 5, out
