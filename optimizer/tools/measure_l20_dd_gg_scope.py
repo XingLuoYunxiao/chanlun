@@ -19,12 +19,15 @@ GG/DD 会被撑到下一个中枢的门口，前后两个波动区间就几乎�
 
 - **A**：中枢组**全部**段（最老的主干口径）；
 - **B**：Zn（同向段），**含**离开段（2026-10-01 修 GG/DD 之后、修离开段之前的口径）；
-- **C**：Zn（同向段），**不含**离开段（**当前主干口径**，见 `pivot.py` 取舍 5）；
+- **C**：Zn（同向段），**不含**离开段（D-37 之前的主干口径，见 `pivot.py` 取舍 5）；
 - **D**：中枢组全部段，不含离开段；
-- **E**：先丢掉中枢组的最后一段（离开段），再取同向段。
+- **E**：先丢掉中枢组的最后一段（离开段），再取同向段；
+- **F**：**当前主干口径** —— 段数上限（`MAX_SEGMENTS`，第 33 课）掐停时组里
+  没有离开段（`group[-1]` 只是一段仍在枢内的延伸段），所以一段都不排除（= B）；
+  否则同 E。见 D-38。
 
-**T_trunk** 直接读主干 `Pivot.gg`/`Pivot.dd`，与 C 对照 —— 两者必须逐对相同，
-否则说明主干的中枢 GG/DD 和本脚本的 C 口径已经不是一回事（本脚本的结论就不能
+**T_trunk** 直接读主干 `Pivot.gg`/`Pivot.dd`，与 F 对照 —— 两者必须逐对相同，
+否则说明主干的中枢 GG/DD 和本脚本的 F 口径已经不是一回事（本脚本的结论就不能
 再拿来当主干的证据）。
 
 判据用 `find_pivots` 已经定下的段边界：`Pivot.start_idx..end_idx` 是中枢组，
@@ -55,7 +58,8 @@ from chanlun.optimizer.agent import AUDIT_CODES as CODES  # noqa: E402
 from chanlun.optimizer.agent import AUDIT_END as END  # noqa: E402
 from chanlun.optimizer.agent import AUDIT_START as START  # noqa: E402
 
-SCOPES = ("A_all", "B_zn_with_leave", "C_zn_no_leave", "D_all_no_leave", "E_zn_drop_lastseg")
+SCOPES = ("A_all", "B_zn_with_leave", "C_zn_no_leave", "D_all_no_leave", "E_zn_drop_lastseg",
+          "F_adopted")
 
 
 def _scope_group(segments, p, scope: str) -> list:
@@ -77,6 +81,12 @@ def _scope_group(segments, p, scope: str) -> list:
     if scope == "E_zn_drop_lastseg":
         # 先丢掉中枢组的最后一段（离开段），再取同向段。
         return [s for s in group[:-1] if s.direction == direction] or zn
+    if scope == "F_adopted":
+        # D-38 之后**主干真正的口径**：段数上限掐停时组里没有离开段（`group[-1]`
+        # 只是一段仍在枢内的延伸段），所以一段都不排除；否则同 E。
+        return _scope_group(
+            segments, p, "B_zn_with_leave" if p.capped else "E_zn_drop_lastseg"
+        )
     raise ValueError(scope)
 
 
@@ -104,6 +114,9 @@ def main() -> None:
     pivots_total = 0
     changed_vs_B = {s: 0 for s in SCOPES}
     trunk_vs_C = 0
+    trunk_vs_adopted = 0
+    pair_flip_C_vs_E = 0
+    pair_flip_E_vs_F = 0
     examples: list[str] = []
 
     for code in CODES:
@@ -123,6 +136,10 @@ def main() -> None:
         trunk_vs_C += sum(
             1 for i, p in enumerate(pivots) if (p.gg, p.dd) != ggdd["C_zn_no_leave"][i]
         )
+        trunk_vs_adopted += sum(
+            1 for i, p in enumerate(pivots)
+            if (p.gg, p.dd) != ggdd["F_adopted"][i]
+        )
 
         for k, (pa, pb) in enumerate(zip(pivots, pivots[1:])):
             pairs += 1
@@ -133,6 +150,14 @@ def main() -> None:
                 b_gg, b_dd = ggdd[s][k + 1]
                 tally[s][_theorem2(a_gg, a_dd, b_gg, b_dd)] += 1
             tally["T_trunk"][_theorem2(pa.gg, pa.dd, pb.gg, pb.dd)] += 1
+            if (_theorem2(*ggdd["C_zn_no_leave"][k], *ggdd["C_zn_no_leave"][k + 1])
+                    != _theorem2(*ggdd["E_zn_drop_lastseg"][k],
+                                 *ggdd["E_zn_drop_lastseg"][k + 1])):
+                pair_flip_C_vs_E += 1
+            if (_theorem2(*ggdd["E_zn_drop_lastseg"][k],
+                          *ggdd["E_zn_drop_lastseg"][k + 1])
+                    != _theorem2(*ggdd["F_adopted"][k], *ggdd["F_adopted"][k + 1])):
+                pair_flip_E_vs_F += 1
             if len(examples) < 6:
                 row = " | ".join(
                     f"{s[0]}=[{ggdd[s][k][1]:.2f},{ggdd[s][k][0]:.2f}]→"
@@ -156,7 +181,11 @@ def main() -> None:
             f"  {s:18s} 上涨 {t['up']:3d}  下跌 {t['down']:3d}  "
             f"高级别中枢 {t['levelup']:3d}  无关系 {t['none']:3d}{suffix}"
         )
-    print(f"-- 主干 Pivot.gg/dd 与 C 口径不同的中枢数: {trunk_vs_C}（必须是 0） --")
+    print(f"-- 主干 Pivot.gg/dd 与 F_adopted（D-38 采用口径）不同的中枢数: "
+          f"{trunk_vs_adopted}（必须是 0） --")
+    print(f"-- 主干 Pivot.gg/dd 与 C_zn_no_leave（D-37 之前的口径）不同的中枢数: {trunk_vs_C} --")
+    print(f"-- C→E 使定理二分类发生变化的相邻对数: {pair_flip_C_vs_E} --")
+    print(f"-- E→F（D-38）使定理二分类发生变化的相邻对数: {pair_flip_E_vs_F} --")
     print("-- 样例 --")
     for line in examples:
         print("  " + line)
@@ -168,6 +197,9 @@ def main() -> None:
             "tally": tally,
             "changed_vs_B": changed_vs_B,
             "trunk_vs_C": trunk_vs_C,
+            "trunk_vs_adopted": trunk_vs_adopted,
+            "pair_flip_C_vs_E": pair_flip_C_vs_E,
+            "pair_flip_E_vs_F": pair_flip_E_vs_F,
         },
         ensure_ascii=False,
     ))
