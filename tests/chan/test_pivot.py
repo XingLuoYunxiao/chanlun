@@ -10,10 +10,11 @@
 按中枢中的时间顺序，分别记为Zn等，而相应的高、低点分别记为gn、dn，定义四个
 指标,GG=max(gn),G=min(gn),D=max(dn),DD=min(dn)，n遍历中枢中所有Zn。」
 即 GG/DD **只遍历同向的 Z 走势段**，反向段（B 及延伸中的回抽段）的极值不计入；
-而组里**最后一个 Zn 是把价格带出中枢的离开段**，它不算「中枢中」的 Z 走势段，
-也不计入 GG/DD。这条不是细节：算进离开段时 `[DD, GG]` 会被撑到下一个中枢门口，
-第 20 课中心定理二里的「趋势」就永远判不出来（实测 22 对全部落进「形成高级别的
-走势中枢」，上涨/下跌 0/0；去掉离开段后是 上涨 8 / 下跌 4 / 高级别中枢 10，
+而 `group[-1]`（本实现的「离开段」，见 `pivot.py:128-130`）不算「中枢中」的 Z
+走势段 —— 但**只有它本身是 Zn 时**才排除它，它是反向段时不得再砍 `Zn` 的末位
+（D-37）。这条不是细节：算进离开段时 `[DD, GG]` 会被撑到下一个中枢门口，
+第 20 课中心定理二里的「趋势」几乎判不出来（实测 28 对里 27 对落进「形成高级别的
+走势中枢」，上涨/下跌 1/0；去掉离开段后是 上涨 9 / 下跌 4 / 高级别中枢 15，
 见 `optimizer/tools/measure_l20_dd_gg_scope.py`）。
 
 关键取舍（都写成测试锁住）：
@@ -139,24 +140,73 @@ def test_zg_zd_are_fixed_by_the_first_three_segments():
 
 
 def test_gg_dd_cover_only_the_z_segments():
-    """GG/DD 只遍历 Z 走势段（同向段），且不含离开段；反向段的极值不进 [DD, GG]。
+    """GG/DD 只遍历 Z 走势段（同向段）；反向段的极值不进 [DD, GG]。
 
     本例中枢组 = 4 段：seg0 上 (10,25)、seg1 下 (12,20)、seg2 上 (13,30)、
-    seg3 下 (14,28)。Zn 只有 seg0/seg2；其中 seg2 是组里最后一个 Zn = 离开段
-    （它把价格带出 `[ZD, ZG]`），不算「中枢中」的 Z 走势段，所以只剩 seg0：
-    GG = 25、DD = 10。
+    seg3 下 (14,28)。Zn 只有 seg0/seg2。`group[-1]` 是 seg3 —— **反向段**，本来
+    就不在 Zn 里，所以不得再顺手砍掉 `Zn` 的末位（那会砍掉枢内的 seg2，见 D-37）。
+    故 GG = max(25, 30) = 30、DD = min(10, 13) = 10。
 
-    三个数各排除掉一类干扰，正好把口径钉死：
-    - GG = 25 而不是 30：排除**离开段** seg2 的 30；
-    - GG = 25 而不是 28：排除**反向段** seg3 的 28；
+    三个数各钉死一类干扰：
+    - GG = 30：枢内的 Zn seg2 必须计入（旧实现砍掉它，得 25）；
+    - GG = 30 而不是 28：排除**反向段** seg3 的 28；
     - DD = 10 而不是 12：排除**反向段** seg1 的低点。
-    [DD, GG] = [10, 25] 两侧都宽于 [ZD, ZG] = [13, 20]，所以 GG/DD 确实是另一套边界。
+    [DD, GG] = [10, 30] 两侧都宽于 [ZD, ZG] = [13, 20]，所以 GG/DD 确实是另一套边界。
     """
     segs = _zigzag([(10, 25), (12, 20), (13, 30), (14, 28), (0, 5)])
     p = find_pivots(segs, "day")[0]
     assert (p.zg, p.zd) == (20, 13)
-    assert p.gg == 25           # 不含离开段 seg2 的 30、反向段 seg3 的 28
+    assert p.end_idx == 3
+    assert p.gg == 30           # 枢内 Zn seg2 的 30 计入；反向段 seg3 的 28 不计
     assert p.dd == 10           # 不含反向段 seg1 的 12
+
+
+def test_leaving_z_segment_is_excluded_from_gg_dd():
+    """`group[-1]`（离开段）**是** Zn 时，它的极值才不进 GG/DD。
+
+    与上一条互为对照，把 D-37 的两半钉死：排除的依据是「它是 `group[-1]`」，
+    不是「它是最后一个同向段」。本例 `group[-1]` = seg2（上，离开段），故排除它。
+    """
+    segs = _zigzag([(10, 20), (12, 22), (11, 25), (0, 5)])
+    p = find_pivots(segs, "day")[0]
+    assert p.end_idx == 2
+    assert (p.zg, p.zd) == (20, 12)
+    assert p.gg == 20           # 离开段 seg2 的 25 不计
+    assert p.dd == 10
+
+
+def test_normally_closed_pivot_is_not_capped():
+    """被「整段不碰区间」的回试段封口时 `capped is False`（D-38）。"""
+    segs = _zigzag([(10, 20), (12, 22), (11, 18), (0, 5)])
+    p = find_pivots(segs, "day")[0]
+    assert p.capped is False
+    assert p.end_idx == 2
+
+
+def test_capped_pivot_does_not_exclude_its_last_segment():
+    """段数上限掐停时组里**没有**离开段，所以一段都不排除（D-38）。
+
+    这条用例故意构造**方向不交替**的合法输入（同向段相邻），好让 D-38 的分支
+    真的被走到。原因：`find_pivots` 只把「相邻确认段方向交替」写在注释里
+    （`pivot.py` 里 `direction = trio[0].direction` 那一段），没有任何校验器
+    强制它；而在交替输入下组长恒为 8（偶数）⇒ `group[-1]` 恒为反向段 ⇒ 该分支
+    与旧口径**可证等价**（实测 24 只票 52 个确认中枢里 E 与 F 的数值差异是 0）。
+    不构造反例就分不清「分支没生效」和「分支写错了」。
+
+    本例 9 段：seg0..seg2 成枢（[ZD,ZG]=[12,18]），seg3..seg7 全部同向且仍在
+    区间内，延伸被 `MAX_SEGMENTS` 掐停；seg7 的 25 是组内最高的 Zn 极值。
+    """
+    segs = [_seg(0, 10, 20, 1), _seg(1, 12, 22, -1), _seg(2, 11, 18, 1)]
+    segs += [_seg(i, 13, 19, 1) for i in range(3, 7)]
+    segs.append(_seg(7, 13, 25, 1))     # 组内最高的同向段极值
+    segs.append(_seg(8, 13, 19, -1))    # 仍在枢内 ⇒ cap 才是真正掐停的那一个
+    p = find_pivots(segs, "day")[0]
+    assert (p.zg, p.zd) == (18, 12)
+    assert p.capped is True
+    assert p.segment_count == MAX_SEGMENTS
+    assert p.end_idx == 7
+    assert p.gg == 25           # seg7 是 Zn 且不是离开段 ⇒ 计入
+    assert p.dd == 10
 
 
 def test_pivot_timestamps_span_first_start_to_last_end():
