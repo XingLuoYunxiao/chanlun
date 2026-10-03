@@ -56,21 +56,50 @@
   图注里「全史」计数与口径说明的长短随周期变，顶栏高度跟着变，下面图表就上下跳。
   - **改法**：顶栏只留恒定 2 行短信息；「全史」计数 + 周期来源走顶栏之外新增的
     `#stamp-detail`（`src/chanlun/web/static/index.html:42`）**第一行**，口径说明走第二行。
-    `.periods` / `.period` 改 `flex: none` + `white-space: nowrap`（宁可整条换行，
-    也不许被压缩 —— 压缩会把最后一个按钮裁掉）。新增 `@media (max-width: 860px)`
-    让顶栏自己在窄屏换行（**不触碰**既有 760px 断点的 `.work` / `.rail` 布局）。
-  - **文案一字未改**：字符与顺序都不变，只有换行位置移动（从 DOM dump 逐字比对）。
+  - **文案一字未改**：字符与顺序都不变，只有换行位置移动（从 DOM 对比逐字比对）。
   - **实测**（`docs/evidence/2026-10-03-topbar-layout-probe.mjs`，无头 Chrome 真机、**禁缓存**）：
     9 个视口宽 1600→800 × 3 个周期 × 2 个口径 = **54 行取样全部恒定** ——
     `.period` 恒 `59.8×36`、`.periods` 恒 `298.6`、无裁切、无横向溢出，
     顶栏高与详情行高在**每个宽度下三个周期完全相同**。
-  - 复测过程中查出并修掉**三个只有这一测量才能看见**的缺陷（详情行高 `42/42/36`
-    → `42/42/39` → 800px 严格 `42/59/59`，最终全恒定）。三轮根因与修法见设计文档 §5.2。
   - **这不是判据变更**：只动布局，线段/中枢/买卖点的判定与数量一律未变
     ⇒ 不涨 `MINOR`、不写 `D-xx`、不需要 `optimizer/theory/` 条目。
     设计文档：`docs/superpowers/specs/2026-10-03-topbar-stable-layout-design.md`。
   - 回归护栏：`tests/web/test_frontend_watchlist.py:260`
     `test_topbar_stamp_is_pinned_to_two_short_lines`。
+- **订正上一条的第一版改法：它确实「不跳」了，但很难看**（版本影响 `PATCH`）。
+  用户当场否掉：「这改成什么什么样子了？……那已经丑的不能再丑了，这大部分的这个留白，
+  还有上方这个看结构，这三个字竖着放那，你觉得合适吗？」
+  **上一版只用「高度恒定」与「无裁切」做验收，从没看过一张截图** —— 这正是漏掉它的原因
+  （见设计文档 §6.2 第二次订正）。补拍 1280px 截图后确认四个缺陷，**全部由上一版自己引入**：
+  1. **免责声明下面多出 245px 空白**：`body` 的
+     `grid-template-rows: auto auto minmax(360px, 1fr) auto` 是 4 轨，`body` 也正好
+     有 4 个会产生盒子的子元素（顶栏 / 详情行 / 免责声明 / 工作区）—— **数目对得上**，
+     但那条 `1fr` 落在**第 3 轨（免责声明）**上，工作区只拿到 `auto` 并被挤进隐式行。
+  2. **「看结构」竖着排**：`.go` 没有 `flex: none` / `nowrap`，被 `.query` 的
+     min-content 地板挤成 **58.3 × 78px**，三个字逐字竖排 —— 而且这在
+     **≥900px 的每个宽度都存在**，不只窄屏。
+  3. **「缠论」也竖着排**：`.brand` 同样没有 `flex: none`，≤1024px 时被压到 65.8px 宽。
+  4. **`.stamp` 被压成细缝**：挤压力沿 flex 链全部传到 `.brand` 与 `.stamp`
+     （`.stamp` → 129.3px 宽、99px 高）。
+  - **改法**：`body` 的行模板把弹性行挪到**最后一轨**
+    （`auto auto auto minmax(360px, 1fr)`）；顶栏里除 `.stamp` 外**每一格都
+    `flex: none` + `nowrap`**，挤压力只落在 `.stamp`（纯文本，自己折行是自然的）；
+    `.stamp` 用 `flex-basis: 380px` + `.topbar { flex-wrap: wrap }` 决定何时整条掉到
+    第二行。上一版那个 `@media (max-width: 860px)` 手算断点补丁**已删除**（不再需要魔数）。
+  - **复测**（同一探针，同一 54 行）：**仍全部恒定** —— `.period` 恒 `59.8×36`、
+    顶栏高在每个宽度下三个周期相同；顶栏高由 **103px 降到 77px**（≥1280px），
+    「看结构」由 `58.3×78` 回到 `90.7×38`，「缠论」恒 `158.9×28`。
+  - 新增两条护栏，**都用旧 CSS 反向验证过会红**：
+    `test_body_grid_rows_cover_every_body_child`（断言**最后一轨**才是弹性行 ——
+    只数轨道数拦不住这个 bug，旧值也是 4 轨）、
+    `test_topbar_controls_cannot_be_squeezed_into_vertical_text`。
+- **修掉 ≤980px 时 K 线图只有 46px 宽**（版本影响 `PATCH`；**既有 bug，与顶栏改动无关**）。
+  `.work` 在 ≤980px 变成 `46px minmax(0, 1fr)`，`.watch-rail` 抢了
+  `grid-column: 1 / -1`（整行），auto-placement 游标被推到下一行，`.stage` 就落进
+  没人要的 46px 书脊列 —— 实测 900px 时 `#chart` 只有 **46px 宽**，书脊右边 854px 全空。
+  用 `order` 把 `.stage` 提到 `.watch-rail` 之前（auto-placement 走 order-modified
+  文档序），限定 `761–980px`，**不碰 760px 那一档**。
+  修后 `#chart` 在 980/900/800/761px 分别为 **934/854/754/715px**，全宽度无横向溢出。
 
 ### 文档
 
