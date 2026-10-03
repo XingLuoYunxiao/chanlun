@@ -174,6 +174,42 @@
     互相印证：口径纠正只动 `GG/DD` 的取值，不动「谁是趋势」。
   - 教训按 AGENTS.md §4 第 1 条记：**判据变更必须跑全量**，
     「只跑自己改的那个文件就宣布完成」正是这条用例能漏掉的原因。
+- **`web/app.py` 的 OpenAPI `version` 不再硬编码，三个端点同源**（版本影响 `PATCH`）。
+  这是 `[0.2.0]`「已知空白」第 7 条登记的那件事，本轮修掉。
+  `create_app()` 原先写死 `version="0.1.0"`，`pyproject.toml` 涨到 `0.2.0` 时
+  它没跟着动 ⇒ **同一个进程自报两个版本号**。
+  - **实测三个端点**（`TestClient`，修复前 / 修复后）：
+    `GET /openapi.json` 的 `info.version` = `0.1.0` → **`0.2.0`**；
+    `/api/health` 与 `/api/version` 两处恒为 `0.2.0`（未变）。
+  - **改法**：`src/chanlun/web/app.py` 增加 `from ..version import __version__`，
+    `FastAPI(...)` 传 `version=__version__`。
+  - **护栏（两条，都做过红-绿验证）**：
+    `tests/test_version.py::test_no_hardcoded_version_literal_in_source`
+    （静态扫 `src/chanlun/**/*.py`，拦以数字开头的 `version=` 字面量）与
+    `test_web_app_declared_version_matches_single_source`
+    （行为比对 `app.version == chanlun.__version__`）。
+    把该处改回 `"0.1.0"` 实测 `2 failed, 8 passed`，报的正是这两条；恢复后 `10 passed`。
+  - **旧的硬编码护栏拦不住它**：`test_no_hardcoded_version_assignment_in_source`
+    只匹配 `__version__ = "..."` 这种**赋值**，匹配不到 `version=` 这种**关键字参数**
+    —— 这正是该缺陷能长期存在的原因。AGENTS.md §2 的「其它地方一律读取」清单里
+    也**漏写了 `/openapi.json` 的 `info.version`**，本轮一并补上。
+- **`scan_doc_line_refs.py` 的 §3.4 窗口不再写死，改为从标题现读**（版本影响 `PATCH`）。
+  这是 `[0.2.0]`「已知空白」第 6 条登记的那件事，本轮修掉。
+  - **该条当时的判断被实测推翻**。原文写「当前差 **170 行**」「该区间内**零条可校验
+    引用**，两边计数**逐项相同**」「**是容量问题不是正确性问题**」。实测：
+    写死窗口 `(377, 1007)` 得 `§3.4 引用行数 = 55`，现读窗口 `(377, 1373)` 得 **58**
+    —— **真的漏了 3 行引用**，而且漏掉的正是最要紧的三条：
+    `ARCHITECTURE.md` 的 `L1216`（D-36 `confirmed_at` 的生产链路）、
+    `L1218`（`scan/scanner.py`）、`L1260`（D-37 离开段口径）。
+    **漏掉的表现是「更绿」**，所以没有任何东西会报错。
+  - **改法**：`SEC34` 由 `find_section("3.4")` 现读标题行得出（与
+    `check_doc_line_refs.py` 的 `find_section()` 同一口径）；找不到标题**抛错**，
+    不静默退化成空区间 —— 空区间的输出同样是「全绿」。
+  - **护栏**：`tests/optimizer/test_section_range_agreement.py`（5 条）。
+    把 `SEC34` 改回 `(377, 1007)` 实测 3 条红，其中一条直接点名
+    `§3.4 里有 3 行引用落在扫描窗口 (377, 1007) 之外：[1216, 1218, 1260]`；
+    恢复后 `5 passed`。
+  - 顺带订正同文件 docstring 里另一处陈旧数字：`§3.4 引用行数 = 55` → **58**。
 
 ### 文档
 
