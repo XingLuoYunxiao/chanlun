@@ -100,8 +100,13 @@ button, input { font: inherit; color: inherit; }
 .field-narrow input { width: 78px; font-size: 13px; }
 .field input::placeholder { color: var(--mohui); }
 
-.periods { display: flex; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+/* 周期按钮条**不参与横向伸缩**：一被压缩，overflow:hidden 就会把最后一个按钮切边。
+   `.period` 再单独 flex:none + nowrap，否则按钮会缩到内容宽度以下并折成两行
+   （实测高 36px → 56px），整条顶栏跟着长高。挤压力交给 .stamp 在自己盒子里折行。 */
+.periods { display: flex; flex: none; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
 .period {
+  flex: none;
+  white-space: nowrap;
   padding: 8px 14px;
   background: var(--ink);
   border: 0;
@@ -124,13 +129,38 @@ button, input { font: inherit; color: inherit; }
 }
 .go:hover { background: #232c37; }
 
+/* 顶栏这一格**不冻结**、而是让它在自己盒子里折行：冻结宽度会在窄窗口横向溢出
+   （实测 .stamp 固定 696.6px 时文档需 1430px > 1366px 视口）。
+   min-width:0 允许它缩到内容宽度以下，挤压力就落在它自己身上，不传回给按钮。 */
 .stamp {
+  flex: 1 1 auto;
+  min-width: 0;
   font-family: var(--mono);
   font-size: 12px;
   color: var(--rice-dim);
   text-align: right;
   white-space: pre-line;
   font-variant-numeric: tabular-nums;
+}
+
+/* 顶栏正下方的全宽详情行：装「全史」计数与口径说明这类**会变长、会时有时无**的文案。
+   它必须留在顶栏之外 —— 放进顶栏就会改顶栏的高度，下面的图表跟着上下跳。
+   min-height 预留 2 行：月线没有「全史」那行时也不会比日/周线矮一截。 */
+.stamp-detail {
+  margin: 0;
+  padding: 0 20px 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--rice-dim);
+  white-space: pre-line;
+  font-variant-numeric: tabular-nums;
+  /* 行高必须**写死**，不能留给 `normal`：月线那格第一行是空的（没有「全史」），
+     而空行的行盒只按字体 strut 算，比含中文的行矮 3px —— 于是月线详情行比日/周
+     线矮 3px，下面图表照样跳。写死 17px 后每个行盒一样高，实测 9 个宽度 ×
+     3 个周期 × 2 个口径全部 42px（800px 窄屏 3 行时 59px）。
+     min-height 是 2 行的盒高（17×2 + 8 padding = 42，`* { box-sizing: border-box }`）。 */
+  line-height: 17px;
+  min-height: 42px;
 }
 
 /* ---------------- 免责声明 ---------------- */
@@ -605,6 +635,14 @@ button, input { font: inherit; color: inherit; }
     border-bottom: 1px solid var(--line-soft);
   }
   .watch-rail.is-collapsed .watch-head h2 { writing-mode: horizontal-tb; text-orientation: mixed; }
+}
+
+/* 顶栏最小需求 ≈ 40(padding) + 56(gap) + 158.9(brand) + 555(.query 的 min-content)
+   ≈ 810px，而既有断点在 760px —— 中间这段会横向溢出。860px 留出余量。
+   这一档**只动顶栏**，不碰 .work / .rail 的 760px 断点。 */
+@media (max-width: 860px) {
+  .topbar { flex-wrap: wrap; row-gap: 10px; }
+  .stamp { flex: 1 1 100%; width: 100%; text-align: left; }
 }
 
 @media (max-width: 760px) {
