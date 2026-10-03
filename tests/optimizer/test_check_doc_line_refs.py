@@ -478,24 +478,28 @@ def test_real_architecture_doc_is_green_and_enumerates_app_js(tool):
     assert code == 0, out
     assert "失败 0 条" in out
     assert "非 .py 引用（5 处 / 5 行）" in out
-    assert out.count("（1483 行）") == 5, out
+    assert out.count("（1487 行）") == 5, out
     # ★ 这里**故意不钉文档行号**（`L478` 之类）：文档一增删就漂，而这类
     #   「把行号抄进另一份文件」正是本任务要治的病。钉**被引用的 app.js 行区间**
     #   —— 它们才是这 5 条引用各自的身份证。
     # 2026-10-03：顶栏布局稳定化改了 app.js（1461 → 1483，+22 行），后三处区间随之整体
     #   下移 +9，这里和 ARCHITECTURE.md §4.2 同步更新（前三处在该插入点之前，未动）。
     #   区间是按**内容**重锚的，不是拿 +9 硬加出来的。
-    for ref in ("src/chanlun/web/static/app.js:54", "app.js:209-212",
-                "app.js:1066-1068", "app.js:1410-1411", "app.js:1475-1480"):
+    # 2026-10-03 同日第二改：D-37/D-38 之后图注「GG/DD 不含离开段」不再无条件成立，
+    #   `TREND_BASIS` 及其注释块改写，app.js 1483 → 1487（+4，插入点在第 46 行）。
+    #   5 处区间再次按**内容**逐条重锚（`grep -n` 定位原句，不是把 +4 加到旧号上）；
+    #   其中 `:1066-1068` 实测原就多含了一行（真身是 2 行注释），这次收成 `:1070-1071`。
+    for ref in ("src/chanlun/web/static/app.js:58", "app.js:213-216",
+                "app.js:1070-1071", "app.js:1414-1415", "app.js:1479-1484"):
         assert ref in out, ref
     # 枚举行必须带文档行号字段（只钉形状，不钉值）
     assert len(re.findall(r"^  L\d+: ", out, re.M)) >= 5, out
 
 
 def test_real_architecture_doc_reports_py_totals(tool):
-    """.py 桶总数：全文 182 处 / 173 行；§3.4 56 处 / 55 行（与探针逐项一致）。"""
+    """.py 桶总数：全文 186 处 / 176 行；§3.4 60 处 / 58 行（与探针逐项一致）。"""
     _, out = _run(tool, CHANLUN, CHANLUN / "ARCHITECTURE.md")
-    assert "引用总数（.py 桶）：全文 182 处 / 173 行；§3.4 56 处 / 55 行" in out
+    assert "引用总数（.py 桶）：全文 186 处 / 176 行；§3.4 60 处 / 58 行" in out
 
 
 def test_real_architecture_doc_discloses_unverifiable_lines(tool):
