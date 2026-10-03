@@ -78,6 +78,9 @@ def find_fractals(
                 low=b.low,
                 price=b.high if kind is FractalKind.TOP else b.low,
                 src_idx=src,
+                # 第 62 课：右侧那根合并K线（`merged[i + 1]`）走完，分型才成立。
+                # 循环范围是 `range(1, len(merged) - 1)`，故 `i + 1` 必定在界内。
+                confirmed_at=merged[i + 1].ts,
             )
         )
     return out
