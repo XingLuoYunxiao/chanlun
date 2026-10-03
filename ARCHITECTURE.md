@@ -1320,14 +1320,37 @@ JSONResponse(status_code=404, content={"detail": exc.detail,
     `</header>`，全宽独立一行）。该行也恒定 2 行：**第一行** = 全史计数 + 周期来源，
     **第二行** = 口径。周期来源（「周线由日线聚合」）必须并进第一行 ——
     留在第二行会给口径加一个随周期长短不同的前缀，窄屏下折行数就不一样。
-  - `.periods` / `.period` 都是 `flex: none` + `white-space: nowrap`：宁可整条换行，
-    也不许压缩（压缩会把最后一个按钮裁掉，见 `styles.css` 的 `.periods { overflow: hidden }`）。
-  - ≤860px 时 `.topbar` 自己 `flex-wrap` 换行、`.stamp` 独占一行；**不动** 760px 断点的
-    `.work` / `.rail` 布局。
-  实测（`/tmp/probe12.mjs`，无头 Chrome 真机，禁缓存）：9 个宽度 1600→800 × 3 个周期 ×
-  2 个口径，`.period` 恒 `59.8×36`、`.periods` 恒 `298.6`、无裁切、无横向溢出，
-  顶栏高与详情行高在**每个宽度下三个周期完全相同**。回归护栏：
-  `tests/web/test_frontend_watchlist.py::test_topbar_stamp_is_pinned_to_two_short_lines`。
+  - **顶栏里除 `.stamp` 外每一格都是 `flex: none` + `white-space: nowrap`**
+    （`.brand` / `.field` / `.periods` / `.period` / `.go`）：中文一旦被压窄就**逐字竖排**，
+    而不是缩排。实测（2026-10-03）`.go` 缺 `flex: none` 时被挤成 `58.3 × 78px`
+    （「看结构」竖着排），`.brand` 被挤到 65.8px 时「缠论」上下叠 —— 且这在
+    **≥900px 的每个宽度都存在**，不是窄屏专有。
+  - **挤压力只允许落在 `.stamp`**：它是纯文本，自己折行是自然的。`.stamp` 用
+    `flex: 1 1 380px; min-width: 380px`，380px 是实测阈值（低于它，
+    「线段 10 (确认 9 / 未确认 1) · 中枢 2 · 买卖点 7」会折成 3 行把顶栏撑高）；
+    `.topbar` **全局** `flex-wrap: wrap`，`.stamp` 自己决定何时整条掉到第二行。
+    ⇒ **不再需要手算断点**：早期那个 `@media (max-width: 860px)` 补丁已删除。
+  - **`body` 的行模板：弹性行必须是最后一轨**。`body` 是 grid，行数必须等于
+    **会产生盒子的子元素**个数（`<script>` 是 `display: none`，不占轨道），
+    且那条 `1fr` 只能落在工作区（`.work`）那一格。2026-10-03 往 `body` 插
+    `#stamp-detail` 时行模板写成了 `auto auto minmax(360px, 1fr) auto` ——
+    **轨道数正好也是 4，数目对得上**，但 `1fr` 落在第 3 轨（免责声明）上，
+    工作区只拿到 `auto` 并被挤进隐式行，免责声明下面凭空多出 245px 空白。
+    这类错位不会横向溢出（`documentElement.scrollWidth` 仍等于视口宽），
+    只能靠护栏拦。
+  - **≤980px 时 `.stage` 必须显式排在书脊右边那一列**：那一档 `.watch-rail` 抢了
+    `grid-column: 1 / -1`（整行），auto-placement 游标被推到下一行，`.stage` 会落进
+    46px 的书脊列 —— 实测 900px 时 `#chart` 只有 46px 宽、书脊右边 854px 全空。
+    修法是在 `@media (max-width: 980px) and (min-width: 761px)` 里用 `order`
+    把 `.stage` 提到 `.watch-rail` 之前（auto-placement 走 order-modified 文档序）。
+    **不碰** 760px 那一档（那里只有一列，自带另一套排布）。
+  - **不动** 760px 断点的 `.work` / `.rail` 布局。
+  实测（`docs/evidence/2026-10-03-topbar-layout-probe.mjs`，无头 Chrome 真机，禁缓存）：
+  9 个宽度 1600→800 × 3 个周期 × 2 个口径，`.period` 恒 `59.8×36`、`.periods` 恒 `298.6`、
+  无裁切、无横向溢出，顶栏高与详情行高在**每个宽度下三个周期完全相同**。
+  回归护栏：`tests/web/test_frontend_watchlist.py::test_topbar_stamp_is_pinned_to_two_short_lines`、
+  `::test_topbar_controls_cannot_be_squeezed_into_vertical_text`、
+  `::test_body_grid_rows_cover_every_body_child`。
 
 **localStorage 键**：`chanlun.ma` / `chanlun.adjust` / `chanlun.watch-collapsed`。
 
