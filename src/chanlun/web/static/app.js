@@ -229,36 +229,49 @@
     renderWatch(); // 高亮"图上是哪一只"：换票后自选栏要跟着动
     const c = body.counts;
     const t = body.counts_total;
-    // 结构是**全史**算出来的，窗口只决定画多少：两边数不一样时明说还有多少没画，
-    // 否则用户会把"窗口里 12 段"读成"这只票只有 12 段"。
-    const totals = t && (t.segments !== c.segments || t.pivots !== c.pivots || t.signals !== c.signals)
-      ? `\n全史 ${t.segments} 段 / ${t.pivots} 中枢 / ${t.signals} 买卖点（这里只画与窗口相交的部分）`
-      : "";
+    // 顶栏那一格必须**恒定 2 行**。顶栏是 flex 行，图注一变宽、一变行数就会去挤
+    // `.period` 按钮（按钮是 flex:0 1 auto，被挤到内容宽度以下就折行），整行高度
+    // 跟着跳 —— 实测按钮 36→56px、顶栏 93→110px。所以会变长、会时有时无的文案
+    // 一律不进顶栏，走下面的 setStampDetail。
     setStamp(
       `${body.code}${body.name ? " " + body.name : ""} · ${PERIOD_CN[body.period] || body.period} · 截至 ${body.as_of}\n` +
-      `线段 ${c.segments}（确认 ${c.confirmed_segments} / 未确认 ${c.tentative_segments}） · 中枢 ${c.pivots} · 买卖点 ${c.signals}` +
-      totals + "\n" + basisLine(body)
+      `线段 ${c.segments}（确认 ${c.confirmed_segments} / 未确认 ${c.tentative_segments}） · 中枢 ${c.pivots} · 买卖点 ${c.signals}`
     );
+    // 结构是**全史**算出来的，窗口只决定画多少：两边数不一样时明说还有多少没画，
+    // 否则用户会把"窗口里 12 段"读成"这只票只有 12 段"。
+    // 详情行**恒定两行**，且第二行在任何周期下都逐字相同：
+    //   第一行 = 全史计数（月线是聚合的、两边数相等，这一格为空）+ 周期来源
+    //   第二行 = 口径
+    // 周期来源必须并进**第一行**：留在第二行会给口径加一个随周期长短不同的前缀，
+    // 窄屏下折行数就不一样（实测 800px 严格模式：日线 2 行、周/月 3 行 ⇒ 图表跳 17px）。
+    // 第一行也不许空着不留位：日/周线有「全史」、月线没有，空串照样占一个行盒。
+    const totals = t && (t.segments !== c.segments || t.pivots !== c.pivots || t.signals !== c.signals)
+      ? `全史 ${t.segments} 段 / ${t.pivots} 中枢 / ${t.signals} 买卖点（这里只画与窗口相交的部分）`
+      : "";
+    const head = [totals, derivedNote(body)].filter(Boolean).join(" · ");
+    setStampDetail(head + "\n" + basisLine());
   }
 
-  // 图注最后一行：周期来源 + 趋势口径。周/月的最后一根**还没走完**时必须标出来 ——
+  // 周期来源：周/月的最后一根**还没走完**时必须标出来 ——
   // 一根还在变的周K 被当成定论去数中枢，是这套系统最容易骗到自己的地方。
-  function basisLine(body) {
-    const parts = [];
-    if (body.derived) {
-      parts.push(`${PERIOD_CN[body.period] || body.period}由${PERIOD_CN[body.base_period] || body.base_period}聚合`
-        + (body.partial === true ? "（最后一根未走完）" : ""));
-    }
-    // 口径不同，这最后一句必须不同：非严格模式下第一类**还会来自盘整背驰**，
-    // 照旧印「第一类买卖点取自趋势背驰」就是一句与图上结果相反的话 ——
-    // 正是 §5 第 5 条那一类事故（后端改了口径、图注还印着旧口径）。
-    // 严格模式必须**逐字**输出 TREND_BASIS：那句话在严格口径下是对的，不许改写它。
+  // 它并进详情行的**第一行**（和全史计数同一行），不进口径那一行 —— 理由见上面 render 里。
+  function derivedNote(body) {
+    if (!body.derived) return "";
+    return `${PERIOD_CN[body.period] || body.period}由${PERIOD_CN[body.base_period] || body.base_period}聚合`
+      + (body.partial === true ? "（最后一根未走完）" : "");
+  }
+
+  // 详情行第二行：**只有口径**，不带周期来源。这一行在任何周期下逐字相同
+  // ⇒ 折行数相同 ⇒ 详情行高度不随周期变，下方图表不跳。
+  // 口径不同，这一句必须不同：非严格模式下第一类**还会来自盘整背驰**，
+  // 照旧印「第一类买卖点取自趋势背驰」就是一句与图上结果相反的话 ——
+  // 正是 §5 第 5 条那一类事故（后端改了口径、图注还印着旧口径）。
+  // 严格模式必须**逐字**输出 TREND_BASIS：那句话在严格口径下是对的，不许改写它。
+  function basisLine() {
     if (state.mode === "loose") {
-      parts.push("非严格口径：第一类之外另收盘整背驰（第27课「类第一类」；第60课：盘整背驰无所谓第一类买点，只是类比），第二类不要求前置第一类，第三类回试容忍中枢高度 10%（工程口径，无原文依据）");
-    } else {
-      parts.push(TREND_BASIS);
+      return "非严格口径：第一类之外另收盘整背驰（第27课「类第一类」；第60课：盘整背驰无所谓第一类买点，只是类比），第二类不要求前置第一类，第三类回试容忍中枢高度 10%（工程口径，无原文依据）";
     }
-    return parts.join(" · ");
+    return TREND_BASIS;
   }
 
   // 工具条上的口径：按钮写"请求"的口径，实际生效口径不一致时用一句话说清原因。
@@ -511,7 +524,16 @@
     load(); // 数据到位了，图应该出来
   }
 
-  function setStamp(text) { $("#stamp").textContent = text; }
+  // 顶栏那格只放恒定 2 行的短信息。顺带清掉详情行：加载中/出错时若不清，
+  // 上一只票的「全史」与口径会留在下面，看起来像是这一只的。
+  function setStamp(text) {
+    $("#stamp").textContent = text;
+    $("#stamp-detail").textContent = "";
+  }
+
+  // 顶栏之外的详情行：全史计数 + 周期来源 + 口径说明。这些文案长短不一，
+  // 放在顶栏里会改顶栏高度（见 render 里的注释）。
+  function setStampDetail(text) { $("#stamp-detail").textContent = text; }
 
   // ------------------------------------------------------------------ 绘图
   // 重画时把当前缩放窗口带过去：开关均线、开关图层都只是重画，
