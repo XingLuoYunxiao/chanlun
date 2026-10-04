@@ -392,7 +392,9 @@ button, input { font: inherit; color: inherit; }
 .row:hover { background: var(--panel-2); }
 .row-idx { font-family: var(--mono); font-size: 11px; color: var(--mohui); }
 .row-main { min-width: 0; }
-.row-title { display: flex; align-items: baseline; gap: 6px; }
+/* `flex-wrap` 是为了「段数到顶」小标签（`.chip.capped`）不重演下面的溢出：
+   标题行放不下时换行，而不是把最后一个标签推到栏外。 */
+.row-title { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
 .row-title .dir { font-size: 12px; }
 .row-meta {
   margin-top: 2px;
@@ -403,6 +405,14 @@ button, input { font: inherit; color: inherit; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* ★ `display: block` 是必须的，不是排版偏好：
+     本元素是 `<span>`，行内盒子上 `overflow: hidden` 与 `text-overflow: ellipsis`
+     一律**不生效** —— 声明写了，等于没写。实测（2026-10-04，1600px 视口）
+     `sh.600519` / `sh.000001` / `sz.399006` 三只票的结构清单里
+     **每一个** `.row-meta` 都冲出右栏边界，最多 **560.8px**，
+     也就是说日期、笔数那半截是画在图表上、且被视口右边缘裁掉的，用户读不到。
+     块化之后省略号才真的出现。 */
+  display: block;
 }
 .dir-up { color: var(--cinnabar); }
 .dir-down { color: var(--bamboo); }
@@ -419,6 +429,10 @@ button, input { font: inherit; color: inherit; }
 .chip.on { color: var(--rice); border-color: var(--mohui); }
 .chip.tentative { color: var(--amber); border-color: #4a3c22; border-style: dashed; }
 .chip.confirmed { color: var(--indigo); border-color: #2c3a4a; }
+/* D-41：`capped` 中枢的点线小标签。点线边框与图上中枢区带的点线边框是同一件事
+   （`app.js` 里 `cap ? "dotted" : …`），所以这里也用 `dotted` ——
+   颜色不动，免得与 `tentative`（琥珀色虚线）或 `confirmed`（靛青实线）撞读。 */
+.chip.capped { color: var(--rice); border-style: dotted; }
 .conf-time { font-family: var(--mono); font-size: 10px; color: var(--mohui); }
 
 /* ---------------- 自选股左栏 ----------------
