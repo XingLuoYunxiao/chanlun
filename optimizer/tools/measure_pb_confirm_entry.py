@@ -31,7 +31,7 @@
 
 ## 复现
 
-    cd /Users/zzz/workspace/chanlun
+    cd <本项目根目录>
     PYTHONHASHSEED=0 PYTHONPATH=src ../.venv-chanlun/bin/python \
         optimizer/tools/measure_pb_confirm_entry.py --n 120 --seed 7 \
         --out /tmp/pb_confirm_entry.json 2>&1 | grep -v '^normalize:'
