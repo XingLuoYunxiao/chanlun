@@ -10,7 +10,7 @@
 **逐字段比较**。不一致就返回 1，先修 `_mem_read`，不要继续测量。
 
 复现：
-    cd /Users/zzz/workspace/chanlun
+    cd <本项目根目录>
     PYTHONPATH=src ../.venv-chanlun/bin/python \
         optimizer/tools/check_mem_read_equiv.py 2>&1 | grep -v '^normalize:'
 
