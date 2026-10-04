@@ -21,20 +21,33 @@
    的表达式不算符号名。符号的**定义行**（``def`` / ``class`` / 顶层 ``NAME =``）
    必须落在该文档行所引的**同一个文件**的行号范围并集内，否则记「符号漂移告警」。
 4. **桶的性质**：硬判据 = 文件找不到 / 范围越界 / **区间倒置**（起 > 止；
-   两端都可能落在文件范围内，只查上界看不见它）—— 硬判据**恒影响退出码**，
-   符号漂移告警只在 ``--strict-symbols`` 下影响退出码。其余都是**建议桶**：
+   两端都可能落在文件范围内，只查上界看不见它）/ **引用行内容指纹不符**
+   （见第 5 条）—— 硬判据**恒影响退出码**，符号漂移告警只在 ``--strict-symbols``
+   下影响退出码。其余都是**建议桶**：
    路径歧义、首末行空行、缺符号无法校验、覆盖度偏弱点、引用行无可校验符号。
    非 ``.py`` 引用**只枚举、不判硬绿**（符号名写在散文里，自动规则无从解析）。
+5. **引用行内容指纹（整文件行号平移检测）** —— 前四类判据**看不见整文件平移**：
+   在 ``segment.py`` 头部插入 15 行后，本工具输出逐字节不变、退出码仍是 0。
+   原因很直接：它们只问「行号在不在范围内」「符号定义行在不在范围内」，
+   整体平移后两个问题的答案都还是「在」。要让平移可见，必须记住**被引行当时
+   的内容**。口径：只覆盖 ``.py`` 桶里通过硬判据的那些引用；指纹 = 被引全部行
+   （含续段）逐行喂 sha256 取前 16 位；键 = ``文件名:范围文本#文档内出现序号``，
+   **键里不含文档行号** —— 否则在文档里插一段话就会让下面所有引用假失配。
+   基线文件 ``optimizer/tools/doc_refs_baseline.json`` **随仓库提交**；
+   改动任何被引代码行后必须重跑 ``--update-baseline``。
 
 用法::
 
     python optimizer/tools/check_doc_line_refs.py            # 汇总
     python optimizer/tools/check_doc_line_refs.py --verbose   # 每条引用明细
     python optimizer/tools/check_doc_line_refs.py --strict-symbols  # 漂移升级为失败
+    python optimizer/tools/check_doc_line_refs.py --update-baseline  # 改了被引代码后重记指纹
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import re
 import sys
 from dataclasses import dataclass, field
@@ -664,7 +677,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="ARCHITECTURE.md 行号引用校验器",
         epilog=(
-            "退出码归属：失败（文件找不到 / 行号越界 / 区间倒置）恒为 1；"
+            "退出码归属：失败（文件找不到 / 行号越界 / 区间倒置）与"
+            "引用行内容指纹不符恒为 1；"
             "符号漂移告警只在 --strict-symbols 下为 1。"
             "路径歧义、非仓库路径、首末行空行、缺符号无法校验（含 J2）、"
             "覆盖度偏弱点、引用行无可校验符号、非 .py 引用桶都只披露，不影响退出码。"
@@ -679,12 +693,164 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="把符号漂移告警升级为失败（只影响符号漂移这一桶；缺符号无法校验不在其内）",
     )
+    parser.add_argument(
+        "--baseline",
+        type=Path,
+        default=None,
+        help=f"引用行指纹基线（默认 <root>/{DEFAULT_BASELINE_REL}）",
+    )
+    parser.add_argument(
+        "--update-baseline",
+        action="store_true",
+        help="把当前引用行指纹写进基线文件（改了被引代码行后必须跑一次）",
+    )
+    parser.add_argument(
+        "--no-fingerprints",
+        action="store_true",
+        help="跳过引用行内容指纹校验（只跑原有四类判据）",
+    )
     args = parser.parse_args(argv)
 
     lines = _read_lines(args.doc)
     report = scan(args.doc, args.root, args.section)
     loose_zero = loose_no_symbol_at_2(report, lines)
-    return print_report(report, args.doc, args.root, args.verbose, args.strict_symbols, loose_zero)
+    code = print_report(report, args.doc, args.root, args.verbose, args.strict_symbols, loose_zero)
+
+    if args.no_fingerprints:
+        return code
+    baseline_path = args.baseline or default_baseline(args.root)
+    current, index = collect_fingerprints(report, args.root)
+    if args.update_baseline:
+        save_baseline(baseline_path, current)
+        print()
+        print(
+            f"=== 引用行内容指纹基线已写入 {_rel(baseline_path, args.root)}"
+            f"（{len(current)} 条）==="
+        )
+        return code
+    return code | fingerprint_section(
+        load_baseline(baseline_path), current, index, baseline_path, args.root
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 引用行内容指纹：整文件行号平移检测
+# --------------------------------------------------------------------------- #
+# 为什么需要它：本文件原有的四类判据（文件存在 / 不越界 / 区间不倒置 / 符号漂移）
+# **看不见整文件行号平移**。实测（2026-10-04）：在 `src/chanlun/chan/segment.py`
+# 头部插入 15 行，本工具输出**逐字节不变**、退出码仍是 0。原因是它们只问
+# 「行号在不在范围内」「符号的定义行在不在范围内」—— 整体平移后这两个问题
+# 的答案都还是「在」。要让平移可见，必须记住**被引行当时的内容**。
+#
+# 口径（钉死，改口径等于换尺子，历史数字全部作废）：
+#   * 覆盖面：只收 `.py` 桶里 `status == "ok"` 且通过硬判据的引用（与 `passed` 同批）。
+#   * 指纹 = 被引**全部行**（各 range 按顺序，含续段）逐行 UTF-8 + "\n" 喂 sha256，
+#     取前 16 位十六进制。行内容**不做任何规范化** —— 缩进变化也是变化。
+#   * 键 = `<文档里写的文件名>:<ranges_text>#<该键在文档里出现的序号>`。
+#     **键里不含文档行号**：在文档里插一段话会让下面所有引用的文档行号变化，
+#     但被引代码行没变 —— 那种情况必须是绿，否则每次改文档都假警报。
+#   * 「指纹不符」是**硬判据**（影响退出码）。「未入基线」「基线残留」只披露：
+#     前者是新增引用、后者是引用被删或范围被改，都不是「行号指到了别的内容上」。
+FINGERPRINT_BASELINE_VERSION = 1
+DEFAULT_BASELINE_REL = "optimizer/tools/doc_refs_baseline.json"
+
+
+def _fingerprint(cited: tuple[str, ...]) -> str:
+    h = hashlib.sha256()
+    for line in cited:
+        h.update(line.encode("utf-8"))
+        h.update(b"\n")
+    return h.hexdigest()[:16]
+
+
+def cited_lines(ref: Ref, res: Resolved) -> tuple[str, ...]:
+    """被引全部行的内容（含续段，按 range 顺序）。越界行取空串兜底。"""
+    out: list[str] = []
+    for s, e in ref.ranges:
+        for n in range(s, e + 1):
+            out.append(res.lines[n - 1] if 1 <= n <= res.total_lines else "")
+    return tuple(out)
+
+
+def collect_fingerprints(
+    report: Report, root: Path
+) -> tuple[dict[str, str], dict[str, tuple[int, Ref]]]:
+    """返回 (键 → 指纹, 键 → (文档行号, 引用))。遍历顺序 = 文档顺序，故序号稳定。"""
+    refs: dict[str, str] = {}
+    index: dict[str, tuple[int, Ref]] = {}
+    seen: dict[tuple[str, str], int] = {}
+    for ref in report.py_refs():
+        res = report.results[(ref.doc_line, ref.span[0])]
+        if res.status != "ok" or failure_kind(ref, res) != "ok":
+            continue
+        pair = (ref.filename, ref.ranges_text())
+        occ = seen.get(pair, 0)
+        seen[pair] = occ + 1
+        key = f"{pair[0]}:{pair[1]}#{occ}"
+        refs[key] = _fingerprint(cited_lines(ref, res))
+        index[key] = (ref.doc_line, ref)
+    return refs, index
+
+
+def default_baseline(root: Path) -> Path:
+    return root / DEFAULT_BASELINE_REL
+
+
+def load_baseline(path: Path) -> dict[str, str] | None:
+    """读基线；不存在 / 坏 JSON / 版本不符都返回 None（调用方按「没在跑」披露）。"""
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict) or data.get("version") != FINGERPRINT_BASELINE_VERSION:
+        return None
+    refs = data.get("refs")
+    if not isinstance(refs, dict):
+        return None
+    return {str(k): str(v) for k, v in refs.items()}
+
+
+def save_baseline(path: Path, refs: dict[str, str]) -> None:
+    """写基线。键排序 + 固定缩进 ⇒ 同一份代码重跑得到逐字节相同的文件。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = {"version": FINGERPRINT_BASELINE_VERSION, "refs": dict(sorted(refs.items()))}
+    path.write_text(json.dumps(body, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def fingerprint_section(
+    baseline: dict[str, str] | None,
+    current: dict[str, str],
+    index: dict[str, tuple[int, Ref]],
+    baseline_path: Path,
+    root: Path,
+) -> int:
+    """打印指纹小节并返回本桶的退出码增量（不符 ⇒ 1，其余 ⇒ 0）。"""
+    where = _rel(baseline_path, root)
+    print()
+    print("=== 引用行内容指纹（整文件行号平移检测）===")
+    if baseline is None:
+        print(f"  基线不存在或不可读：{where}")
+        print("  **这一桶没有在跑** —— 跑 --update-baseline 生成并提交它，否则整文件行号平移仍不可见。")
+        return 0
+    changed = sorted(k for k in set(baseline) & set(current) if baseline[k] != current[k])
+    added = sorted(set(current) - set(baseline))
+    gone = sorted(set(baseline) - set(current))
+    print(f"  基线 {where}（version {FINGERPRINT_BASELINE_VERSION}，{len(baseline)} 条）；本次 {len(current)} 条")
+    print(f"  不符 {len(changed)} 条 / 未入基线 {len(added)} 条 / 基线残留 {len(gone)} 条")
+    for key in changed:
+        doc_line, _ref = index.get(key, (0, None))
+        print(
+            f"    L{doc_line} {key} 期望 {baseline[key]} 实际 {current[key]}"
+            f"（被引行内容已不是基线记的那几行 ⇒ 行号漂了，或代码被改过）"
+        )
+    for key in added:
+        doc_line, _ref = index.get(key, (0, None))
+        print(f"    L{doc_line} {key} 未入基线（新增引用，跑 --update-baseline 收编）")
+    for key in gone:
+        print(f"    {key} 基线残留（文档里已经没有这条引用了）")
+    return 1 if changed else 0
 
 
 if __name__ == "__main__":
