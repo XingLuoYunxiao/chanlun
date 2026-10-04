@@ -3,14 +3,22 @@
 <!--
   缠论 24x7 优化器：macOS launchd 版（本机是 macOS，没有 systemd）
 
-  安装：
-    cp chanlun/deploy/com.chanlun.optimizer.plist ~/Library/LaunchAgents/
+  安装：本文件里的 __PROJECT_DIR__ / __PYTHON__ 是占位符，**必须先替换成绝对路径**。
+  launchd 不展开 `~`、也不展开环境变量，所以不能直接 cp 过去用。
+  在**项目根目录**执行（sed 的 # 分隔符是为了避开路径里的 /）：
+
+    sed -e "s#__PROJECT_DIR__#$(pwd)#g" -e "s#__PYTHON__#$(command -v python3)#g" \
+        deploy/com.chanlun.optimizer.plist > ~/Library/LaunchAgents/com.chanlun.optimizer.plist
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.chanlun.optimizer.plist
     # 老系统用：launchctl load -w ~/Library/LaunchAgents/com.chanlun.optimizer.plist
 
+  __PYTHON__ 应当指向**装了本项目依赖的那个解释器**（本机是虚拟环境里的
+  .venv-chanlun/bin/python），不一定是 `command -v python3`；换成绝对路径即可。
+  sed 之后可以先 `plutil -lint` 校验再装。
+
   验证 / 手动触发 / 卸载：
     launchctl print gui/$(id -u)/com.chanlun.optimizer | head -20
-    tail -f /Users/zzz/workspace/chanlun/logs/optimizer.log
+    tail -f __PROJECT_DIR__/logs/optimizer.log
     launchctl bootout gui/$(id -u)/com.chanlun.optimizer      # 卸载
 
   熔断（退出码 3）在这边的口径必须说清楚：launchd 的 KeepAlive 只能按
@@ -29,17 +37,17 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/zzz/workspace/.venv-chanlun/bin/python</string>
+    <string>__PYTHON__</string>
     <string>optimizer/agent.py</string>
     <string>--root</string>
-    <string>/Users/zzz/workspace/chanlun</string>
+    <string>__PROJECT_DIR__</string>
     <string>--rounds</string>
     <string>10</string>
     <string>--measure</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/zzz/workspace/chanlun</string>
+  <string>__PROJECT_DIR__</string>
 
   <key>EnvironmentVariables</key>
   <dict>
@@ -61,8 +69,8 @@
   <true/>
 
   <key>StandardOutPath</key>
-  <string>/Users/zzz/workspace/chanlun/logs/optimizer.log</string>
+  <string>__PROJECT_DIR__/logs/optimizer.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/zzz/workspace/chanlun/logs/optimizer.log</string>
+  <string>__PROJECT_DIR__/logs/optimizer.log</string>
 </dict>
 </plist>
