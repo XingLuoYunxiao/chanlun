@@ -337,8 +337,8 @@ raw bars: DataFrame(ts, high, low, close)
   仓库内实际装配均为 `signal_fn=find_signals`：
   `web/api.py:403`、`scan/scanner.py:440`、`backtest/runner.py:173`、
   `optimizer/agent.py:102`。
-- `find_signals` 内部补两步：`macd(bars["close"])`（`signal.py:199-200`）、
-  `classify_trends(pivots, level)`（`signal.py:325`）。
+- `find_signals` 内部补两步：`macd(bars["close"])`（`signal.py:201-202`）、
+  `classify_trends(pivots, level)`（`signal.py:330`）。
 - **`trend` 不进 `Snapshot`**：`Snapshot` 字段为
   `code, period, as_of, level, merged, fractals, strokes, segments, pivots,
   signals, version`（`engine.py:60-79`），**无 `trends` 字段**。
@@ -489,7 +489,7 @@ G2a 的 9 段上限随之作废。
 **为什么不只写"趋势按 `[DD,GG]` 判"**：本页**没有"走势类型"分节** ——
 `/api/structure` 的响应里没有 `trends` 字段（只有 `fractals`/`strokes`/`segments`/
 `pivots`/`signals`），ledger 也只有线段/中枢/买卖点三节。趋势判据在页面上是
-**隐形**的，但它决定第一类买卖点出不出现：`signal.py:325-334` 用
+**隐形**的，但它决定第一类买卖点出不出现：`signal.py:330-339` 用
 `classify_trends` 取出上涨/下跌的中枢组，组内不足两个中枢就跳过 ——
 `down_pivots`/`up_pivots` 为空时 **B1/S1 一个都不会生成**。
 所以旧口径（趋势恒为 0）等于把第一类买卖点**静默关掉**，而页面上看不出任何异常。
@@ -539,7 +539,7 @@ seg.direction)`（`signal.py:137-145`）。
 #### D-19 第三类买卖点用"位置"口径
 
 **决策**：离开段 = `segs[p.end_idx]`，回试段 = `segs[p.end_idx + 1]`
-（`signal.py:217-283`）。
+（`signal.py:219-287`）。
 
 **依据**：第 20 课原文：
 
@@ -548,7 +548,7 @@ seg.direction)`（`signal.py:137-145`）。
 
 **被否决的写法**：把 `segs[p.end_idx + 1]` 当离开段。真实线段首尾相连，
 那**必然**是一段反向回抽段。旧写法在 148 只票 / 193 个中枢上产出 **0 信号**
-（`signal.py:229-233`）。
+（`signal.py:231-235`）。
 
 **变更历史**：`0.0.9`（commit `271ff95`）。
 
@@ -556,20 +556,20 @@ seg.direction)`（`signal.py:137-145`）。
 
 **决策**：`_first_kind` 要求 `classify_trends` 给出下跌趋势覆盖的中枢组（≥ 2 个），
 `leave = segs[p.end_idx]` 方向须 `== want == -1`，且要求 `leave.low < prev.low`
-**且**面积 `a_now < a_prev`（`signal.py:338-343`）。
+**且**面积 `a_now < a_prev`（`signal.py:343-348`）。
 
 **依据**：第 24 课把"趋势背驰"与"盘整背驰"分开。
 
 **已知空白**：**盘整背驰（一个中枢前后两段比较）没有实现**（`signal.py:6-7, 25-27`）。
 
 **内联而非复用**：第一类买卖点处**内联**同一判据而非调用 `is_divergence`
-（`signal.py:338-344`）。
+（`signal.py:343-349`）。
 
 #### D-21 第二类买卖点是近似
 
 **决策**：以已有 B1 为锚，用 `src_start/src_end` 在 `segs` 定位下标 `k`，
 取 `bounce = segs[k+1]`、`back = segs[k+2]`；要求 `bounce.direction == 1 and
-back.direction == -1 and back.low > first.price`（`signal.py:387-393`）。
+back.direction == -1 and back.low > first.price`（`signal.py:396-402`）。
 
 **代码自陈的近似**：原文要求"**次级别**回抽"，本实现用**本级别下一段**近似
 （`signal.py:28-29`）。
@@ -650,7 +650,7 @@ back.direction == -1 and back.low > first.price`（`signal.py:387-393`）。
 
 **下标口径**：`start_idx` / `end_idx` 相对**传给 `find_pivots` 的线段列表**，
 不是过滤后的确认段子列表（`pivot.py:90-92, 119-121`）。
-`signal.py` 必须传同一列表（`signal.py:187-188`）。
+`signal.py` 必须传同一列表（`signal.py:189-190`）。
 
 **不变量**：`dd <= zd < zg <= gg`、≥ 3 段、≤ 8 段、相邻中枢不回溯
 （`pivot.py:272-303`）。
@@ -1289,7 +1289,7 @@ DD=min(dn)，**n遍历中枢中所有Zn**。」原文只说「中枢中所有 Zn
 **依据**：第 33 课《走势的多义性》把延伸上限写成数字（「中枢的延伸不能超过5段，也就是
 一旦出现6段的延伸，加上形成中枢本身那三段，就构成更大级别的中枢了」），但**没有规定
 被上限截断时哪一段是离开段** —— 原文空白。而 `chan/signal.py`、`chan/divergence.py`
-多处按位置约定「`segments[end_idx]` 是离开段」（`signal.py:225`、`divergence.py:164-166`）。
+多处按位置约定「`segments[end_idx]` 是离开段」（`signal.py:227`、`divergence.py:193-195`）。
 上限掐停时这个前提**不成立**：`end_idx` 那一段只是一段仍在枢内的延伸段。
 
 判定必须带上 `_overlaps(confirmed[j], zd, zg)`：延伸循环把上限判在「有重叠」**之前**
@@ -1580,13 +1580,13 @@ M4 逐根前视），数字可从该命令复现。**本轮未修，故不得在
 > 与 `L1579 _third_kind -> def@217 范围[(286,286)]`，两行正好互换）。
 > 加空行后窗口取不到隔壁的符号，假告警消失。工具本身没改。
 
-- `src/chanlun/chan/signal.py:217` —— `_third_kind`（门在函数内 `:263`）：
+- `src/chanlun/chan/signal.py:219` —— `_third_kind`（门在函数内 `:265`）：
   `if p.capped: continue`，挡第三类买卖点（第 20 课位置口径）。
 
-- `src/chanlun/chan/signal.py:286` —— `_entering_and_leaving`（门在 `:307`）：
+- `src/chanlun/chan/signal.py:290` —— `_entering_and_leaving`（门在 `:311`）：
   `if p.capped: continue`，挡第一类买卖点 / 趋势背驰的「离开段 vs 前一同向段」比较。
 
-- `src/chanlun/chan/divergence.py:182` —— `_leaving_legs`（门在 `:203`）：
+- `src/chanlun/chan/divergence.py:212` —— `_leaving_legs`（门在 `:233`）：
   `if p.capped: continue`，挡趋势背驰条目。
 
 同时**删除** `THIRD_TOL = 0.1`（原常量定义处，D-35 的产物）：
@@ -1746,6 +1746,120 @@ M4 逐根前视），数字可从该命令复现。**本轮未修，故不得在
   那是**已发布版本号里的记录**，按「只增不改」纪律**不回填**；
   本条所在的 `[Unreleased]` 段落负责说明它已被删除。
 
+#### D-42 背驰点 / 买卖点的落点：线段极值所在的那根原始 bar，不是段尾那一笔的结束时刻
+
+**决策**：`Divergence.ts` 与 `Signal.ts` 改为「线段极值（`Segment.high` / `Segment.low`）
+所在**原始 bar** 的 `ts`」；`price` 的取值口径**一个字没动**。
+实现是 `src/chanlun/chan/divergence.py:115` 的新函数 `extreme_ts(bars, seg, want)`：
+
+- 取 `col = "high" if want == 1 else "low"`、`target = seg.high if want == 1 else seg.low`；
+- 在 `bars[col].iloc[seg.src_start : seg.src_end + 1]` 上按**值相等**（`abs(v - target) <= 1e-9`）找下标；
+- 返回 `bars["ts"].iloc[a + k]`；找不到时回退 `seg.end.end.ts`（保持旧口径，不抛）。
+
+`Segment.src_start` / `src_end` 是端点分型极值所在**原始 bar 的索引**（`Segment` 上的
+property，见 `src/chanlun/chan/types.py:114-120`），所以它与 `bars` 的下标同一空间 ——
+这一点由 `src/chanlun/chan/engine.py:152` 保证：引擎在 `full()` 里先 `normalize(bars)`，
+再把**同一个** `bars` 帧交给 `divergence_fn` / `signal_fn`。
+
+接线：`src/chanlun/chan/divergence.py:202`（背驰的 `ts`）、
+`src/chanlun/chan/signal.py:170`（买卖点的 `ts`）、
+`src/chanlun/chan/divergence.py:282` 与 `src/chanlun/chan/divergence.py:329-330`
+（`reason` 里插值的时刻，跟着一起变）。
+`_make` / `_sig` 新增的都是**带默认值的尾参** `bars=None`，
+所以既有调用点不传也照样编译；`find_divergences` / `find_signals` 按位置把 `bars` 传下去。
+
+**依据**（原文摘录逐字，课号见 `optimizer/theory/L24-DIVERGENCE-EXTREME-BAR.md`）：
+
+- 第 24 课《MACD对背弛的辅助判断》（`chanlun108/原文/024-MACD对背弛的辅助判断.md:43`）：
+  「所以，实际操作中根本不用回跌后才发现背驰，在上涨或下跌的最后阶段，判断就出来了，
+  一般都可以抛到最高价位和买在最低价位附近。」—— 背驰成立的时刻**就是**极值那一刻。
+- 第 60 课《图解分析示范五》（`chanlun108/原文/060-图解分析示范五.md:45`）把盘整背驰
+  逐个钉在极值点上：「55跌破53后明显盘整背驰……如果把55当成第一类买点」
+  「59-60的背驰足够标准……然后60新高，而柱子面积与黄白线高度都比前面不如」。
+- 第 27 课《盘整背驰与历史性底部》（`chanlun108/原文/027-盘整背驰与历史性底部.md:37`）：
+  「相应的转折点就在该级别背驰段确定的范围内。」—— 时刻落在**背驰段范围内**，不是段尾。
+- 第 43 课《有关背驰的补习课》（`chanlun108/原文/043-有关背驰的补习课.md:51`）
+  「前后两个走势类型，就以该背驰点为分界」讲的是**划分归属**，不是坐标；在极值本来就
+  落在段尾时两者重合，本条全市场只移动了 3.4% 的背驰实体，见下。
+
+**这不是新增判据，是自洽性修复。** 旧口径下系统报出 `price = 2.95` 却说「发生在
+`2026-09-29`」，而那一天的最高价是 **2.23** —— 报出来的价格根本不在它报出的那根 bar 上。
+触发这次修复的实例是 `sh.600759`（ST洲际）：页面上「盘整背驰卖」标记钉在
+`2026-09-29 @ 2.95`，浮在那根 K 线上方；线段的极值 `2.95` 其实在 `2026-07-14`。
+
+**被否决的替代方案**（两条都被全市场测量否决，数字由
+`optimizer/tools/measure_marker_anchor.py` 复现）：
+
+- **在 `[src_start, src_end]` 区间内取 `argmax` / `argmin`**：越界条数从 1076 降到 136，
+  但其中 **128 条是 `CONFIRMED`** —— 区间内可能存在**不属于该线段**的异常高/低 bar。
+  实测 `sz.301439` 的 `seg10`：`Segment.high = 18.38`，同一区间的原始 bar 最高是 **25.35**
+  （被包含处理并掉了）。取 argmax 会把背驰钉到一个不属于该线段的价格上。
+  **否决。**
+- **取段尾同向笔的分型**（`seg.end.direction == want` 时用 `seg.end.end.ts`，否则用
+  `seg.end.start.ts`）：全市场越界 **786/31821**，**比旧口径还差**。原因是结构性的：
+  `Segment` 只保留 `start` / `end` 两笔（`src/chanlun/chan/types.py:95-120`），极值可以
+  落在**中间**任何一笔上。实测 `sz.001331` 的 `seg6`（`direction = -1`、44 笔、TENTATIVE）：
+  最低点 `4.16271` 落在 `2024-04-17`（`start笔` 的第二个分型），该方案把它钉到
+  `2026-08-20`，那天的区间是 `[40.65, 45.28]`。**否决。**
+- **保留旧口径、只在前端加一句提示**：治不了「价格不在它自己报出的那根 bar 上」这个
+  自相矛盾，而且 `reason` 文本、自选池、扫描结果、回测成交记录里印的都是同一个错日期。
+  **否决。**
+
+**后果与变更历史**：
+
+- **判据没变。** 全市场（`day`，5440 只票）实体数在两版**逐项相同**：
+  背驰 `31821`、买卖点 loose `52441`、strict `5957`。变的只有 `ts` 与按 `ts` 的排序
+  （`src/chanlun/chan/divergence.py:363`、`src/chanlun/chan/signal.py:215`）⇒ `idx` 会变。
+- **纯显示层缺陷。** 越界标记按状态统计是 `{'tentative': 3378}` —— **100% 是 TENTATIVE**，
+  而 `src/chanlun/chan/state.py:131-152` 的 `backtestable` 只放行 `CONFIRMED`，
+  所以**胜率、净值、回测成交全部不受影响**。
+- **下游三处显示消费点无需改代码**，它们读的就是 `sig.ts` / `sig.price`：
+  `src/chanlun/backtest/runner.py:96`、`src/chanlun/scan/watchlist.py:129`
+  （以及同函数的 `src/chanlun/scan/watchlist.py:127` 的 `ts`）、`src/chanlun/scan/scanner.py:288`。
+  前端标记用 `value: [div.ts, div.price]`，日期从接口来，也没有写死口径。
+- **范围边界**：`src/chanlun/web/static/app.js:757` 的**线段确认**标记仍用 `g.end.end.ts` ——
+  那是「线段在哪个点确认结束」，与本条的背驰/买卖点落点不是一回事，**不改**。
+- **可失败的测量**：`optimizer/tools/measure_marker_anchor.py` 自带旧口径负对照
+  （同一次运行里同时算现口径与旧口径）。全市场实测输出：
+
+```
+实体                    总数       现口径越界       旧口径越界      定位失败
+背驰                 31821           0        1076         0
+买卖点 strict          5957           0         316         0
+买卖点 loose          52441           0        2302         0
+
+现口径越界按状态：{}
+有越界的票：0 / 5440
+
+判据一 现口径越界 = 0（要求 0）：通过
+判据二 正对照 实体总数 = 90219，背驰 31821、买卖点 loose 52441（要求 > 0 且 == 31821/52441）：通过
+判据三 可失败性 旧口径越界 = 3694（要求 > 0）：通过
+EXIT=0
+```
+
+  把 `divergence.py` / `signal.py` 换回修复前的版本、同一条命令重跑 ⇒
+  `判据一 现口径越界 = 288（要求 0）：失败`、
+  `判据三 可失败性 旧口径越界 = 0（要求 > 0）：失败`、`有越界的票：143 / 400`、`EXIT=1`。
+  **判据二 保持通过** —— 说明工具确实在测东西，不是恒真。
+  （注意：该工具自己 `sys.path.insert` 了 `parents[2]/src`，所以**不能**用 `PYTHONPATH`
+  指向另一份源码来做 A/B，必须直接扰动工作区源码。）
+- **两条测试按新口径重写、并证明在修复前的输入上会失败**：
+  `tests/chan/test_divergence.py` 原先直接断言 `d.ts == now.end.end.ts`（把旧口径写死），
+  改为断言「`d.ts` 那根 bar 的 `high`/`low` 等于线段极值」；
+  `tests/chan/test_signal_mode.py` 的 `sh.601088` 参数从 `["2024-12-27"]` 改为
+  `["2023-06-01"]`，并在函数体里加了同样的「值必须落在那根 bar 上」断言。
+  在修复前的源码上这两条**因预期原因失败**：
+  `2024-12-27 的 low 应等于线段极值 159.080496，实际 243.1986`、
+  `assert ['2024-12-27'] == ['2023-06-01']`。
+- **版本**：这是「同一只票的划分结果与上一版不同」的口径变更（AGENTS.md §2 的
+  「0.x 期的特别约定」），按 `MINOR` 处理 ⇒ `pyproject.toml` 的 `0.3.0` → `0.4.0`，
+  `CHANGELOG.md` 记在 `[Unreleased]`。
+- **已知空白**：`extreme_ts` 找不到等值 bar 时回退 `seg.end.end.ts`。
+  全市场实测**回退 0 次**（`定位失败 0`）。历史上一份**直接读 parquet、没跑
+  `chanlun.data.types.normalize`** 的探针曾报出 59/78931 次失败，那是探针假象 ——
+  `sz.399001` 有 5 根 OHLC 全 0 的 bar（1995-02-06…1995-02-10），
+  `src/chanlun/data/types.py` 的 `normalize` 会把它们剔掉，而 `engine.py:152` 内部就调它。
+
 ### 3.5 课号引用总表（代码 → 原文）
 
 格式：`文件:行号 — 对应逻辑`。行号以**当前工作区**为准。
@@ -1785,8 +1899,8 @@ M4 逐根前视），数字可从该命令复现。**本轮未修，故不得在
 | `signal.py:6-7` | 24 | 趋势背驰 vs 盘整背驰 |
 | `signal.py:11-13` | 20 | 「离开」是位置 |
 | `signal.py:138-139` | 24 | 向上看红柱子，向下看绿柱子 |
-| `signal.py:221-222` | 20 | 第三类买点定义 |
-| `signal.py:291` | 24 | 比较力度的对象是离开段 |
+| `signal.py:223-224` | 20 | 第三类买点定义 |
+| `signal.py:295` | 24 | 比较力度的对象是离开段 |
 
 > **本表的行号由工具守门。** 本文档里的 `.py` 引用（`文件.py:行号`）可以随时全量复核
 > —— 文件是否存在、行号是否越界（硬判据，失败即 `exit 1`），外加符号漂移告警与
