@@ -126,36 +126,55 @@ def test_pb_name_uses_origin_qualifier():
     assert SignalKind.PB.is_buy and not SignalKind.PS.is_buy
 
 
-def test_third_tolerance_is_loose_only(bars, strict):
-    """D-35：第三类的容忍度只在非严格模式生效。"""
+def test_third_kind_matches_find_signals_and_is_mode_independent(bars, strict):
+    """D-41：第三类买卖点的判据不再随模式变化 —— `THIRD_TOL` 已整体删除。
+
+    第 20 课《缠中说禅走势中枢》的第三类判据是**纯位置**判据：「其低点不跌破
+    ZG」；原文没有任何容忍量。本项目曾用 `THIRD_TOL = 0.1 × (ZG − ZD)`
+    （工程口径，无原文依据）放宽它，2026-10-04 随 `capped` 收口一并删除：
+    容忍度唯一的正当理由（补偿被段数上限掐停的中枢）在 `capped` 中枢不再产出
+    信号之后消失了，而它唯一还能翻动的信号，其回试段恰恰是**已经跌回中枢里**
+    的那种 —— 与原文「不跌破 ZG」直接冲突。
+    """
     from chanlun.chan.signal import _third_kind
 
-    a = _third_kind(list(strict.segments), strict.pivots, "day", SignalMode.STRICT)
-    b = _third_kind(list(strict.segments), strict.pivots, "day", SignalMode.LOOSE)
-    assert len(b) >= len(a)
-    assert all(0.0 < x.price for x in b)
+    a = _third_kind(list(strict.segments), strict.pivots, "day")
+    assert [s.kind.value for s in a] == [
+        s.kind.value for s in strict.signals
+        if s.kind in (SignalKind.B3, SignalKind.S3)]
+    assert a, "夹具上应有第三类买卖点"
+    assert all(0.0 < x.price for x in a)
 
 
-def test_tolerance_suffix_only_when_it_decided(bars, strict):
-    """D-35：`（非严格：回试容忍 …）` 只在容忍度**真的翻出这个信号**时才写。
+def test_third_kind_reason_has_no_tolerance_suffix(bars, strict):
+    """`（非严格：回试容忍 …）` 这个后缀必须彻底消失。
 
-    夹具上四只票的第三类买卖点在严格模式下都有（`b3`/`s3` 计数两边相等），
-    严格判据本来就通过 ⇒ 非严格模式的那条 `reason` 必须与严格模式逐字节相同，
-    不许宣称用了容忍度。反过来，容忍度真的决定结论时的后缀见
-    `test_third_tolerance_only_matters_on_truncated_pivot_*`。
+    `THIRD_TOL` 与 `_third_kind` 的 `mode` 形参都已删除（D-41），所以不可能再有
+    任何 `reason` 宣称用了容忍度；同时两个模式共有的买卖点 `reason` 仍必须逐字节
+    相同（这条口径从 D-35 起就没变）。
     """
     loose = find_signals(bars, strict.segments, strict.pivots, "day",
                          mode=SignalMode.LOOSE)
     third = [s for s in loose if s.kind in (SignalKind.B3, SignalKind.S3)]
     assert third, "夹具上应有第三类买卖点"
-    assert all("非严格" not in s.reason for s in third)
+    assert all("非严格" not in s.reason and "容忍" not in s.reason for s in third)
 
-    # 两个模式共有的买卖点，`reason` 必须逐字节相同（后缀不许外溢到严格也有的信号）
+    # 两个模式共有的买卖点，`reason` 必须逐字节相同
     key = lambda s: (s.kind.value, s.ts, round(s.price, 6))
     strict_reason = {key(s): s.reason for s in strict.signals}
     shared = [(key(s), s.reason) for s in loose if key(s) in strict_reason]
     assert shared, "夹具上应有严格/非严格共有的买卖点"
     assert all(reason == strict_reason[k] for k, reason in shared)
+
+
+def test_third_kind_and_entering_have_no_mode_parameter():
+    """结构护栏：`mode` 形参删掉了，就不该再有人按模式给它传参（D-41）。"""
+    import inspect
+
+    from chanlun.chan.signal import _entering_and_leaving, _third_kind
+
+    assert "mode" not in inspect.signature(_third_kind).parameters
+    assert "mode" not in inspect.signature(_entering_and_leaving).parameters
 
 
 # --------------------------------------------------------------------------
@@ -196,10 +215,17 @@ def _zigzag(points) -> list[Segment]:
     return segs
 
 
-# 8 段封顶的中枢（段 0…7），段 7 是离开段、其终点被带出 [zd, zg]。
-# 买：zg=18 / zd=11；卖：zg=19 / zd=12。第 9 段是回试段。
+# 8 段封顶的中枢（段 0…7），段 7 的终点被带出 [zd, zg]，但**段 8 又跌回区间内**，
+# 所以延伸是被 `MAX_SEGMENTS` 掐停的（`capped is True`）。
+# 买：zg=18 / zd=11，段 8 是 22→19（在 ZG 之上）；卖：zg=19 / zd=12，段 8 是 8→11
+# （在 ZD 之下）。也就是说：位置判据「回试不跌破 ZG / 不升破 ZD」**满足**，所以
+# 「不产出信号」只可能来自 `capped` 门（D-41），不是位置不满足。
 _CAP_HEAD_UP = [20.0, 10.0, 18.0, 11.0, 17.0, 12.0, 16.0, 13.0, 22.0]
 _CAP_HEAD_DOWN = [10.0, 20.0, 12.0, 19.0, 13.0, 18.0, 14.0, 17.0, 8.0]
+
+# 同形状、但**没到上限**（6 段）的中枢，用于正对照：它必须照常产出第三类。
+_OK_HEAD_UP = [20.0, 10.0, 18.0, 11.0, 17.0, 12.0, 22.0, 19.0]
+_OK_HEAD_DOWN = [10.0, 20.0, 12.0, 19.0, 13.0, 18.0, 8.0, 11.0]
 
 
 def _capped_pivot(head, back_end):
@@ -211,129 +237,145 @@ def _capped_pivot(head, back_end):
     return segs, pivot, segs[pivot.end_idx + 1]
 
 
-def test_third_tolerance_only_matters_on_truncated_pivot_buy():
-    """D-35：容忍度只有在**中枢组先被段数上限截断**时才可能翻结论（买点侧）。
+def _uncapped_pivot(head):
+    """造一个同形状、未到段数上限的中枢，返回 (线段, 中枢)。"""
+    from chanlun.chan.pivot import find_pivots
 
-    `find_pivots` 的延伸循环会把任何与 `[zd, zg]` 有重叠的后续段并进中枢组
-    （`_overlaps`）。所以只要组没被 `MAX_SEGMENTS` 截断，真正跌回中枢里的回试
-    段会先被并进去、离开段与回试段一起顺延，严格判据 `back.low > ZG` 自动成立，
-    容忍度无事可做 —— 这也正是「被否决的替代方案」里 `tol` 在真实数据上极少
-    命中（60 只票 1 只）的原因。只有段数上限先到时，回试段才会「有重叠却没被
-    并进去」。
+    segs = _zigzag(head)
+    return segs, find_pivots(segs, "day")[0]
+
+
+def test_capped_pivot_emits_no_third_kind_buy():
+    """D-41：被段数上限掐停的中枢**不产出**第三类买点。
+
+    第 33 课《走势的多义性》：「中枢的延伸不能超过5段，也就是一旦出现6段的延伸，
+    加上形成中枢本身那三段，就构成更大级别的中枢了。」本级别最多 8 段。
+    `capped` 的定义是「到了上限、而下一段仍与 `[ZD, ZG]` 重叠」——也就是说组内
+    每一段（含 `end_idx`）都**没有**离开过区间（第 20 课中心定理一：「走势中枢的
+    延伸等价于任意区间[dn，gn]与[ZD，ZG]有重叠。」）。而第 20 课的第三类买点要求
+    「一个次级别走势类型**向上离开**缠中说禅走势中枢，然后以一个次级别走势类型
+    回试，其低点不跌破ZG」——离开这个前提在这里不成立，拿 `segs[end_idx]` 冒充
+    离开段没有原文依据。
+
+    正对照在同一条测试里：同形状、**没到上限**的中枢必须照常产出 B3。
+    没有这个正对照，这条护栏量到的可能只是「这批线段压根没构成中枢」。
+
+    **这条门在 `THIRD_TOL` 删除之后是结构性 no-op**（据实记录）：capped 的定义
+    本身就要求回试段与 `[ZD, ZG]` 重叠，所以第 20 课的位置判据 `back.low > ZG`
+    在 capped 中枢上**恒不成立**，删掉门也一样不产出。它的价值是把「capped 中枢
+    的 `end_idx` 不是离开段」这条口径写成可执行的不变量 —— 否则将来任何一次
+    「放宽判据」都会悄悄把延伸中的中枢重新误报成第三类。
     """
-    from chanlun.chan.pivot import MAX_SEGMENTS, _overlaps, find_pivots
-    from chanlun.chan.signal import THIRD_TOL, _third_kind
+    from chanlun.chan.pivot import MAX_SEGMENTS
+    from chanlun.chan.signal import _third_kind
 
-    segs, pivot, back = _capped_pivot(_CAP_HEAD_UP, 19.0)
+    segs, pivot, back = _capped_pivot(_CAP_HEAD_UP, 18.0)
     assert (pivot.zg, pivot.zd) == (18.0, 11.0)
-    tol = THIRD_TOL * (pivot.zg - pivot.zd)
-    assert tol > 0
+    assert pivot.capped is True
+    assert pivot.segment_count == MAX_SEGMENTS
+    assert back.low <= pivot.zg, "回试段仍在中枢边缘内 ⇒ 这正是 capped 的定义"
+    assert _third_kind(segs, [pivot], "day") == []
 
-    # (a) 回试段整段在 ZG 之上：严格判据本来就通过 ⇒ 两个模式同一条 reason
-    strict_a = _third_kind(segs, [pivot], "day", SignalMode.STRICT)
-    loose_a = _third_kind(segs, [pivot], "day", SignalMode.LOOSE)
-    assert [s.kind for s in strict_a] == [SignalKind.B3]
-    assert [s.kind for s in loose_a] == [SignalKind.B3]
-    assert loose_a[0].reason == strict_a[0].reason
-    assert "非严格" not in loose_a[0].reason
-
-    # (b) 回试低点恰好等于 ZG - tol：`>` 不含等号 ⇒ 两个模式都不出信号
-    segs_b, pivot_b, back_b = _capped_pivot(_CAP_HEAD_UP, pivot.zg - tol)
-    assert (pivot_b.zg, pivot_b.zd) == (pivot.zg, pivot.zd)
-    assert _third_kind(segs_b, [pivot_b], "day", SignalMode.STRICT) == []
-    assert _third_kind(segs_b, [pivot_b], "day", SignalMode.LOOSE) == []
-
-    # (c) 再往里 0.01：只有非严格成立，且必须写明用了容忍度
-    segs_c, pivot_c, back_c = _capped_pivot(_CAP_HEAD_UP, pivot.zg - tol + 0.01)
-    assert _third_kind(segs_c, [pivot_c], "day", SignalMode.STRICT) == []
-    loose_c = _third_kind(segs_c, [pivot_c], "day", SignalMode.LOOSE)
-    assert [s.kind for s in loose_c] == [SignalKind.B3]
-    assert loose_c[0].reason.endswith(f"（非严格：回试容忍 {tol:.4f}）")
-
-    # (d) 回试低点恰好落在 ZG 上：严格判据 `> ZG` 不含等号 ⇒ 严格不出；非严格出，
-    #     而这一条**正是**容忍度换来的（回试段确实回到了中枢边缘）
-    segs_d, pivot_d, back_d = _capped_pivot(_CAP_HEAD_UP, pivot.zg)
-    assert _third_kind(segs_d, [pivot_d], "day", SignalMode.STRICT) == []
-    loose_d = _third_kind(segs_d, [pivot_d], "day", SignalMode.LOOSE)
-    assert [s.kind for s in loose_d] == [SignalKind.B3]
-    assert loose_d[0].reason.endswith(f"（非严格：回试容忍 {tol:.4f}）")
-
-    # (e) 再往外 0.01：严格判据又通过了 ⇒ 后缀必须消失（与 (a) 同一件事）
-    segs_e, pivot_e, _ = _capped_pivot(_CAP_HEAD_UP, pivot.zg + 0.01)
-    loose_e = _third_kind(segs_e, [pivot_e], "day", SignalMode.LOOSE)
-    strict_e = _third_kind(segs_e, [pivot_e], "day", SignalMode.STRICT)
-    assert [s.kind for s in strict_e] == [SignalKind.B3]
-    assert loose_e[0].reason == strict_e[0].reason
-
-    # 前提：这几段确实是被段数上限截断的 —— 组已满 8 段，而回试段与中枢有重叠，
-    # 没有上限时它会被并进去（也就不会再有第三类候选）。
-    for pivot_x, back_x in ((pivot_b, back_b), (pivot_c, back_c), (pivot_d, back_d)):
-        assert pivot_x.segment_count == MAX_SEGMENTS
-        assert _overlaps(back_x, pivot_x.zd, pivot_x.zg)
+    segs_ok, pivot_ok = _uncapped_pivot(_OK_HEAD_UP)
+    assert pivot_ok.capped is False
+    assert pivot_ok.segment_count < MAX_SEGMENTS
+    assert [s.kind for s in _third_kind(segs_ok, [pivot_ok], "day")] == [SignalKind.B3]
 
 
-def test_third_tolerance_only_matters_on_truncated_pivot_sell():
-    """D-35 卖点侧：与买点侧对称（`back.high < ZD` / `ZD + tol`）。"""
-    from chanlun.chan.pivot import MAX_SEGMENTS, _overlaps
-    from chanlun.chan.signal import THIRD_TOL, _third_kind
+def test_capped_pivot_emits_no_third_kind_sell():
+    """卖点侧与买点侧对称（第 20 课：「其高点不升破ZD」）。"""
+    from chanlun.chan.pivot import MAX_SEGMENTS
+    from chanlun.chan.signal import _third_kind
 
-    segs, pivot, back = _capped_pivot(_CAP_HEAD_DOWN, 11.0)
+    segs, pivot, back = _capped_pivot(_CAP_HEAD_DOWN, 12.0)
     assert (pivot.zg, pivot.zd) == (19.0, 12.0)
-    tol = THIRD_TOL * (pivot.zg - pivot.zd)
+    assert pivot.capped is True
+    assert pivot.segment_count == MAX_SEGMENTS
+    assert back.high >= pivot.zd, "回抽段仍在中枢边缘内 ⇒ 这正是 capped 的定义"
+    assert _third_kind(segs, [pivot], "day") == []
 
-    strict_a = _third_kind(segs, [pivot], "day", SignalMode.STRICT)
-    loose_a = _third_kind(segs, [pivot], "day", SignalMode.LOOSE)
-    assert [s.kind for s in strict_a] == [SignalKind.S3]
-    assert loose_a[0].reason == strict_a[0].reason
-    assert "非严格" not in loose_a[0].reason
+    segs_ok, pivot_ok = _uncapped_pivot(_OK_HEAD_DOWN)
+    assert pivot_ok.capped is False
+    assert [s.kind for s in _third_kind(segs_ok, [pivot_ok], "day")] == [SignalKind.S3]
 
-    segs_b, pivot_b, _ = _capped_pivot(_CAP_HEAD_DOWN, pivot.zd + tol)
-    assert _third_kind(segs_b, [pivot_b], "day", SignalMode.STRICT) == []
-    assert _third_kind(segs_b, [pivot_b], "day", SignalMode.LOOSE) == []
 
-    segs_c, pivot_c, back_c = _capped_pivot(_CAP_HEAD_DOWN, pivot.zd + tol - 0.01)
-    assert _third_kind(segs_c, [pivot_c], "day", SignalMode.STRICT) == []
-    loose_c = _third_kind(segs_c, [pivot_c], "day", SignalMode.LOOSE)
-    assert [s.kind for s in loose_c] == [SignalKind.S3]
-    assert loose_c[0].reason.endswith(f"（非严格：回试容忍 {tol:.4f}）")
+def test_capped_pivot_emits_no_leave_dependent_signal():
+    """`_entering_and_leaving` 必须跳过 `capped` 中枢（第一类/趋势背驰的来源）。
 
-    # 回抽高点恰好落在 ZD 上：严格 `high < ZD` 不含等号 ⇒ 严格不出，非严格出
-    segs_d, pivot_d, back_d = _capped_pivot(_CAP_HEAD_DOWN, pivot.zd)
-    assert _third_kind(segs_d, [pivot_d], "day", SignalMode.STRICT) == []
-    loose_d = _third_kind(segs_d, [pivot_d], "day", SignalMode.LOOSE)
-    assert [s.kind for s in loose_d] == [SignalKind.S3]
-    assert loose_d[0].reason.endswith(f"（非严格：回试容忍 {tol:.4f}）")
+    这一处**不是 no-op**：`segs[p.end_idx]` 的方向完全可能与趋势同向（下面断言了
+    它同向、且未作废），所以没有门的话这里会照常返回一对 (中枢, 离开段)，交给
+    `_first_kind` 去比 MACD 力度 —— 比的是一个仍在延伸的中枢里的段，比出来的
+    力度没有意义。全市场实测：趋势背驰 180 条里 64 条落在 capped 中枢上。
 
-    assert pivot_c.segment_count == MAX_SEGMENTS
-    assert _overlaps(back_c, pivot_c.zd, pivot_c.zg)
-    assert pivot_d.segment_count == MAX_SEGMENTS
-    assert _overlaps(back_d, pivot_d.zd, pivot_d.zg)
+    它与 `divergence.py::_leaving_legs` 是同一判据的两份实现，必须同步（D-41）；
+    两份实现的一致性由 `tests/chan/test_divergence.py::test_trend_divergence_matches_b1_s1`
+    守住（双向相等）。
+    """
+    from chanlun.chan.signal import _dead, _entering_and_leaving
+
+    segs, pivot, _ = _capped_pivot(_CAP_HEAD_UP, 18.0)
+    assert pivot.capped is True
+    assert segs[pivot.end_idx].direction == 1
+    assert not _dead(segs[pivot.end_idx])
+    assert _entering_and_leaving(segs, [pivot], 1) == []
+
+    segs_ok, pivot_ok = _uncapped_pivot(_OK_HEAD_UP)
+    pairs = _entering_and_leaving(segs_ok, [pivot_ok], 1)
+    assert [p.idx for p, _, _ in pairs] == [0]
+    assert pairs[0][1] is segs_ok[pivot_ok.end_idx]
+
+
+def test_tentative_pivot_still_emits_third_kind():
+    """裁决（2026-10-04）：只 gate `capped`，**不** gate 中枢 `status`。
+
+    `ARCHITECTURE.md` D-26 的「TENTATIVE 线段不参与中枢构造、也不参与延伸」约束的
+    是**线段**，不是**中枢**：TENTATIVE 中枢是每一只在交易中的票的正常右端形态
+    （`find_pivots` 在 `back_of` 取不到下一确认段时就这么标），连它一起 gate 会把
+    大量合法的实时信号静默删掉。这类信号本身是 `Status.TENTATIVE`，回测已经把它
+    挡在外面，所以它是**显示口径**问题，不是判据缺陷。
+
+    合成夹具：7 段，前 6 段成枢、第 7 段（回试段）标成 TENTATIVE ⇒ 中枢 TENTATIVE
+    但**未** capped，第三类买点照常产出。
+    """
+    from dataclasses import replace
+
+    from chanlun.chan.pivot import find_pivots
+    from chanlun.chan.signal import _third_kind
+
+    segs = _zigzag(_OK_HEAD_UP)
+    segs[6] = replace(segs[6], status=Status.TENTATIVE, confirmed_at=None)
+    pivot = find_pivots(segs, "day")[0]
+    assert pivot.status is Status.TENTATIVE
+    assert pivot.capped is False
+
+    got = _third_kind(segs, [pivot], "day")
+    assert [s.kind for s in got] == [SignalKind.B3]
+    assert got[0].status is Status.TENTATIVE
 
 
 def test_penetrating_retest_is_absorbed_when_pivot_not_capped():
-    """段数没到上限时，跌回中枢内的回试段会被并进中枢组 ⇒ 容忍度无事可做。
+    """段数没到上限时，跌回中枢内的回试段会被并进中枢组 ⇒ 根本不出第三类。
 
-    与上面两个测试合起来就是 D-35 的适用边界：同一个中枢，回试段整段在外时
-    两个模式都出第三类；回试段跌回中枢内时它被延伸吃掉、两个模式都不出。
+    这条是 `capped` 门（D-41）的**适用边界**：同一个中枢，回试段整段在外时出
+    第三类；回试段跌回中枢内时它被延伸吃掉、连第三类候选都不存在。也就是说
+    `capped` 门收掉的不是「位置不满足」的信号，而是「位置满足但离开段不存在」
+    的信号 —— 前者本来就不产出。
     """
     from chanlun.chan.pivot import MAX_SEGMENTS, _overlaps, find_pivots
     from chanlun.chan.signal import _third_kind
 
-    segs = _zigzag([20.0, 10.0, 18.0, 11.0, 17.0, 12.0, 22.0, 19.0])
-    pivot = find_pivots(segs, "day")[0]
+    segs, pivot = _uncapped_pivot(_OK_HEAD_UP)
     assert pivot.segment_count < MAX_SEGMENTS
     assert not _overlaps(segs[pivot.end_idx + 1], pivot.zd, pivot.zg)
-    loose = _third_kind(segs, [pivot], "day", SignalMode.LOOSE)
-    assert [s.kind for s in loose] == [SignalKind.B3]
-    assert "非严格" not in loose[0].reason
+    assert [s.kind for s in _third_kind(segs, [pivot], "day")] == [SignalKind.B3]
 
     # 同一个中枢，把回试低点压到 ZG 之下：它被并进中枢组，两个模式都不出信号
     segs2 = _zigzag([20.0, 10.0, 18.0, 11.0, 17.0, 12.0, 22.0, 17.3])
     pivot2 = find_pivots(segs2, "day")[0]
+    assert pivot2.capped is False
     assert pivot2.segment_count == pivot.segment_count + 1
     assert _overlaps(segs2[pivot2.end_idx], pivot2.zd, pivot2.zg)
-    assert _third_kind(segs2, [pivot2], "day", SignalMode.STRICT) == []
-    assert _third_kind(segs2, [pivot2], "day", SignalMode.LOOSE) == []
+    assert _third_kind(segs2, [pivot2], "day") == []
 
 
 @pytest.mark.parametrize("code, tentative_ts", [
