@@ -415,6 +415,7 @@ def _one_pivot(**kw):
         {"end_idx": 20},       # 段数超过上限（第 33 课：本级别最多 8 段）
         {"start_ts": "d99"},   # 时间颠倒
         {"src_start": 500},    # 原始 bar 颠倒
+        {"capped": True},      # capped 标志与段数不一致（上限掐停必然正好 8 段）
     ],
 )
 def test_validate_pivots_catches_each_invariant(kw):
