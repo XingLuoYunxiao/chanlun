@@ -11,11 +11,14 @@
 - **第三类买点**：向上**离开中枢**后，次级别回抽**不回到中枢区间**（低点 > ZG）。
   卖点全部对称。「离开」是**位置**：把价格带出区间的那一段是中枢组的最后一段
   `segs[p.end_idx]`，回抽是紧随其后的 `segs[p.end_idx + 1]`（第 20 课）。
+  这个位置口径只在**中枢确实被离开段封闭**时成立，所以 `capped` 的中枢
+  （段数上限掐停、根本没有离开段）一律不产出第三类（D-41）。
 
 可靠性约定
 ----------
-- 只吃 `CONFIRMED` 线段与中枢；触发信号的那一段若还是窗口右端的未确认尾段，
-  信号标 `TENTATIVE`（`confirmed_at=None`），回测会把它挡在外面。
+- 只吃 `CONFIRMED` 线段；中枢必须是**已封口**的（`capped is False`，D-41）。
+  触发信号的那一段若还是窗口右端的未确认尾段，信号标 `TENTATIVE`
+  （`confirmed_at=None`），回测会把它挡在外面。
 - 所有力度比较只用 MACD（通达信口径，见 `macd.py`），不做凭观感的近似。
 
 已知的进一步细化空间（留给优化师按原文重新推导）：
@@ -60,14 +63,23 @@ class SignalMode(str, Enum):
         return "严格" if self is SignalMode.STRICT else "非严格"
 
 
-#: 第三类买卖点的回试容忍度，取中枢高度 `(ZG - ZD)` 的比例。
-#:
-#: **工程口径，无原文依据。** 第 20 课「其低点不跌破ZG」、第 32 课「不回到中枢里」、
-#: 第 24 课「并不重新回到前面的中枢里」、第 33 课「不重新回到中枢里」——
-#: 四课一致且严格，没有任何容忍度措辞。
-#: 见 `optimizer/theory/L20-THIRD-TOLERANCE.md` 与 ARCHITECTURE.md D-35。
-#: 只在 `SignalMode.LOOSE` 下生效。
-THIRD_TOL = 0.1
+# `THIRD_TOL` 已删除（2026-10-04，D-41）。
+#
+# 它曾是第三类买卖点的回试容忍度（中枢高度 `(ZG - ZD)` 的 10%，只在
+# `SignalMode.LOOSE` 下生效），标注为「工程口径，无原文依据」。
+# 删除理由不是「工程口径不好」，而是它**实际翻出来的信号与第 20 课正面冲突**：
+# 全市场日线实测（5440 票）非严格独有的第三类信号 **99 条**，其中
+# **44 条**挂在中枢段数被 `MAX_SEGMENTS` 掐停的中枢上（那里**根本没有离开段**，
+# 由下方 `_third_kind` 的 `capped` 收口拦掉），**55 条**挂在**尚未封口**的中枢
+# 尾段上（`Pivot.status is TENTATIVE`，回试段就是最后那一段、且仍与 `[ZD, ZG]`
+# 重叠）—— 这 55 条在严格口径下本来就不成立，容忍度一删就没了。
+# 两类都违背第 20 课「其低点不跌破ZG」「必须是第一次」。
+# ★ 上面 99 / 44 / 55 这组数字测自**删除 `THIRD_TOL` 之前**的代码，探针是一次性
+#   脚本、未入库，因此**无法从当前主干复现**；它只是删除决策的输入，不是可复现证据。
+#   可复现的那组数字在 `docs/evidence/2026-10-04-capped-signal-gate.md`。
+# 它原本的辩护是「补偿段数上限截断」——`capped` 收口后这个辩护不复存在。
+# 见 `optimizer/theory/L20-THIRD-TOLERANCE.md`、
+# `ARCHITECTURE.md` 的 D-35「变更历史」与 D-41。
 
 
 class SignalKind(str, Enum):
@@ -188,7 +200,7 @@ def find_signals(
         macd_df = macd(bars["close"])
 
     out: list[Signal] = []
-    out.extend(_third_kind(segs, pivots, level, mode))
+    out.extend(_third_kind(segs, pivots, level))
     out.extend(_first_kind(segs, pivots, level, macd_df))
     divs: tuple[Any, ...] = ()
     if mode is SignalMode.LOOSE:
@@ -202,8 +214,8 @@ def find_signals(
     return [replace(s, idx=i) for i, s in enumerate(out)]
 
 
-def _third_kind(segs: list[Segment], pivots: Sequence[Pivot], level: str,
-                mode: SignalMode = SignalMode.STRICT) -> list[Signal]:
+def _third_kind(segs: list[Segment], pivots: Sequence[Pivot],
+                level: str) -> list[Signal]:
     """第三类买卖点：离开中枢后回抽不回中枢（第 20 课，判据是**位置**）。
 
     第 20 课原文：「一个次级别走势类型向上离开缠中说禅走势中枢，然后以一个
@@ -219,40 +231,54 @@ def _third_kind(segs: list[Segment], pivots: Sequence[Pivot], level: str,
     —— 它若整段在 ZG 之上，方向必然向下。于是按离开段方向向上且低点 > ZG
     写的判据在真实数据上恒不成立，本函数曾经在 148 只票 / 193 个中枢上产出 0 个信号，
     而在合成用例上通过，只因为那些合成线段是断开的（相邻段之间留了缺口）。
+
+    **前置条件（D-41）：中枢必须 `capped is False`。**
+
+    位置口径只在「整段不碰 `[ZD, ZG]` 的下一段封口」时成立 —— 那才是离开段。
+    `find_pivots` 的延伸循环有两个退出理由，只有一个能证明离开段存在：
+
+    - 退出理由是「`confirmed[j]` 不碰 `[ZD, ZG]`」⇒ `end_idx` 是离开段，`end_idx+1`
+      是回试段。**这是唯一合法的分支**，等价于 `not capped and back is not None`。
+    - 退出理由是「段数上限掐停」（`capped is True`）⇒ 组内每一段（含 `end_idx`）
+      都仍与区间重叠，本级别**不存在**离开段。第 20 课定理一「走势中枢的延伸等价于
+      任意区间[dn，gn]与[ZD，ZG]有重叠」；第 33 课说凑满 9 段就已经是更大级别的
+      中枢了，而本项目**不做级别递归** ⇒ 正确做法是不产出，不是拿延伸段冒充离开段。
+    - 退出理由是「用尽确认段」（`p.status is TENTATIVE`，`j == n`）⇒ 离开段
+      **未被证伪、也未被证实**。此时回试段必然还是窗口右端的未确认尾段，`_seal`
+      会把信号标成 `TENTATIVE`、回测挡住它 —— 这正是 `Status.TENTATIVE` 的用途，
+      所以这里**故意不拦**（见 D-41「被否决的替代方案」）。
+
+    **这一处的 `capped` 门是结构性 no-op（据实记录，不是「已验证」）。**
+    `capped` 的定义本身就要求 `end_idx + 1` 与 `[ZD, ZG]` 重叠，所以买侧
+    `back.low > ZG`（卖侧 `back.high < ZD`）在 capped 中枢上**恒不成立** ——
+    把这一行改成 `if False and p.capped:` 重跑，全市场 5440 票的判据一输出逐项
+    不变（实测 `--limit 600` 亦然）。留它的理由是**口径**而不是当下的产出：
+    它把「capped 中枢的 `end_idx` 不是离开段」写成可执行的不变量，否则将来任何
+    一次「放宽第三类判据」都会悄悄把延伸中的中枢重新误报成第三类（`THIRD_TOL`
+    就是这么来的）。真正有产出差异的是 `_entering_and_leaving` / `_leaving_legs`
+    两处（趋势背驰 180 → 116、第一类买点 137 → 91）。
     """
     out: list[Signal] = []
     for p in pivots:
+        if p.capped:
+            continue
         leave_i, back_i = p.end_idx, p.end_idx + 1
         if back_i >= len(segs):
             continue
         leave, back = segs[leave_i], segs[back_i]
         if _dead(leave) or _dead(back):
             continue
-        # 容忍度：允许回试段小幅回到中枢内。**工程口径，无原文依据**（D-35）。
-        # 严格模式 `tol = 0.0`，`p.zg - 0.0` 与原判据数值等价。
-        #
-        # 这条容忍度**只在被 `MAX_SEGMENTS` 截断的中枢上才可能翻结论**：延伸
-        # 循环会把任何仍与 `[zd, zg]` 重叠的后续段并进中枢组（`pivot.py` 的
-        # `_overlaps`），只有段数上限先到，回试段才会重叠却没被并进去。
-        # 实测命中率约 1/60，见 `optimizer/theory/L20-THIRD-TOLERANCE.md`。
-        tol = THIRD_TOL * (p.zg - p.zd) if mode is SignalMode.LOOSE else 0.0
         if leave.direction == 1 and leave.high > p.zg:
-            if back.direction == -1 and back.low > p.zg - tol:
-                # 后缀只在容忍度**真正起作用**时追加：严格判据本来就通过时，
-                # 这个信号与容忍度无关，不该宣称用了它（严格模式 tol=0 ⇒ 永不追加）。
-                used = bool(tol) and back.low <= p.zg
+            if back.direction == -1 and back.low > p.zg:
                 out.append(_sig(
                     SignalKind.B3, back, level, p.idx,
-                    f"向上离开中枢{p.idx}(ZG={p.zg:.3f})后回抽低点 {back.low:.3f} 不回中枢"
-                    + (f"（非严格：回试容忍 {tol:.4f}）" if used else ""),
+                    f"向上离开中枢{p.idx}(ZG={p.zg:.3f})后回抽低点 {back.low:.3f} 不回中枢",
                 ))
         elif leave.direction == -1 and leave.low < p.zd:
-            if back.direction == 1 and back.high < p.zd + tol:
-                used = bool(tol) and back.high >= p.zd
+            if back.direction == 1 and back.high < p.zd:
                 out.append(_sig(
                     SignalKind.S3, back, level, p.idx,
-                    f"向下离开中枢{p.idx}(ZD={p.zd:.3f})后回抽高点 {back.high:.3f} 不回中枢"
-                    + (f"（非严格：回试容忍 {tol:.4f}）" if used else ""),
+                    f"向下离开中枢{p.idx}(ZD={p.zd:.3f})后回抽高点 {back.high:.3f} 不回中枢",
                 ))
     return out
 
@@ -265,9 +291,21 @@ def _entering_and_leaving(segs: list[Segment], pivots: Sequence[Pivot],
     价格带出中枢区间、创出新极值的那一段 —— 第 24 课比较力度的对象正是它。
     取 `segs[p.end_idx + 1]` 会把回抽段当离开段，方向必然与趋势相反，
     于是 `leave.direction != want`，第一类买卖点永远不会触发。
+
+    `capped` 的中枢（第 33 课段数上限掐停）**跳过**：那里 `end_idx` 只是仍在枢内
+    的延伸段，拿它当离开段去比 MACD 力度就是比错了对象（D-41）。
+    与 `divergence.py::_leaving_legs` 逐条相同，两处必须同步改。
+
+    **守卫在哪**：`test_trend_divergence_matches_b1_s1` 的双向相等断言**量不到**
+    这个门（夹具的 4 只票上没有落在 capped 中枢上的趋势背驰，实测去掉任一处门它
+    仍然全绿）。真正咬住这个分支的是
+    `test_divergence.py::test_capped_pivot_is_skipped_by_both_leaving_leg_implementations`
+    —— 它对两份实现各断言一次，去掉任一处门都会在对应的那行红。
     """
     out = []
     for k, p in enumerate(pivots):
+        if p.capped:
+            continue
         leave = segs[p.end_idx]
         if _dead(leave) or leave.direction != want:
             continue
