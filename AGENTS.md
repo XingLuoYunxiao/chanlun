@@ -2,8 +2,8 @@
 
 给在这个仓库里干活的 AI agent（以及人）的作业规则。
 
-项目：`chanlun` —— 自建缠论股票分析系统。仓库根 `/Users/zzz/workspace`，
-本项目根 `/Users/zzz/workspace/chanlun`。
+项目：`chanlun` —— 自建缠论股票分析系统。本机 checkout 里它位于外层工作区
+仓库的子目录 `chanlun/`；下文所有命令一律以**本项目根目录**为工作目录。
 
 ---
 
@@ -131,8 +131,10 @@ version = "0.2.0"
 2. 在 `CHANGELOG.md` 顶部把 `[Unreleased]` 的内容移进新的
    `## [x.y.z] - YYYY-MM-DD`，并补一个新的空 `[Unreleased]`。
 3. 跑全量测试（见 §4）。
-4. 本仓库**没有 git remote**，所以不写版本对比链接。
-   将来加了 remote 再补。
+4. 本仓库的 remote 是 `git@github.com:XingLuoYunxiao/chanlun.git`（2026-10-04 起）。
+   `CHANGELOG.md` 目前仍**不写**版本对比链接；下次发版时补上
+   `[x.y.z]: https://github.com/XingLuoYunxiao/chanlun/compare/...` 与
+   `[Unreleased]` 的对比链接，并把这条说明删掉。
 
 ---
 
@@ -210,7 +212,7 @@ python3 tools/crawl_chanshi.py check       # 覆盖度核对
 ### 环境
 
 ```bash
-cd /Users/zzz/workspace/chanlun
+cd <本项目根目录>
 
 # 跑测试（必须从这个目录跑）
 ../.venv-chanlun/bin/pytest
@@ -229,7 +231,7 @@ PYTHONPATH=src PYTHONUNBUFFERED=1 nohup ../.venv-chanlun/bin/python \
 
 - **联网测试默认不跑**（`addopts = "-m 'not live'"`）。
 - 机器：macOS arm64，TZ = Asia/Shanghai，**没有 `timeout` 命令**。
-- 依赖装在 `/Users/zzz/workspace/.venv-chanlun/`。
+- 依赖装在**项目根目录上一级**的 `.venv-chanlun/`（下文写 `../.venv-chanlun/`）。
 
 ### 改完必须做的事
 
