@@ -38,7 +38,7 @@ from typing import Any, Sequence
 
 import pandas as pd
 
-from .divergence import DivergenceKind, find_divergences
+from .divergence import DivergenceKind, extreme_ts, find_divergences
 from .macd import hist_area, macd
 from .pivot import Pivot
 from .segment import Segment
@@ -162,11 +162,13 @@ def _seal(sig: Signal, seg: Segment) -> Signal:
 
 
 def _sig(kind: SignalKind, seg: Segment, level: str, pivot_idx: int | None,
-         reason: str) -> Signal:
-    price = seg.low if SignalKind(kind).is_buy else seg.high
+         reason: str, bars: "pd.DataFrame | None" = None) -> Signal:
+    buy = SignalKind(kind).is_buy
+    price = seg.low if buy else seg.high
     return _seal(
         Signal(
-            idx=0, kind=kind, ts=seg.end.end.ts, price=price, level=level,
+            idx=0, kind=kind, ts=extreme_ts(bars, seg, -1 if buy else 1),
+            price=price, level=level,
             pivot_idx=pivot_idx, reason=reason,
             src_start=seg.src_start, src_end=seg.src_end,
         ),
@@ -200,22 +202,22 @@ def find_signals(
         macd_df = macd(bars["close"])
 
     out: list[Signal] = []
-    out.extend(_third_kind(segs, pivots, level))
-    out.extend(_first_kind(segs, pivots, level, macd_df))
+    out.extend(_third_kind(segs, pivots, level, bars))
+    out.extend(_first_kind(segs, pivots, level, macd_df, bars))
     divs: tuple[Any, ...] = ()
     if mode is SignalMode.LOOSE:
         # 引擎会另算一份给 `Snapshot.divergences` 用；这里自己算是为了让
         # `find_signals` 保持可独立调用（测试、扫描器都不经过引擎）。
         divs = find_divergences(bars, segs, pivots, level, macd_df)
-        out.extend(_consolidation_kind(divs, segs, level))
-    out.extend(_second_kind(out, segs, level, mode, divs))
+        out.extend(_consolidation_kind(divs, segs, level, bars))
+    out.extend(_second_kind(out, segs, level, mode, divs, bars))
 
     out.sort(key=lambda s: (s.ts, s.kind.value))
     return [replace(s, idx=i) for i, s in enumerate(out)]
 
 
 def _third_kind(segs: list[Segment], pivots: Sequence[Pivot],
-                level: str) -> list[Signal]:
+                level: str, bars: "pd.DataFrame | None" = None) -> list[Signal]:
     """第三类买卖点：离开中枢后回抽不回中枢（第 20 课，判据是**位置**）。
 
     第 20 课原文：「一个次级别走势类型向上离开缠中说禅走势中枢，然后以一个
@@ -273,12 +275,14 @@ def _third_kind(segs: list[Segment], pivots: Sequence[Pivot],
                 out.append(_sig(
                     SignalKind.B3, back, level, p.idx,
                     f"向上离开中枢{p.idx}(ZG={p.zg:.3f})后回抽低点 {back.low:.3f} 不回中枢",
+                    bars=bars,
                 ))
         elif leave.direction == -1 and leave.low < p.zd:
             if back.direction == 1 and back.high < p.zd:
                 out.append(_sig(
                     SignalKind.S3, back, level, p.idx,
                     f"向下离开中枢{p.idx}(ZD={p.zd:.3f})后回抽高点 {back.high:.3f} 不回中枢",
+                    bars=bars,
                 ))
     return out
 
@@ -319,7 +323,8 @@ def _entering_and_leaving(segs: list[Segment], pivots: Sequence[Pivot],
 
 
 def _first_kind(segs: list[Segment], pivots: Sequence[Pivot], level: str,
-                macd_df: pd.DataFrame | None) -> list[Signal]:
+                macd_df: pd.DataFrame | None,
+                bars: "pd.DataFrame | None" = None) -> list[Signal]:
     """第一类买卖点：趋势背驰（创新极值 + 力度衰竭）。"""
     out: list[Signal] = []
     trends = classify_trends(pivots, level)
@@ -345,14 +350,16 @@ def _first_kind(segs: list[Segment], pivots: Sequence[Pivot], level: str,
             where = "新低" if want == -1 else "新高"
             out.append(_sig(
                 kind, leave, level, p.idx,
-                f"趋势背驰：{leave.end.end.ts} 创{where} {leave.low if want == -1 else leave.high:.3f}，"
+                f"趋势背驰：{extreme_ts(bars, leave, want)} 创{where} {leave.low if want == -1 else leave.high:.3f}，"
                 f"MACD 面积 {a_now:.4f} < 前一同向走势 {a_prev:.4f}",
+                bars=bars,
             ))
     return out
 
 
 def _consolidation_kind(divs: Sequence[Any], segs: list[Segment],
-                        level: str) -> list[Signal]:
+                        level: str,
+                        bars: "pd.DataFrame | None" = None) -> list[Signal]:
     """盘整背驰买卖点（第 39 课）。
 
     第 60 课硬约束：「严格来说，盘整背驰无所谓第一类买点，只是这样来类比」
@@ -371,13 +378,15 @@ def _consolidation_kind(divs: Sequence[Any], segs: list[Segment],
         kind = SignalKind.PB if d.direction == -1 else SignalKind.PS
         out.append(_sig(kind, segs[d.seg_idx], level, d.pivot_idx,
                         f"盘整背驰：{d.ts} MACD 面积 {d.area_now:.4f} < "
-                        f"同向前段 {d.area_prev:.4f}"))
+                        f"同向前段 {d.area_prev:.4f}",
+                        bars=bars))
     return out
 
 
 def _second_kind(existing: list[Signal], segs: list[Segment], level: str,
                  mode: SignalMode = SignalMode.STRICT,
-                 divs: Sequence[Any] = ()) -> list[Signal]:
+                 divs: Sequence[Any] = (),
+                 bars: "pd.DataFrame | None" = None) -> list[Signal]:
     """第二类买卖点：第一类买卖点之后的次级别回抽不破前极值。"""
     out: list[Signal] = []
     for first in existing:
@@ -394,12 +403,14 @@ def _second_kind(existing: list[Signal], segs: list[Segment], level: str,
                 out.append(_sig(
                     SignalKind.B2, back, level, first.pivot_idx,
                     f"第一类买点 {first.ts} 后回抽低点 {back.low:.3f} 不破 {first.price:.3f}",
+                    bars=bars,
                 ))
         else:
             if bounce.direction == -1 and back.direction == 1 and back.high < first.price:
                 out.append(_sig(
                     SignalKind.S2, back, level, first.pivot_idx,
                     f"第一类卖点 {first.ts} 后回抽高点 {back.high:.3f} 不破 {first.price:.3f}",
+                    bars=bars,
                 ))
     if mode is SignalMode.LOOSE:
         # 第 27 课《盘整背驰与历史性底部》：
@@ -418,12 +429,14 @@ def _second_kind(existing: list[Signal], segs: list[Segment], level: str,
                 out.append(_sig(
                     SignalKind.B2, back, level, d.pivot_idx,
                     f"盘整背驰 {d.ts} 后回抽低点 {back.low:.3f} 不破 {d.price:.3f}",
+                    bars=bars,
                 ))
             elif (d.direction == 1 and bounce.direction == -1
                     and back.direction == 1 and back.high < d.price):
                 out.append(_sig(
                     SignalKind.S2, back, level, d.pivot_idx,
                     f"盘整背驰 {d.ts} 后回抽高点 {back.high:.3f} 不破 {d.price:.3f}",
+                    bars=bars,
                 ))
     return out
 
