@@ -28,8 +28,31 @@ tags: 背驰,盘整背驰,走势类型,比较,中枢,趋势,第一类买点,背�
 趋势背驰还要求背驰发生在**第二个中枢之后**，这给「至少要有一个前面的中枢」
 提供了依据。
 
+## 本项目实际实现的是「位置口径」，不是「走势类型口径」（已知差距）
+
+**上面那句「在定义上就不成立」说的是原文，不是代码 —— 代码就是那么干的。**
+这一条以前在本条目里被写成了「因此实现里不会这样」，**是错的**，2026-10-04 更正。
+实测代码比的是**单根线段**：
+
+- `src/chanlun/chan/signal.py::_entering_and_leaving`（`:260-280`）——
+  「离开段」取中枢组的最后一段 `segs[p.end_idx]`，「前一同向段」取上一个中枢的
+  `segs[pivots[k - 1].end_idx]`，**各一段**（该函数自己的 docstring 也写明这是
+  **位置口径**，并说第 24 课比较力度的对象正是它）。
+- `src/chanlun/chan/signal.py::_first_kind`（`:283-313`）—— 拿这两段比极值
+  （`leave.low < prev.low` / `leave.high > prev.high`）与 MACD 面积。
+- `src/chanlun/chan/signal.py::_area`（`:125-133`）—— 入参是单个 `Segment`，
+  面积按**这一根线段**的 `src_start`→`src_end` 累计，**不是**按走势段累计。
+
+所以第 27 课「把第一、三段看成两个**走势类型**之间的比较」**没有落到代码里**。
+这不影响第一类买卖点的**存在性**判据（两个中枢之后 + 创新极值 + 面积收缩），
+但会影响**边界情形**：当离开段只是一根线段、而它在走势类型层面还属于一个未走完的
+走势段时，面积比较的对象比原文要求的**窄**。要改属 `AGENTS.md` §5 的**判据变更**，
+需要重锚 `tests/chan/test_signal.py` 里已冻结的信号数与时间戳，**本轮不改**。
+
 ## 适用算法
 
-- `src/chanlun/chan/signal.py::_entering_and_leaving` —— 离开段/前一同向段的选取。
-- `src/chanlun/chan/signal.py::_first_kind` —— 趋势背驰的比较单位与极值条件。
-- `src/chanlun/chan/signal.py::_area` —— 面积口径按走势段而非单线段累计。
+- `src/chanlun/chan/signal.py::_entering_and_leaving`（`:260-280`）—— 离开段/前一同向段
+  的选取，**各取单根线段**（位置口径，见上）。
+- `src/chanlun/chan/signal.py::_first_kind`（`:283-313`）—— 趋势背驰的极值条件与面积比较；
+  比较单位是**线段**，不是走势类型。
+- `src/chanlun/chan/signal.py::_area`（`:125-133`）—— **单线段**的同色柱面积累计。
