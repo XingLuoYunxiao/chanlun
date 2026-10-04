@@ -35,7 +35,7 @@ strict 的四个亏损回合比率绝对值之和（107.8%）大于赢家的比�
 ## 用法
 
 ```bash
-cd /Users/zzz/workspace/chanlun
+cd <本项目根目录>
 PYTHONPATH=src ../.venv-chanlun/bin/python \
   optimizer/tools/dump_roundtrip_basis.py --n 150 --out /tmp/exp/dump_rt.json
 ```
