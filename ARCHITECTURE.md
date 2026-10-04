@@ -330,15 +330,15 @@ raw bars: DataFrame(ts, high, low, close)
   │ find_pivots(segments, level)       pivot.py:114        ← 中枢（第17/20课）
   ▼ pivots: list[Pivot]
   │ signal_fn(bars, segments, pivots, level)   engine.py:185-186
-  ▼ signals: list[Signal]              signal.py:104-122   ← 三类买卖点
+  ▼ signals: list[Signal]              signal.py:116-134   ← 三类买卖点
 ```
 
 - **引擎不内置买卖点规则**，`signal_fn` 由调用方注入（`engine.py:49-52, 145, 185-186`）。
   仓库内实际装配均为 `signal_fn=find_signals`：
   `web/api.py:403`、`scan/scanner.py:440`、`backtest/runner.py:173`、
   `optimizer/agent.py:102`。
-- `find_signals` 内部补两步：`macd(bars["close"])`（`signal.py:187-188`）、
-  `classify_trends(pivots, level)`（`signal.py:287`）。
+- `find_signals` 内部补两步：`macd(bars["close"])`（`signal.py:199-200`）、
+  `classify_trends(pivots, level)`（`signal.py:325`）。
 - **`trend` 不进 `Snapshot`**：`Snapshot` 字段为
   `code, period, as_of, level, merged, fractals, strokes, segments, pivots,
   signals, version`（`engine.py:60-79`），**无 `trends` 字段**。
@@ -372,7 +372,7 @@ raw bars: DataFrame(ts, high, low, close)
 | 分型窗口 | 3 根合并 K 线、**严格不等式** | `fractal.py:59-66` | 严格不等式避免"平台等高"误判 |
 | `Segment.policy` 默认 | `"lesson_67_78"` | `chan/types.py:107` | `Lesson6768Policy`（`segment.py:231`） |
 | 左端起段选择 | 取**最早的前缀**上**第一个可行**的起点（因果；不再是全序列 argmax） | `segment.py:337-411` | **原文空白项**，工程判据（[D-30](#d-30-被截断的左端起段取还能确认最多线段的起点)，已由 [D-40](#d-40-线段划分改为前缀因果缺口确认只看已出现的笔左端起段取最早的可行起点) 取代） |
-| 状态默认 | `Stroke/Segment/Pivot/Trend = CONFIRMED`；`Signal = TENTATIVE` | `chan/types.py:71,105`；`pivot.py:98`；`trend.py:48`；`signal.py:115` | 信号须经 `_seal` 升级 |
+| 状态默认 | `Stroke/Segment/Pivot/Trend = CONFIRMED`；`Signal = TENTATIVE` | `chan/types.py:71,105`；`pivot.py:98`；`trend.py:48`；`signal.py:127` | 信号须经 `_seal` 升级 |
 
 ### 3.4 结构层决策记录
 
@@ -489,7 +489,7 @@ G2a 的 9 段上限随之作废。
 **为什么不只写"趋势按 `[DD,GG]` 判"**：本页**没有"走势类型"分节** ——
 `/api/structure` 的响应里没有 `trends` 字段（只有 `fractals`/`strokes`/`segments`/
 `pivots`/`signals`），ledger 也只有线段/中枢/买卖点三节。趋势判据在页面上是
-**隐形**的，但它决定第一类买卖点出不出现：`signal.py:287-296` 用
+**隐形**的，但它决定第一类买卖点出不出现：`signal.py:325-334` 用
 `classify_trends` 取出上涨/下跌的中枢组，组内不足两个中枢就跳过 ——
 `down_pivots`/`up_pivots` 为空时 **B1/S1 一个都不会生成**。
 所以旧口径（趋势恒为 0）等于把第一类买卖点**静默关掉**，而页面上看不出任何异常。
@@ -520,7 +520,7 @@ G2a 的 9 段上限随之作废。
 （`docs/evidence/2026-10-01-chanlun-strictness-audit.md` §2.9）。
 
 **触发段颜色**取该段自身方向：`hist_area(macd_df, seg.src_start, seg.src_end,
-seg.direction)`（`signal.py:125-133`）。
+seg.direction)`（`signal.py:137-145`）。
 
 **背驰判据** `is_divergence`：后段创新极值**且**面积**严格缩小**才成立；
 未创新极值不算、面积相等不算（`macd.py:246-276`）。
@@ -539,7 +539,7 @@ seg.direction)`（`signal.py:125-133`）。
 #### D-19 第三类买卖点用"位置"口径
 
 **决策**：离开段 = `segs[p.end_idx]`，回试段 = `segs[p.end_idx + 1]`
-（`signal.py:205-257`）。
+（`signal.py:217-283`）。
 
 **依据**：第 20 课原文：
 
@@ -548,7 +548,7 @@ seg.direction)`（`signal.py:125-133`）。
 
 **被否决的写法**：把 `segs[p.end_idx + 1]` 当离开段。真实线段首尾相连，
 那**必然**是一段反向回抽段。旧写法在 148 只票 / 193 个中枢上产出 **0 信号**
-（`signal.py:217-221`）。
+（`signal.py:229-233`）。
 
 **变更历史**：`0.0.9`（commit `271ff95`）。
 
@@ -556,23 +556,23 @@ seg.direction)`（`signal.py:125-133`）。
 
 **决策**：`_first_kind` 要求 `classify_trends` 给出下跌趋势覆盖的中枢组（≥ 2 个），
 `leave = segs[p.end_idx]` 方向须 `== want == -1`，且要求 `leave.low < prev.low`
-**且**面积 `a_now < a_prev`（`signal.py:300-305`）。
+**且**面积 `a_now < a_prev`（`signal.py:338-343`）。
 
 **依据**：第 24 课把"趋势背驰"与"盘整背驰"分开。
 
-**已知空白**：**盘整背驰（一个中枢前后两段比较）没有实现**（`signal.py:6-7, 22-24`）。
+**已知空白**：**盘整背驰（一个中枢前后两段比较）没有实现**（`signal.py:6-7, 25-27`）。
 
 **内联而非复用**：第一类买卖点处**内联**同一判据而非调用 `is_divergence`
-（`signal.py:300-306`）。
+（`signal.py:338-344`）。
 
 #### D-21 第二类买卖点是近似
 
 **决策**：以已有 B1 为锚，用 `src_start/src_end` 在 `segs` 定位下标 `k`，
 取 `bounce = segs[k+1]`、`back = segs[k+2]`；要求 `bounce.direction == 1 and
-back.direction == -1 and back.low > first.price`（`signal.py:349-355`）。
+back.direction == -1 and back.low > first.price`（`signal.py:387-393`）。
 
 **代码自陈的近似**：原文要求"**次级别**回抽"，本实现用**本级别下一段**近似
-（`signal.py:25-26`）。
+（`signal.py:28-29`）。
 
 #### D-22 禁止未来函数：逐层显式 `confirmed_at`
 
@@ -593,7 +593,7 @@ back.direction == -1 and back.low > first.price`（`signal.py:349-355`）。
 | 线段 | "确认它被破坏的那一笔"的 `confirmed_at`，再用 `_monotone_stamps` 取前缀最大值压实非递减 | `segment.py:435-443, 511-530` |
 | 中枢 | **回试段**的确认时间 | `pivot.py:134-140, 207-214` |
 | 走势 | `max(各中枢 confirmed_at)` | `trend.py:73-80` |
-| 信号 | `_seal` 用触发段的 status/confirmed_at | `signal.py:145-149` |
+| 信号 | `_seal` 用触发段的 status/confirmed_at | `signal.py:157-161` |
 
 **回测唯一入口**：`state.backtestable(items, as_of)` =
 `CONFIRMED and confirmed_at is not None and confirmed_at <= as_of`
@@ -650,7 +650,7 @@ back.direction == -1 and back.low > first.price`（`signal.py:349-355`）。
 
 **下标口径**：`start_idx` / `end_idx` 相对**传给 `find_pivots` 的线段列表**，
 不是过滤后的确认段子列表（`pivot.py:90-92, 119-121`）。
-`signal.py` 必须传同一列表（`signal.py:175-176`）。
+`signal.py` 必须传同一列表（`signal.py:187-188`）。
 
 **不变量**：`dd <= zd < zg <= gg`、≥ 3 段、≤ 8 段、相邻中枢不回溯
 （`pivot.py:272-303`）。
@@ -1015,6 +1015,13 @@ argmax 是 `7855 / 64 / 20 / 44`（列＝累计确认 / 消失总 / 消失中间
 
 #### D-35 第三类买卖点的容忍度为工程口径，且仅在非严格模式生效
 
+> **⚠️ 本条已作废（2026-10-04，`0.3.0`）**：`THIRD_TOL` 已**删除**，第三类买卖点的
+> 判据不再随 `SignalMode` 分叉。作废理由、被否决的替代方案与可复现测量见
+> **[D-41](#d-41-段数上限掐停的中枢pivotcapped在信号层必须整条跳过删除-third_tol)**。
+> 下面记录的 `THIRD_TOL` 行号、`reason` 后缀格式与实测数字**描述的是引入时的状态**，
+> 按「只增不改」纪律**保留原样**，不要据此去代码里找 `THIRD_TOL`。
+> 唯一的例外是下面 ⑧ 那条「两个来源不同的数字」的告诫 —— 它仍然有效。
+
 **决策**：`LOOSE` 模式下第三类买卖点的回试判据改为
 `back.low >= p.zg - THIRD_TOL * (p.zg - p.zd)`（卖点对称）。
 `THIRD_TOL = 0.1` 为具名常量，注释与文档三处均标注「工程口径，无原文依据」。
@@ -1282,7 +1289,7 @@ DD=min(dn)，**n遍历中枢中所有Zn**。」原文只说「中枢中所有 Zn
 **依据**：第 33 课《走势的多义性》把延伸上限写成数字（「中枢的延伸不能超过5段，也就是
 一旦出现6段的延伸，加上形成中枢本身那三段，就构成更大级别的中枢了」），但**没有规定
 被上限截断时哪一段是离开段** —— 原文空白。而 `chan/signal.py`、`chan/divergence.py`
-多处按位置约定「`segments[end_idx]` 是离开段」（`signal.py:213`、`divergence.py:164-166`）。
+多处按位置约定「`segments[end_idx]` 是离开段」（`signal.py:225`、`divergence.py:164-166`）。
 上限掐停时这个前提**不成立**：`end_idx` 那一段只是一段仍在枢内的延伸段。
 
 判定必须带上 `_overlaps(confirmed[j], zd, zg)`：延伸循环把上限判在「有重叠」**之前**
@@ -1561,6 +1568,184 @@ M4 逐根前视），数字可从该命令复现。**本轮未修，故不得在
 - **本条目不主张性能收益**：同一把尺子下 7 个臂的耗时同在 4 秒量级
   （L0 3.8s / 已落地 3.9s），性能既不是本轮目标、也不是采纳理由。
 
+#### D-41 段数上限掐停的中枢（`Pivot.capped`）在信号层必须整条跳过；删除 `THIRD_TOL`
+
+**决策**：`capped = True` 的中枢（第 33 课段数上限真的掐停，见 D-38）在信号层
+**不产出任何「离开-依赖」的信号**，三处都加门。
+
+> 这三条**故意写成带空行的独立列表，不写成表格**：表格行必然相邻，
+> 而 `optimizer/tools/check_doc_line_refs.py` 的符号漂移扫描按「文档行 ±1 行」
+> 取窗口，会把隔壁那行的函数名与本行的行号区间**交叉配对**，凭空报出两条
+> `±1` 假告警（实测过：`L1578 _entering_and_leaving -> def@286 范围[(217,217)]`
+> 与 `L1579 _third_kind -> def@217 范围[(286,286)]`，两行正好互换）。
+> 加空行后窗口取不到隔壁的符号，假告警消失。工具本身没改。
+
+- `src/chanlun/chan/signal.py:217` —— `_third_kind`（门在函数内 `:263`）：
+  `if p.capped: continue`，挡第三类买卖点（第 20 课位置口径）。
+
+- `src/chanlun/chan/signal.py:286` —— `_entering_and_leaving`（门在 `:307`）：
+  `if p.capped: continue`，挡第一类买卖点 / 趋势背驰的「离开段 vs 前一同向段」比较。
+
+- `src/chanlun/chan/divergence.py:182` —— `_leaving_legs`（门在 `:203`）：
+  `if p.capped: continue`，挡趋势背驰条目。
+
+同时**删除** `THIRD_TOL = 0.1`（原常量定义处，D-35 的产物）：
+第三类买卖点的判据**不再随模式分叉**，严格与非严格在第三类上逐项相同。
+`_third_kind` 因此也不再收 `mode` 参数。
+
+**依据**：
+
+1. **第 33 课《走势的多义性》**：「中枢的延伸不能超过5段，也就是一旦出现6段的延伸，
+   加上形成中枢本身那三段，就构成更大级别的中枢了。」
+   本级别最多 `3 + 5 = 8` 段，到顶就停 —— `capped` 记的正是「到顶就停」。
+2. **第 20 课中心定理一**：「走势中枢的延伸等价于任意区间[dn，gn]与[ZD，ZG]有重叠。」
+   `capped` 的中枢组里**每一段（含 `end_idx`）都仍与 `[ZD, ZG]` 重叠**，
+   本级别**不存在**离开段。拿延伸段当离开段去比 MACD 力度，比的是错的对象。
+   这不是「判据更严」，是**对象认错了**。
+3. **第 24 课**：比较力度的对象是「离开中枢的那一段」；没有离开段就没有比较对象。
+4. **`THIRD_TOL` 的删除依据**：它的原文依据本来就薄（D-35 自己写明
+   「工程口径，无原文依据」）。第 20 课第三类买点的原文是**位置**判据：
+   「一个次级别走势类型向上离开缠中说禅走势中枢，然后以一个次级别走势类型回试，
+   其低点不跌破ZG，则构成第三类买点」—— 没有「容忍中枢高度 10%」这一说。
+   而 `capped` 门落地后，容忍度**唯一还能起作用的地方**（`capped` 中枢上）
+   已被结构性排除，留着一个不生效、又无原文依据的常量只会误导。
+5. **实测**：见 `docs/evidence/2026-10-04-capped-signal-gate.md`。
+   全市场日线 5440 票：确认中枢 **8186** 个，其中 `capped` **2759** 个（**33.7%**）。
+   修复后 `capped` 中枢上的离开-依赖信号 **0** 条；去掉两处有产出的门重跑 ⇒
+   `capped` 列变成 `b1 46 / s1 18 / 趋势背驰 64`，判据一 = **192**，退出码 **1**。
+   即：全部趋势背驰 **180 → 116**、第一类买点 **137 → 91**、第一类卖点 **43 → 25**，
+   差值 46 / 18 / 64 全部落在 `capped` 中枢上。
+
+**被否决的替代方案**：
+
+1. **只挡「未确认」而不挡 `capped`**（`if p.capped or p.status is not Status.CONFIRMED`）
+   —— **已否决**。这是把 D-26（`ARCHITECTURE.md:648`，「只吃 CONFIRMED 线段」）
+   误读成「只吃 CONFIRMED 中枢」。D-26 约束的是**线段**，不是中枢；一个
+   `TENTATIVE` 中枢是**每一只活着的股票**的常态右边缘，挡掉它等于让右边缘永远
+   没有买卖点。2026-10-04 用户裁定「保持现状：不 gate TENTATIVE」。
+   > 该方案当时实测能多挡下 `strict b3 243 / s3 118`、`loose b3 271 / s3 145`
+   > 条信号。这些数字是在**已删除的探针脚本**（未入库）上测得的，无法从当前主干
+   > 复现，故只作为「被否决方案的规模量级」留档，不作为可复现证据。
+2. **把 `capped` 中枢交给「级别递归」而不是跳过** —— **本轮不做**。
+   理论上更贴原文（段数到顶 = 升级成更大级别的中枢），但本级别没有级别递归，
+   实现它属于新功能而非修复。已记入 §5 已知空白。
+3. **保留 `THIRD_TOL`，只把它的作用域限定到 `capped=False`** —— **已否决**。
+   等价于「保留一个永不生效的常量」，且 `capped` 与第三类位置判据**互斥**
+   （见下条「后果」），限定作用域后 `THIRD_TOL` 恒不生效，是死代码。
+4. **保留 `mode` 参数、只删容忍度** —— **已否决**。`_third_kind` 是唯一使用
+   `mode` 的第三类路径；留着参数会让「第三类是否随模式分叉」这个问题
+   永远悬着。删掉参数后，`find_signals` 的 `mode` 只影响
+   `if mode is SignalMode.LOOSE:` 那一段追加 `find_divergences` 信号。
+5. **让 G3a 补丁（`optimizer/patches/round-006-G3a.patch`）就此作废** —— **已否决**。
+   G3a 提案的正是「把 `_third_kind` 的 `capped` 门加回来」，与 D-41 同向；
+   2026-10-04 用户裁定「重锚 G3a 让它继续待评审」，于是把它重新锚到
+   `THIRD_TOL` 删除后的主干上，`# status: pending` 保持不变。
+
+**后果 / 变更历史**：
+
+- **这是判据变更**（同一只票的买卖点数量会变），按 0.x 约定记为 **`MINOR`**：
+  `0.2.0 → 0.3.0`。
+- **★ 三处门的扰动矩阵**（全部自测，工具 `optimizer/tools/measure_capped_signal_gate.py`，
+  全市场日线 5440 票；命令见 `docs/evidence/2026-10-04-capped-signal-gate.md`）。
+  表里 `capped 列` 是**落在 `capped` 中枢上**的离开-依赖信号条数，
+  它必须恒为 0 —— 这就是判据一：
+
+  | 扰动 | `capped` 列 b1/s1/b3/s3 | 非-`capped` b1/s1/b3/s3 | 趋势背驰 | 判据一 | 退出码 |
+  |---|---|---|---|---|---|
+  | 无（落定主干） | **0/0/0/0** | 91/25/3065/2723 | 116 | 0 | 0 |
+  | 只拆 `_third_kind` 的门 | **0/0/0/0** | 91/25/3065/2723 | 116 | 0 | 0 |
+  | 拆 `_entering_and_leaving` + `_leaving_legs` | **46/18/0/0** | 91/25/3065/2723 | 64 | **192** | **1** |
+
+  第二行与第一行**逐项相同**：`_third_kind` 的门是结构性 no-op（见下条）。
+  第三行是**能失败**的证明：判据一从 0 跳到 192，退出码 0 → 1。
+  另外单独测过「把 `mode` 相关的 `THIRD_TOL` 重新注入」（`--limit 600`，
+  与上表不同规模，故不并列）：`strict b3 327 / s3 244` 对 `loose b3 330 / s3 245`
+  ⇒ 判据三失败、退出码 1。**注入一个与 `mode` 无关的常数 `+0.1` 则两态相同**
+  （`strict 330/245 == loose 330/245`，退出码 0）—— 所以判据三的证伪必须恢复
+  `THIRD_TOL` 的**模式相关性**，不是随便加个松弛项。
+- **★ 三处门里只有两处有产出 —— 第三处是结构性 no-op，据实记录。**
+  `_third_kind` 的那道门**无论怎么改都不会改变输出**，实测：
+  单独把它改成 `if False and p.capped:`，全市场 5440 票输出与未扰动**逐项相同**
+  （`capped` 列恒为 0、判据一 0、判据二 11924），退出码仍是 0；`--limit 600`
+  同样逐字节相同。原因是**结构性的**：`capped` 的定义要求 `end_idx + 1` 与
+  `[ZD, ZG]` 重叠，而第三类买点的位置判据要求回试段**不跌破 ZG**
+  （`back.low > p.zg`）—— 两者在**同一段**上互斥，门永远不会触发。
+  **留它的理由是防止将来某次「放宽第三类判据」把延伸中的中枢重新误报成第三类**
+  （`THIRD_TOL` 就是这么来的），它由三条单元测试作为**口径不变量**守住
+  （`tests/chan/test_signal_mode.py::test_capped_pivot_emits_no_third_kind_buy/sell`
+  与 `test_capped_pivot_emits_no_leave_dependent_signal`），
+  **不由** `measure_capped_signal_gate.py` 守住。**不要把它记成「已验证的行为门」。**
+- **★ 一处 docstring 的自我描述被实测证伪并更正**：
+  `divergence.py::_leaving_legs` 原写「否则上面的双向相等断言会把两个实现的不一致
+  暴露出来」，实测**是错的** —— 去掉该函数这一处门，
+  `test_trend_divergence_matches_b1_s1` 仍然全绿（夹具的 4 只票上没有落在
+  `capped` 中枢上的趋势背驰，那条断言量不到这个分支）。已更正为指向真正咬住它的
+  `tests/chan/test_divergence.py::test_capped_pivot_is_skipped_by_both_leaving_leg_implementations`
+  （新写的合成用例，两侧各断言一次，去掉任一处门都会在对应那行红）。
+- **★ 修掉一处「看起来是护栏、其实量不到」的假护栏认知**：D-35 记录的
+  `THIRD_TOL` 曾被当作「严格/非严格差异的全部来源」；实测（在删除 `THIRD_TOL`
+  **之前**的一次性探针上）全市场严格 5788 / 非严格 5887，非严格独有的 99 条
+  拆开是 **44 条落在已确认且 `capped` 的中枢上 / 0 条落在已确认非 `capped` 上 /
+  55 条落在未确认（`TENTATIVE`）中枢上**。所以正确的表述是「在**已确认**中枢上，
+  容忍度只可能在 `capped` 中枢上翻转」，而不是「容忍度只作用于 `capped`」——
+  它同样翻转 55 条未确认中枢上的信号。该探针未入库，数字不可从当前主干复现，
+  故只作决策输入留档。
+- **前端同步**（AGENTS.md §5 第 5 条）：`src/chanlun/web/static/app.js` 里
+  「第三类回试容忍中枢高度 10%（工程口径，无原文依据）」的文案已删除
+  （两处：`basisLine()` 与 `applyModeUI()`），改为「第三类买卖点严格与非严格逐项相同」。
+  `capped` 中枢在图上新增视觉标记：中枢区带用**点线边框 + 降透明度**，
+  标签后缀 ` · 段数到顶`，图例行补
+  「段数到顶（第33课：已构成更大级别中枢；本级别不产出买卖点）」
+  （`app.js:642` 判定，`app.js:662` 标签，`app.js:992` 图例）。
+  此前 `capped` **已在 API JSON 里但前端零消费方**（`grep -rn capped
+  src/chanlun/web/static/` 实测 0 命中）—— 这次把它接上（改后实测 11 命中，其中 `styles.css` 3 处、`app.js` 8 处）。
+  实测 `GET /api/structure?code=sh.600519&period=day&mode=strict&bars=1200` 的
+  `pivots[0]` 确实带 `"capped": true`（`status: confirmed`、`end_idx: 9`），
+  所以标记有真实数据可画，不是空跑的装饰。
+  **已用真实浏览器核对**（AGENTS.md §4.4；DOM dump 读文案，截图只作旁证）：
+  `docs/evidence/2026-10-04-capped-marker-probe.mjs`（headless Chrome + CDP，禁缓存）
+  在 `sh.600519` 日线 1200 根上 7 条判据全过、退出码 0 —— 图例行确实带
+  「 · 段数到顶（第33课：已构成更大级别中枢；本级别不产出买卖点）」，
+  markArea 那一条确实是 `borderType: "dotted"` + `borderWidth: 2` + `opacity: 0.6`，
+  标签 formatter 确实带 ` · 段数到顶`。
+  同页第 1 个中枢 `capped: false` 作**反向对照**，上述四项一项都不亮 ——
+  这个探针**能失败**：把 `app.js:642` 的 `cap` 改成 `false` ⇒ 3 条判据红；
+  只把 `app.js:992` 的图例条件改成 `false` ⇒ 1 条判据红；两次退出码都是 1。
+  细节见 `docs/evidence/2026-10-04-capped-signal-gate.md` §9。
+- **顺带修掉的清单溢出**（同一次浏览器核对发现，与本条同源）：结构清单的
+  `.row-meta` 是 `<span>`（**行内盒子**），而行内盒子上的 `overflow: hidden` 与
+  `text-overflow: ellipsis` **一律不生效** —— CSS 里那两行声明写了等于没写。
+  实测（1600px 视口）`sh.600519` / `sh.000001` / `sz.399006` 三只票的清单里
+  **每一个** `.row-meta` 都冲出右栏边界（12–15 行全中），最多 **560.8px**，
+  也就是日期与笔数那半截画在图表上、被视口右边缘裁掉，用户读不到，连省略号提示都没有。
+  修法：`src/chanlun/web/static/styles.css` 的 `.row-meta` 加 `display: block`
+  （`styles.css:415`；声明本来就想做省略号，块化之后才真的生效）。
+  同一个原因让 `capped` 的 ` · 段数到顶（…）` 后缀在窄栏里**必然读不到** ——
+  所以那个标记不能只放在 `.row-meta`：`.row-title` 上另挂一个点线小标签
+  「段数到顶」（`app.js:1057-1066`，样式 `.chip.capped` 在 `styles.css:435`，
+  `title` 属性带第33课原文依据），并给 `.row-title` 加 `flex-wrap: wrap`
+  （`styles.css:397`）以免最后一个标签重演同样的溢出。
+  探针相应加了 3 条判据（标题行标签数 == 1、非 capped 行为 0、`.row-meta` 不再越界），
+  浏览器复测 10 条判据全过、退出码 0。**这 3 条也各自能失败**：把 `styles.css:415`
+  的 `display: block` 注掉 ⇒ 「不越界」判据红（越界 2 条、最多 554.2px）；
+  把 `app.js:1060` 的 `if (capped === true)` 改成 `if (false)` ⇒ 标签判据红。
+- **与 D-35 的关系**：D-35（`ARCHITECTURE.md:1016`）记录了 `THIRD_TOL` 的引入，
+  本条记录它的删除。D-35 里现在会读到 `THIRD_TOL` 的地方共 5 处
+  （`ARCHITECTURE.md:1018` 的作废提示、`ARCHITECTURE.md:1021`、
+  `ARCHITECTURE.md:1026-1027` 的定义式与常量、`ARCHITECTURE.md:1041` 的勘误、
+  `ARCHITECTURE.md:1054` 的护栏数字、`ARCHITECTURE.md:1098` 的「近乎 inert」注记）——
+  **它们全部描述的是引入时的状态**，按「只增不改」纪律保留原样。
+  **D-35 的历史数字不回填**，以本条为准。
+  其中 `ARCHITECTURE.md:1098` 那条「`THIRD_TOL` 近乎 inert」的注记正好被本条**证实并推进了一步**：
+  D-35 当时只知道它在**已确认非 `capped`** 中枢上 inert，
+  本条把机制说清了 —— `capped` 与第三类位置判据**互斥**，
+  所以它在 `capped` 上也 inert，于是**第三类买卖点根本不再随模式分叉**，
+  常量也就没有存在理由了。
+  同一条删除在 `CHANGELOG.md` 的 `[0.2.0]` 段（`CHANGELOG.md:931-932`，
+  「第三类买卖点的回试容忍度 `THIRD_TOL = 0.1`」）也有历史记载。
+  那是**已发布版本号里的记录**，按「只增不改」纪律**不回填**；
+  本条所在的 `[Unreleased]` 段落负责说明它已被删除。
+
 ### 3.5 课号引用总表（代码 → 原文）
 
 格式：`文件:行号 — 对应逻辑`。行号以**当前工作区**为准。
@@ -1599,9 +1784,9 @@ M4 逐根前视），数字可从该命令复现。**本轮未修，故不得在
 | `macd.py:180-202` | 24 | `hist_area(..., color)` 分色累加（D-17） |
 | `signal.py:6-7` | 24 | 趋势背驰 vs 盘整背驰 |
 | `signal.py:11-13` | 20 | 「离开」是位置 |
-| `signal.py:126-127` | 24 | 向上看红柱子，向下看绿柱子 |
-| `signal.py:209-210` | 20 | 第三类买点定义 |
-| `signal.py:265` | 24 | 比较力度的对象是离开段 |
+| `signal.py:138-139` | 24 | 向上看红柱子，向下看绿柱子 |
+| `signal.py:221-222` | 20 | 第三类买点定义 |
+| `signal.py:291` | 24 | 比较力度的对象是离开段 |
 
 > **本表的行号由工具守门。** 本文档里的 `.py` 引用（`文件.py:行号`）可以随时全量复核
 > —— 文件是否存在、行号是否越界（硬判据，失败即 `exit 1`），外加符号漂移告警与
@@ -1715,13 +1900,13 @@ JSONResponse(status_code=404, content={"detail": exc.detail,
   （`syncable: false`），给一个必然 400 的按钮比不给更糟 ——
   用户点了、等了、被拒，才知道这条路是死的（`app.js:213-216`）。
 - **结构必须画在同一口径上**，否则"前复权的 K 线 + 不复权的笔"是两张图的叠加
-  （`app.js:1414-1415`）。
+  （`app.js:1438-1439`）。
 - **取数不等渲染**：`requestAnimationFrame` 在后台标签页会停摆，把它放在加载路径上
-  会导致页面永远停在"尚未加载"（`app.js:1479-1484`）。
+  会导致页面永远停在"尚未加载"（`app.js:1503-1508`）。
 - **首屏定位只做一次**：`?code=` 优先；否则打开在自选池第一只，且只做一次
   （`initialCodePinned`）。
 - 不复权帧在除权日有一根几十个点的缺口，拿它算涨跌幅会在自选栏里报出一根
-  根本不存在的跌停，而图上那根 K 线看起来是平的（`app.js:1070-1071`）。
+  根本不存在的跌停，而图上那根 K 线看起来是平的（`app.js:1094-1095`）。
 - **顶栏那一行恒定、详情行恒定两行**（2026-10-03）。日/周/月切换时 `.topbar` 的高度、
   `.period` 的尺寸、`#stamp` 的行数**都不许变** —— 变一点下面整张图就跟着上下跳。
   于是：
@@ -1855,10 +2040,11 @@ bs_adjust = "2"
 
 | 项 | 状态 | 位置 |
 |---|---|---|
-| 盘整背驰（第 24 课，一个中枢前后两段比较） | **未实现** | `signal.py:22-24` |
-| 第一类买卖点区间套定位（第 27/28 课，多级别联立） | **未实现** | `signal.py:27` |
-| 第二类买卖点下钻次级别 | **近似**，用本级别下一段代替 | `signal.py:25-26` |
+| 盘整背驰（第 24 课，一个中枢前后两段比较） | **未实现** | `signal.py:25-27` |
+| 第一类买卖点区间套定位（第 27/28 课，多级别联立） | **未实现** | `signal.py:30` |
+| 第二类买卖点下钻次级别 | **近似**，用本级别下一段代替 | `signal.py:28-29` |
 | 九段式中枢（离开后又回到中枢） | **未实现** | `pivot.py:48-49` |
+| **段数到顶的中枢没有升级为更大级别的中枢** | **未实现**。D-41 起 `capped` 中枢在信号层整条跳过，**不再**产出买卖点/背驰；原文的做法是升级成更大级别的中枢，本级别没有级别递归 | [D-41](#d-41-段数上限掐停的中枢pivotcapped在信号层必须整条跳过删除-third_tol)、[D-38](#d-38-段数上限掐停的中枢里没有离开段pivotcapped-记封口原因) |
 | 通达信分钟格式（`.lc5`/`.lc1`） | **故意不实现** | `tdx.py:14-15, 68-72` |
 | ST 5% 涨跌停 | **未实现** | `broker.py` docstring |
 | 滑点 | **未实现**（无证据支撑取值） | `broker.py:197-201` |
