@@ -111,7 +111,7 @@ for code, bars in random.sample(pool, 60):       # 抽 60 只
 print(f"第三类：严格 {n_s} / 非严格 {n_l}；计数不同的票 {diff}/60")
 ```
 
-跑法：`cd /Users/zzz/workspace/chanlun && PYTHONPATH=src ../.venv-chanlun/bin/python <上面这段>`。
+跑法：`cd <本项目根目录> && PYTHONPATH=src ../.venv-chanlun/bin/python <上面这段>`。
 
 实测输出：
 
