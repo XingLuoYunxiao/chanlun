@@ -10,6 +10,21 @@
 
 **设计文档：** `docs/superpowers/specs/2026-10-02-strict-loose-mode-design.md`（已获用户批准）
 
+> ### ⚠️ 后续变更（2026-10-04，D-42）：本计划里的 `seg.end.end.ts` 落点口径已作废
+>
+> 本计划是 **2026-10-02 的施工快照，正文一律不改**（下面贴的代码片段仍是当时的写法）。
+> 但它把「买卖点 / 背驰点的时刻」写成 `seg.end.end.ts`（段尾那一笔的结束时刻），
+> 这个口径已被 **D-42** 推翻：现在取**线段极值所在的那根原始 bar 的时刻**。
+>
+> - **为什么**：`Segment.high/low` 是段内各笔端点的 `max/min`，极值可能落在段内
+>   更早的一根原始 bar 上；段尾时刻会把标记画到一根既不是极值、也不在该段的 K 线上。
+> - **可失败测量**（全市场 5440 票日线）：旧口径背驰 `1076 / 31821` 条、
+>   买卖点 `2302 / 52441` 条越界；新口径 **0 / 0**。命令与三判据见 `ARCHITECTURE.md`
+>   的 `#### D-42`，工具 `optimizer/tools/measure_marker_anchor.py`，
+>   理论条目 `optimizer/theory/L24-DIVERGENCE-EXTREME-BAR.md`。
+> - **本计划里仍然有效的部分**：`SignalMode` 维度、`divergence.py` 的判据与
+>   `Snapshot.divergences` 派生字段设计，均未受 D-42 影响。
+
 ## Global Constraints
 
 - **作用域硬约束：严格 / 非严格只影响买卖点与背驰标注。笔、线段、中枢的划分口径完全不动** —— 不得触碰 `src/chanlun/chan/segment.py`、`pivot.py`、`include.py`、`fractal.py` 的判据。严格模式的买卖点结果必须与改动前**逐项相同**。
