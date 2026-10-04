@@ -273,7 +273,7 @@
   // 严格模式必须**逐字**输出 TREND_BASIS：那句话在严格口径下是对的，不许改写它。
   function basisLine() {
     if (state.mode === "loose") {
-      return "非严格口径：第一类之外另收盘整背驰（第27课「类第一类」；第60课：盘整背驰无所谓第一类买点，只是类比），第二类不要求前置第一类，第三类回试容忍中枢高度 10%（工程口径，无原文依据）";
+      return "非严格口径：第一类之外另收盘整背驰（第27课「类第一类」；第60课：盘整背驰无所谓第一类买点，只是类比），第二类不要求前置第一类；第三类买卖点严格与非严格逐项相同（D-41 已删除回试容忍度，原文无此措辞）";
     }
     return TREND_BASIS;
   }
@@ -309,7 +309,7 @@
     btn.textContent = `口径：${MODE_LABEL[state.mode]}`;
     btn.classList.toggle("is-loose", loose);
     btn.title = loose
-      ? "非严格：含盘整背驰买卖点、第二类不要求前置第一类、第三类回试有容忍度（容忍度为工程口径，无原文依据）。笔/线段/中枢划分不变。点击切回严格。"
+      ? "非严格：含盘整背驰买卖点、第二类不要求前置第一类；第三类买卖点严格与非严格逐项相同（D-41 已删除回试容忍度）。笔/线段/中枢划分不变。点击切回严格。"
       : "严格：第一类只取自趋势背驰，第二类需前置第一类，第三类回试不得回到中枢内。点击切到非严格。";
   }
 
@@ -633,28 +633,38 @@
     }
 
     const markAreas = state.layers.pivots
-      ? d.pivots.map((p) => [
-          {
-            name: `中枢 ${f2(p.zd)}–${f2(p.zg)}`,
-            xAxis: p.start_ts,
-            yAxis: p.zd,
-            itemStyle: {
-              color: p.status === "tentative" ? "rgba(124,156,196,0.05)" : "rgba(124,156,196,0.11)",
-              borderColor: indigo,
-              borderWidth: 1,
-              borderType: p.status === "tentative" ? "dashed" : "solid",
-              opacity: p.status === "tentative" ? 0.5 : 1,
+      ? d.pivots.map((p) => {
+          // D-41：段数上限掐停的中枢（`capped`）**不是**一个走完的中枢 ——
+          // 它的组内每一段都还与 `[ZD, ZG]` 重叠（第 20 课中心定理一），
+          // 只是被 `MAX_SEGMENTS` 掐停；第 33 课说凑满 9 段就构成更大级别的中枢了，
+          // 而本项目不做级别递归。所以这种中枢在信号层整条跳过，图上必须能一眼认出来：
+          // 实心靛青带 = 正常封口；**点线边框 + 降透明度 + 标签后缀** = 段数到顶。
+          const cap = p.capped === true;
+          const tint = p.status === "tentative" ? "rgba(124,156,196,0.05)" : "rgba(124,156,196,0.11)";
+          return [
+            {
+              name: `中枢 ${f2(p.zd)}–${f2(p.zg)}`,
+              xAxis: p.start_ts,
+              yAxis: p.zd,
+              itemStyle: {
+                color: tint,
+                borderColor: indigo,
+                borderWidth: cap ? 2 : 1,
+                borderType: cap ? "dotted" : (p.status === "tentative" ? "dashed" : "solid"),
+                opacity: cap ? 0.6 : (p.status === "tentative" ? 0.5 : 1),
+              },
+              label: {
+                show: true,
+                position: "insideTopLeft",
+                color: indigo,
+                fontSize: 10,
+                formatter: `中枢 ${PERIOD_CN[p.level] || p.level} · ZG ${f2(p.zg)} / ZD ${f2(p.zd)}`
+                  + (cap ? " · 段数到顶" : ""),
+              },
             },
-            label: {
-              show: true,
-              position: "insideTopLeft",
-              color: indigo,
-              fontSize: 10,
-              formatter: `中枢 ${PERIOD_CN[p.level] || p.level} · ZG ${f2(p.zg)} / ZD ${f2(p.zd)}`,
-            },
-          },
-          { xAxis: p.end_ts, yAxis: p.zg },
-        ])
+            { xAxis: p.end_ts, yAxis: p.zg },
+          ];
+        })
       : [];
 
     // --- 分型：只标画在笔端点上的分型（其余分型不参与笔，画出来只是噪声）
@@ -976,8 +986,12 @@
         dirClass: "",
         status: p.status,
         confirmedAt: p.confirmed_at,
-        meta: `ZG ${f2(p.zg)} / ZD ${f2(p.zd)} · GG ${f2(p.gg)} / DD ${f2(p.dd)} · ${p.start_ts} → ${p.end_ts}`,
+        // D-41：`capped` 中枢在图上是点线边框 + 「段数到顶」，这里把同一件事写进图例，
+        // 免得用户以为「段数到顶」是一个单独的图层。信号层已整条跳过它（不产出买卖点）。
+        meta: `ZG ${f2(p.zg)} / ZD ${f2(p.zd)} · GG ${f2(p.gg)} / DD ${f2(p.dd)} · ${p.start_ts} → ${p.end_ts}`
+          + (p.capped === true ? " · 段数到顶（第33课：已构成更大级别中枢；本级别不产出买卖点）" : ""),
         startTs: p.start_ts, endTs: p.end_ts,
+        capped: p.capped === true,
       }));
     });
     box.append(pivBlock);
@@ -1021,7 +1035,7 @@
     return p;
   }
 
-  function row({ idx, title, dirClass, status, confirmedAt, meta, startTs, endTs }) {
+  function row({ idx, title, dirClass, status, confirmedAt, meta, startTs, endTs, capped }) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "row";
@@ -1040,6 +1054,16 @@
     chip.className = `chip ${status}`;
     chip.textContent = STATUS_CN[status] || status;
     t.append(dir, chip);
+    // D-41：段数到顶的中枢，除了 `.row-meta` 里那句话，还要在标题行挂一个点线小标签。
+    // 只写进 `.row-meta` 是不够的 —— 那一行在窄栏里会被省略号截掉（见 styles.css 里
+    // `.row-meta` 的说明），用户根本读不到「段数到顶」四个字。
+    if (capped === true) {
+      const capChip = document.createElement("span");
+      capChip.className = "chip capped";
+      capChip.textContent = "段数到顶";
+      capChip.title = "第33课：已构成更大级别中枢；本级别不产出买卖点";
+      t.append(capChip);
+    }
     const m = document.createElement("span");
     m.className = "row-meta";
     m.textContent = meta;
