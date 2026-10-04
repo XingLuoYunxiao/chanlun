@@ -128,6 +128,37 @@ def _merge_feature(
     return [(float(h), float(l), int(si)) for h, l, si in out]
 
 
+def _merge_push(
+    out: list[list[float | int]], high: float, low: float, si: int, direction: int
+) -> None:
+    """把一个特征元素**原地**推入已合并序列，保持与 `_merge_feature` 同一结果。
+
+    即 `out` 先装前 i 个元素，再 `_merge_push` 第 i+1 个，得到的序列与
+    `_merge_feature(前 i+1 个元素, direction)` 逐项相同（实测 1186 条序列 0 失配）。
+
+    注意**不要**把这一步当成「前缀稳定」的缓存：包含关系触发的回退会从尾部
+    弹出、改写更早的槽位，所以第 i 步的序列与「第 i 步当下的批式合并」相同，
+    但与「第 i+1 步序列的前缀」不一定相同。本函数只用于 `_confirm_gap` 的
+    逐笔推进 —— 那里只需要「每步当下」的序列。
+    """
+    if out:
+        h, l, prev_si = out[-1]
+        h, l, prev_si = float(h), float(l), int(prev_si)
+        if (high <= h and low >= l) or (high >= h and low <= l):
+            out[-1] = list(_combine(h, l, prev_si, high, low, si, direction))
+            while len(out) >= 2:
+                h1, l1, si1 = out[-2]
+                h2, l2, si2 = out[-1]
+                h1, l1, si1 = float(h1), float(l1), int(si1)
+                h2, l2, si2 = float(h2), float(l2), int(si2)
+                if not ((h2 <= h1 and l2 >= l1) or (h2 >= h1 and l2 <= l1)):
+                    break
+                out.pop()
+                out[-1] = list(_combine(h1, l1, si1, h2, l2, si2, direction))
+            return
+    out.append([high, low, si])
+
+
 def _feature_seq(
     strokes: Sequence[Stroke], start: int, seq_direction: int
 ) -> list[tuple[float, float, int]]:
@@ -266,14 +297,41 @@ class Lesson6768Policy:
     def _confirm_gap(
         strokes: Sequence[Stroke], from_idx: int, direction: int
     ) -> int | None:
-        """第二种情况：缺口由反向的第二特征序列出现分型来确认。"""
-        sub = _feature_seq(strokes, from_idx, -direction)
-        if len(sub) < 3:
-            return None
-        std = _merge_feature(sub, -direction)
-        for j in range(1, len(std) - 1):
-            if _is_fractal_at(std, j, -direction):
-                return std[j + 1][2]
+        """第二种情况：缺口由反向的第二特征序列出现分型来确认（**因果版**）。
+
+        第 71 课：「其实，线段的划分，都是可以当下完成的」。所以「有缺口 → 需第二
+        特征序列出现分型才算确认」这一步**只能拿已经发生的笔来算**：在第 `t` 笔当下
+        得出的结论，不该被第 `t+1` 笔改写。
+
+        原实现是 `_merge_feature(_feature_seq(strokes, from_idx, ...))` —— 一次拿
+        **全序列**去找分型，等于用未来的笔去确认过去的转折点。实测 `sh.000001`：
+        第 79 笔当下成立的候选（确认元素 78），到第 82 笔当下就被撤销 —— 因为那时
+        `std[3]` 还是尚未封闭的合并元素，新笔一来就把它并进了 `std[2]`。这违反第 71
+        课「当下完成」，也是 D3 的三个根因之一（见 ARCHITECTURE.md 的 D-40）。
+
+        本函数改为**逐笔推进**：一旦某个前缀上成立就**定死**（第 71 课结论「当下」
+        可得，后来的笔不能取消它）。
+
+        特征序列的取法与合并方向**沿用主干口径**：主干写的是
+        `_feature_seq(strokes, from_idx, -direction)`，而 `_feature_seq` 内部取
+        `want = -seq_direction`，所以实际选中的是**与线段同向**的笔，合并与分型判定
+        则用 `-direction`。这里保持逐字一致 —— 改这个取法是另一件事（属判据问题），
+        不在本次「因果性」修复范围内。
+
+        只检查「倒数第二个」位置就够，这是**实测**出来的，不是推理：在 5 只票的
+        日线上逐笔推进，每次 push 后「新出现的分型」全部落在 `len(std)-2`
+        （104/104），且**只有末位槽的值会变**（216/216 次变化都是 offset 0）。
+        更早的位置要变成分型，必须它右边的元素变了，而那正是「它成了倒数第二个」。
+        """
+        merge_dir = -direction
+        std: list[list[float | int]] = []
+        for i in range(from_idx, len(strokes)):
+            stroke = strokes[i]
+            if stroke.direction != direction:
+                continue
+            _merge_push(std, stroke.high, stroke.low, i, merge_dir)
+            if len(std) >= 3 and _is_fractal_at(std, len(std) - 2, merge_dir):
+                return int(std[-1][2])
         return None
 
     def classify(self, strokes: Sequence[Stroke]) -> list[SegmentBreak]:
@@ -310,8 +368,8 @@ class Lesson6768Policy:
         #
         # 原文没有规定被截断的左端该怎么起段（第 67/77/78 课都只说划分唯一），
         # 所以这是**原文空白项下的口径选择**，只能取工程判据：既然无法知道第 0 笔是不是
-        # 真实线段起点，就让划分尽可能完整 —— 取「还能确认最多线段」的起点，前面那几笔
-        # 交给 TENTATIVE 前导段。前导段本来就是为这件事存在的（见 `build_segments`）。
+        # 真实线段起点，就让划分尽可能完整 —— 取「第一个可行起点」，前面那几笔交给
+        # TENTATIVE 前导段。前导段本来就是为这件事存在的（见 `build_segments`）。
         #
         # 反过来（从第 0 笔硬起）的代价实测很大，且**正好是用户报告的那类症状**：
         #   `600180` 日线全史 114 笔只划出 5 段、首段 **73 笔**（改后 19 段、首段 16 笔）；
@@ -319,25 +377,29 @@ class Lesson6768Policy:
         #   `603777` 从 2020-01-01 截断 → 首段 **87 笔**（全史只有 25）。
         # 即「同一个走势，换个取数窗口就塌成一条线段」——与用户报的深证成指同一机制。
         #
-        # 这里一度改回「第一个可行起点」，理由是 argmax 会把开头整片笔塞进前导段
-        # （`sz.399006` 前导 102 笔、100 只样本合计 308 笔）。**那条证据是在 D3
-        # （`_merge_feature` 非包含处理）修复之前取的**：旧代码里标准特征序列残留包含
-        # 关系，`candidates(0)` 会凭空为空，argmax 才有机会把起点推到很后面。D3 之后
-        # 前导段最长 13 笔、17 只样本合计 31 笔，否决理由已消失，故按用户裁决改回 argmax。
+        # 这里曾经取「还能确认最多线段的起点」（全序列 argmax）。改回「第一个可行起点」
+        # 的理由**不是**前导段长度（那条旧证据是 D3 修复前取的，已失效），而是**因果**：
+        # 第 71 课要求划分可以「当下完成」。argmax 的分值是**全序列**的 DP 最优值，
+        # 新来一笔就可能改写它，左端于是随数据增长漂移 —— 实测 `sh.601012` 在第 250 笔
+        # 当下 argmax 左端是第 13 笔，到第 330 笔当下变成第 1 笔。左端一动，前面所有
+        # 分界的 `start_stroke_idx` 与合法性跟着变，历史划分被未来改写。
         #
-        # 平局取**更早**的起点：更早意味着更少的笔被划到划分之外。
+        # 「第一个可行起点」也必须取**因果**的那一种，即「最早的 t 上、最小的可行起点」，
+        # 每一步只看 `strokes[:t]`。在全序列上取第一个可行起点仍然前视 —— 实测 24 只票
+        # 累计确认 7571 / 消失中间 18，明显差于因果版的 7787 / 14。
         #
-        # 剪枝：`s` 之后的任何起点 `s'` 最多只能划 `(n - s') // min_strokes` 条线段
-        # （每条至少 min_strokes 笔），该上界随 `s'` 单调不增。所以一旦当前最好成绩
-        # 已经达到 `(n - s) // min_strokes`，后面的起点最多只能追平，而平局取更早 ——
-        # 可以直接停。这把 78k 根 5 分钟线（1948 笔）的快照从 1.64s 拉回 0.6s 量级。
-        start, best_count = 0, 0
-        for s in range(n):
-            if best_count >= (n - s) // self.min_strokes:
+        # 因为一旦有可行起点就立刻返回，`t` 只走到「最早能起段」的那个前缀（通常是个位
+        # 数），所以这个二层循环并不贵。
+        start = 0
+        found = False
+        for t in range(self.min_strokes, n + 1):
+            head = strokes[:t]
+            for s in range(t):
+                if next(iter(self.candidates(head, s)), None) is not None:
+                    start, found = s, True
+                    break
+            if found:
                 break
-            count = best(s)[0]
-            if count > best_count:
-                start, best_count = s, count
 
         breaks: list[SegmentBreak] = []
         while start < n:
@@ -535,29 +597,51 @@ def validate_segments(
 
 
 # ---------------------------------------------------------------------------
-# 文件末尾备注：线段层「当下性」的实测结论（2026-10-03）
+# 文件末尾备注：线段层「当下性」的实测结论（2026-10-04 第三轮改写）
 #
 # 写在这里而不是写进 `classify` 的注释块，是因为 `ARCHITECTURE.md` §3.4/§3.5 有十余处
 # `segment.py:NNN` 行号引用 —— 在文件中间插注释会把它们整体推偏。末尾追加不移动任何
-# 被引用行（最大引用行是 `:523`），校验器的冻结数字因此逐项不变。
+# 被引用行（最大引用行是 `:596`），校验器的冻结数字因此逐项不变。
+#
+# **本轮（D-40）真的改了判据**：把两处「向后借用数据」改成只看前缀。
+#   (a) `_confirm_gap` —— 旧实现取 `from_idx` 之后的**全部**笔合并后找分型，返回分型
+#       **下一个**元素的笔号，而那个元素可能落在当前前缀之外。可复现反例
+#       `sh.000001`（start=62, direction=1, 候选 k=2）：n=79 笔时用第 78 笔宣布了
+#       分界点 66；n=82 笔时第 78 笔已被包含处理合并掉，66 又消失。
+#       现在改为按笔逐根推进（`_merge_push`，先合并再看分型），只用已走完的笔。
+#   (b) 窗口左端 —— 旧实现按**全序列 argmax** 选起点，数据一多起点就往前跳
+#       （`sh.601012`：k=250 笔时起点是第 13 笔，k=330 笔时变成第 1 笔）。
+#       现在改为取**最早前缀上第一个可行的起点**（因果），不再做全序列比较。
+#
+# 实测（`measure_segment_present_tense.py --sample 24 --stride 40`，24 只票日线；
+# 列＝累计确认 / 消失总 / **消失中间（真违规）** / 末段）：
+#   旧主干 `7855 / 64 / 20 / 44` → **本实现 `7787 / 52 / 14 / 38`**
+#   ⇒ 违规 −30%，累计确认 −0.9%。单因子臂：只修缺口 `7866/57/17/40`、
+#   只修左端 `7776/59/17/42` —— 两个根因各消 3 个，**两条都修才拿到 14**。
+#
+# **没有做到 0**：残留 **14 条中间段消失**（`--violations` 已逐条列出）。
+# 真正的 0 需要**跨次调用锁定已宣布的分界点**（有状态）—— 需要 `ChanEngine` 承载
+# 分界点列表、`classify` 接受锁定前缀，会改动 `full()`/`step()` 契约并重锚全部冻结数字。
+# **所以本文件不得被描述成「单调性已修复」，也不得写成「前视已彻底消除」**：
+# M4 逐根 bar 实测 `sh.600030` 仍有 1 处、最大提前 3 根 bar（`sh.600000` 为 0）。
 #
 # **不要再重复试验下面四件事**（全部实测过）：
-#   ① 左端是**稳定**的。把 `classify` 的 argmax 限制成「只用最前面 120 笔算一次」，
-#      结果与全序列 argmax **逐项完全相同**（`sh.000001` 80段/79确/37长、
-#      第 71 课违规 3/12 全等）。所以「左端随新数据漂移」**不是**偏差来源。
-#   ② 偏差来自 `classify` 的 DP 目标（`best` 里「使未来线段总数最大」）
-#      叠加 `candidates` 断点集合的单调增长：新笔会带来**比已有的更早**的候选断点，
-#      DP 于是改选它、作废一个已经宣布过的分界点 —— 这是第 71 课性质 1 的违反。
-#      真违规 **3 / 1789 个确认分界点 = 0.17%**（末段消失属正常，不计）。
-#      案例 `600036`：分界点 23/24 被改写到 19/20 并永久保持。
-#   ③ 把 `best(start)[1]` 换成「第一个通过验证的候选」（第 71 课字面程序）**反而更差**：
-#      违规 3 → 4，且重新引入长段塌缩（`sh.000001` 最长段 37 笔 → **376 笔**）。
-#   ④ 无状态规则**做不到 0**（四个变体实测 3 / 3 / 4 / 1）。真正的单调性要求**跨次调用
-#      锁定已宣布的分界点** —— 需要 `ChanEngine` 承载分界点列表、`classify` 接受锁定
-#      前缀，属有状态重设计，会改动 `full()`/`step()` 契约并重锚全部冻结数字。
+#   ① 「起点固定第 0 笔」违规最少（19/5）是**塌结构**换来的：
+#      `sh.000001` 80段/79确/最长37 → **23段/22确/最长376**。不算改善。
+#   ② 第 71 课**字面程序**（把 `best(start)[1]` 换成「第一个通过验证的候选」）
+#      **反而更差**：中间段消失 20 → **28**，且同样塌结构（最长段 → 376）。
+#      原文要求的是**可计算性**，不是「逐点贪心」。
+#   ③ 「已宣布即永久」违规 0，但 `pytest` **36 failed / 917 passed** ——
+#      靠破坏合法性约束换来的满分不是修复。
+#   ④ 平局取「更早确认」的候选违规 11（比 14 好），但**原文没有依据**、且把划分与
+#      确认机制耦合起来 ⇒ **未采纳**（见 D-40 被否决的替代方案）。
 #
-# 详见 `ARCHITECTURE.md` D-39（含变更历史）与
+# 上一版这段注释（2026-10-03）里的两处论断已被推翻，**不要再用**：
+#   「左端是稳定的、不是偏差来源」—— 错，见上面 (b)；
+#   「真违规 3 / 1789 = 0.17%」—— 错，那是 5 只票 + 粗 stride 的产物，实际是 20 / 7855。
+#
+# 详见 `ARCHITECTURE.md` D-40（与 D-39 的第三轮变更历史）与
 # `optimizer/theory/L71-SEGMENT-PRESENT-TENSE.md`。
 # 复现：`PYTHONPATH=src ../.venv-chanlun/bin/python \
-#        optimizer/tools/measure_segment_present_tense.py --sample 5`
+#        optimizer/tools/measure_segment_present_tense.py --sample 24 --stride 40`
 # ---------------------------------------------------------------------------
