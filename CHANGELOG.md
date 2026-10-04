@@ -49,6 +49,101 @@
 
 ### 修复
 
+- **段数上限掐停的中枢在信号层整条跳过；第三类买卖点的 `THIRD_TOL` 容忍度删除**
+  （版本影响 `MINOR` ⇒ `0.2.0 → 0.3.0`；判据变更，D-41）。
+  这条同时修掉了两件此前「只登记、没动手」的事：`capped` 中枢的**下游空白**
+  （见本文件下面 `已知空白与未实现项` 里那条）与 `THIRD_TOL` 这个**没有原文依据的
+  工程口径**（`0.2.0` 引入，见本文件 `0.2.0` 节的记录）。
+  - **原文依据**：第 20 课《缠中说禅走势中枢级别扩张及第三类买卖点》给第三类买卖点
+    定的是**位置**判据 ——「一个次级别走势类型向上离开缠中说禅走势中枢，然后以一个
+    次级别走势类型回试，其低点不跌破ZG，则构成第三类买点；一个次级别走势类型向下
+    离开缠中说禅走势中枢，然后以一个次级别走势类型回抽，其高点不升破ZD，则构成
+    第三类卖点。」原文**没有任何容忍度措辞**，`THIRD_TOL = 0.1` 是自造的。
+    第 20 课中心定理一：「走势中枢的延伸等价于任意区间[dn，gn]与[ZD，ZG]有重叠。」
+    第 33 课《走势的多义性》：「中枢的延伸不能超过5段，也就是一旦出现6段的延伸，
+    加上形成中枢本身那三段，就构成更大级别的中枢了。」
+    理论条目：`optimizer/theory/L20-THIRD-POINT-POSITION.md`（新增）、
+    `L20-THIRD-TOLERANCE.md`（补作废说明）、`L33-PIVOT-EXTENSION-LIMIT.md`（补下游）、
+    `L27-DIVERGENCE-UNIT.md`（补 `capped` 前置条件）。
+  - **改法**：`_third_kind`、`_entering_and_leaving`、`_leaving_legs` 三处各加一道
+    `if p.capped: continue`。`capped` 的**唯一合法退出理由**是「下一段不碰 `[ZD, ZG]`」，
+    只有那种情形才证明 `end_idx` 是离开段；上限掐停时组内每一段都还在枢内，
+    本级别**不存在**离开段（第 20 课定理一），而本项目**不做级别递归**，
+    所以正确做法是不产出，不是拿延伸段冒充离开段。
+    `THIRD_TOL` 常量与 `_third_kind` 的 `mode` 形参一并删除。
+  - **可失败的测量**（仓库自带工具，数字可复现）：
+    `PYTHONPATH=src ../.venv-chanlun/bin/python -u optimizer/tools/measure_capped_signal_gate.py`
+    —— 全市场 5440 只票日线：中枢 **11642** / `CONFIRMED` **8186** / `capped` **2759（33.7%）**；
+    `capped` 列上 B1/S1/B3/S3 与趋势背驰**全为 0**，非 `capped` 列为
+    `b1 91 / s1 25 / b3 3065 / s3 2723`、趋势背驰 **116**。
+    把 `_entering_and_leaving` 与 `_leaving_legs` 两处门同时去掉重跑，`capped` 列变成
+    `b1 46 / s1 18 / b3 0 / s3 0`、趋势背驰 **64**，工具**判据一 = 192、退出码 1** ——
+    这个指标**能失败**。修复前后影响面：`b1 137 → 91`、`s1 43 → 25`、
+    趋势背驰 `180 → 116`、B3 `3065`、S3 `2723`（第三类不受影响，见下条）。
+  - **如实记录：`_third_kind` 那一处门是结构性 no-op，不是「验证通过」。**
+    把它单独改成 `if False and p.capped:` 重跑全市场 5440 只票，输出**逐字节相同**
+    （`--limit 600` 亦然）。原因：`capped` 的定义本身要求 `end_idx + 1` 与 `[ZD, ZG]`
+    重叠，而第三类位置判据要求回试段在 `ZG` 之上（卖侧 `ZD` 之下）——
+    两者**在同一个段上互斥**。留它的理由是**口径**：把「`capped` 中枢的 `end_idx`
+    不是离开段」写成可执行的不变量，否则将来任何一次「放宽第三类判据」都会悄悄
+    把延伸中的中枢重新误报成第三类（`THIRD_TOL` 就是这么来的）。
+    ★ 小样本没有判别力：`--limit 60` 时把三道门**全部**去掉，输出同样逐字节相同。
+  - **`capped` 的实际占比比记录的 23% 高得多**：`0.2.0` 记的是「12/52（23%）」
+    （24 只票日线）。全市场实测 **2759/8186 = 33.7%**。旧数字**不改**（那是当时的
+    实测），这里登记新口径下的数字。
+  - **被否决的替代方案**（详见 D-41）：① 只删 `THIRD_TOL`、不给 `capped` 加门 ——
+    会把上限掐停的延伸段当离开段；② 把门加在 `_first_kind`/趋势背驰的入口而不是
+    `_entering_and_leaving`/`_leaving_legs` —— 会破坏
+    `test_trend_divergence_matches_b1_s1` 的双向相等断言；③ 顺手给 TENTATIVE
+    中枢也加门 —— **用户 2026-10-04 裁决不采纳**：TENTATIVE 回试段产出的信号已被
+    `_seal` 标成 `TENTATIVE` 并在回测中排除，而 D-26 那条「TENTATIVE 线段不参与
+    中枢构造、也不参与延伸」约束的是**中枢内部**的线段，不覆盖中枢之外的回试段。
+    对应的提案 `optimizer/patches/round-006-G3a.patch` 按该裁决**留在待评审盘上**
+    （`# status: pending`），其实测边际量（严格 b3 3065 中 **243** 个、s3 2723 中
+    **118** 个用了未确认的回试段）记在 D-41 的「被否决的替代方案」。
+  - **前端文案同步 + 接上 `capped` 消费方**（AGENTS.md §5 第 5 步）：
+    `app.js` 里两处图注「第三类回试容忍中枢高度 10%（工程口径，无原文依据）」
+    随常量一起删除（`basisLine()` 与 `applyModeUI()`），改成
+    「第三类买卖点严格与非严格逐项相同（D-41 已删除回试容忍度）」。
+    中枢 `capped` 标记的图例与**视觉标记**一并补上（此前 `capped` 在 API JSON 里
+    有字段、前端**零消费** —— `grep -rn capped src/chanlun/web/static/` 实测 0 命中）：
+    中枢区带改**点线边框 + 降透明度**、标签后缀 ` · 段数到顶`、图例行补
+    「段数到顶（第33课：已构成更大级别中枢；本级别不产出买卖点）」
+    （`app.js:642` / `app.js:662` / `app.js:992`）。
+    ★ 标记不是空跑的装饰：实测
+    `GET /api/structure?code=sh.600519&period=day&mode=strict&bars=1200` 的
+    `pivots[0]` 确实带 `"capped": true`（`status: confirmed`，`end_idx: 9`），
+    这是常用票的常用周期。
+    ★ 已用**真实浏览器**核对（AGENTS.md §4.4，文案从 DOM dump 读）：
+    `docs/evidence/2026-10-04-capped-marker-probe.mjs`（headless Chrome + CDP、
+    禁缓存）10 条判据全过、退出码 0；同页第 1 个中枢 `capped: false` 作反向对照，
+    一项都不亮。这个探针**能失败**，四条扰动各自归因干净：
+    把 `app.js:642` 的 `cap` 改成 `false` ⇒ markArea 的 3 条红；
+    只把 `app.js:992` 的图例条件改成 `false` ⇒ 1 条红；
+    把 `styles.css:415` 的 `display: block` 注掉 ⇒ 布局判据 1 条红；
+    把 `app.js:1060` 的 `if (capped === true)` 改成 `if (false)` ⇒ 标签判据 1 条红。
+    四次退出码都是 1。
+    ★ 复测时顺带发现并修掉一个**真实缺陷**（版本影响 `PATCH`）：结构清单的
+    `.row-meta` 是 `<span>`，**行内盒子上的 `overflow: hidden` / `text-overflow: ellipsis`
+    一律不生效**，CSS 里那两行声明写了等于没写。实测（1600px 视口）`sh.600519` /
+    `sh.000001` / `sz.399006` 三只票的清单里**每一行**都冲出右栏边界（12–15 行全中），
+    最多 **560.8px** —— 日期与笔数那半截画在图表上、被视口右边缘裁掉，用户读不到，
+    连省略号提示都没有。修法：`styles.css:415` 给 `.row-meta` 加 `display: block`，
+    越界行数 → **0**。
+    这也决定了 `capped` 标记**不能只放在 `.row-meta`**：同一个原因会让
+    ` · 段数到顶（…）` 后缀在窄栏里被省略号吃掉。所以 `.row-title` 上另挂一个
+    点线小标签「段数到顶」（`app.js:1057-1066`，样式 `styles.css:435`，
+    `title` 属性带第33课原文依据），`.row-title` 同时加 `flex-wrap: wrap`
+    （`styles.css:397`）以免最后一个标签重演同样的溢出。
+    图例、图上标记、标题行标签三处同时接上，用户才不会把「段数到顶」误读成一个独立图层。
+  - **证据文档**：`docs/evidence/2026-10-04-capped-signal-gate.md`
+    （含三道门各自的扰动配方、单元测试护栏表、小样本无判别力的对照）。
+  - **护栏**：`tests/chan/test_signal_mode.py` 新增 6 条（`capped` 中枢不产出
+    第三类 / 不产出离开-依赖信号 / `_third_kind` 与 `find_signals` 一致且与模式无关 /
+    `reason` 不再带容忍度后缀 / 两个函数不再收 `mode` 形参），
+    `tests/chan/test_divergence.py` 新增
+    `test_capped_pivot_is_skipped_by_both_leaving_leg_implementations`
+    —— 这条**已实测在修复前的两处站点上都变红**（不是只在修复后通过）。
 - **看盘页顶栏不再随日/周/月切换而跳动**（版本影响 `PATCH`）。
   用户报：「看月线、周线、日线这一块切换的时候，它这个 UI 总是会进行一个自适应变动……
   能不能把它改成那种固定格式的，只要不遮挡这个文字就行」。
@@ -149,6 +244,11 @@
     `capped` 目前**没有生产消费方**（`signal.py`/`divergence.py` 仍按位置假定
     `end_idx` 是离开段），留作已知空白。理论条目：
     `optimizer/theory/L33-PIVOT-EXTENSION-LIMIT.md`。
+    > **⚠️ 后续更正（2026-10-04，`0.3.0`）**：上面这两句**描述的是 D-38 落地时的状态**，
+    按「只增不改」纪律保留原样。D-41 起 `capped` **有了生产消费方** ——
+    `_third_kind` / `_entering_and_leaving` / `_leaving_legs` 三处在 `capped` 中枢上
+    整条跳过，这段「已知空白」**已关闭**。另：`capped` 的实际占比在全市场口径下是
+    **33.7%（2759/8186）**，不是这里的 23%。见本节修复节第一条与 D-41。
 - **`pip install -e ".[dev]"` 不再连测试都收集不了**（版本影响 `PATCH`）。
   `tests/web/` 用 `starlette.testclient` 起 ASGI 客户端，而 `starlette` 的
   `install_requires` **不含** `httpx2`（`starlette/testclient.py:37-42` 优先 `import httpx2`，
@@ -302,6 +402,8 @@
   已改为「取中枢中所有 Zn 并剔除充当离开段的那一段」；
   同时把一处漂移的代码引用 `chan/signal.py:215-224` 重锚到真实区间 `:205-257`。
   **这正是 AGENTS.md §5 第 5 步举例要拦的那类文案分叉** —— 测试只覆盖后端判据。
+  > **⚠️ 后续更正（2026-10-04，`0.3.0`）**：上面那个 `:205-257` 是**当时**的真实区间；
+  D-41 之后 `signal.py` 变长，`_third_kind` 已移到 `:217-283`（位置表见 D-41）。
 - **订正 `backtest/__init__.py` 一句假的不变量声明**。原文写「回测与『盘中扫描』
   **共享**同一套『只看 confirmed 结构』的约束（`chan.state.backtestable`）」，
   但实测 `backtestable` 的调用点**只有 `backtest/runner.py:112-115`、`:232`**，
@@ -376,6 +478,12 @@
     仍按位置假定 `segments[end_idx]` 是离开段，而这对 12/52 个 capped 中枢不成立。
     已测的第三类买卖点影响为 **0**，B1/B2/S1/S2 与背驰的 `[start_idx, end_idx)` 切片
     **未测**。
+    > **⚠️ 这条空白已关闭（2026-10-04，`0.3.0`）**：D-41 在 `_third_kind` /
+    `_entering_and_leaving` / `_leaving_legs` 三处加了 `if p.capped: continue`，
+    上面「未测」的 B1/S1 与趋势背驰切片现在都测了 ——
+    全市场 `b1 137 → 91`、`s1 43 → 25`、趋势背驰 `180 → 116`。
+    上面记的两个行号（`:213` / `:164-166`）是**当时**的位置，D-41 后已漂移。
+    见本节修复节第一条与 D-41。
 - **文档行号校验器拦不住「整体平移」这类最常见的漂移**（新发现的工具空白，**本轮只记档**）。
   `optimizer/tools/check_doc_line_refs.py` 的硬判据只有「文件存在 / 行号不越界 /
   区间不倒置」三条（工具 docstring 第 23 行自陈），**不校验被引用行上的内容是否还是那个
