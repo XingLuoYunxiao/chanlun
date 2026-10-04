@@ -504,8 +504,12 @@ def test_real_architecture_doc_is_green_and_enumerates_app_js(tool):
     #   非 .py 桶 20 → 26（26 处 / 20 行）；`app.js` 1487 → 1511（+11，插入点在
     #   第 1057 行）⇒ `（1511 行）` 12 处、`styles.css（737 行）` 4 处。
     #   旧断言在这里变红即为「数字确实变了」的证，不是硬加出来的。
-    assert "非 .py 引用（26 处 / 20 行）" in out
-    assert out.count("（1511 行）") == 12, out
+    # 2026-10-04 同日第八改（D-42）：D-42 段落引了 1 处 `app.js`
+    #   （`app.js:757`，线段确认标记 —— 用来论证它属于**另一个概念**、不在本次
+    #   口径变更范围内），非 .py 桶 26/20 → 27/21，`（1511 行）` 12 → 13。
+    #   `styles.css` 没动，仍是 4。旧断言在这里变红即为「数字确实变了」的证。
+    assert "非 .py 引用（27 处 / 21 行）" in out
+    assert out.count("（1511 行）") == 13, out
     assert out.count("（737 行）") == 4, out
     # ★ 这里**故意不钉文档行号**（`L478` 之类）：文档一增删就漂，而这类
     #   「把行号抄进另一份文件」正是本任务要治的病。钉**被引用的 app.js 行区间**
@@ -537,30 +541,38 @@ def test_real_architecture_doc_is_green_and_enumerates_app_js(tool):
 
 
 def test_real_architecture_doc_reports_py_totals(tool):
-    """.py 桶总数：全文 189 处 / 179 行；§3.4 63 处 / 61 行（与探针逐项一致）。
+    """.py 桶总数：全文 205 处 / 191 行；§3.4 79 处 / 73 行（与探针逐项一致）。
 
     2026-10-04：D-41 段落新增 3 处 `signal.py` / `divergence.py` 引用
     （`signal.py:217`、`signal.py:286`、`divergence.py:182`），并把 D-35 顶部
     的作废提示接进 D-41 —— 全文 186/176 → 189/179，§3.4 60/58 → 63/61。
     这三个数是工具的实际输出；旧断言在此变红即为「数字确实变了」的证。
+
+    2026-10-04 同日第八改（D-42）：D-42 段落新增 14 处 `.py` 引用
+    （`divergence.py` 的 `extreme_ts` / 落点 / 排序，`signal.py` 的落点与排序，
+    `engine.py:152`、`types.py`、`state.py`、`runner.py`、`watchlist.py`、
+    `scanner.py`），并且 D-42 是插在 `### 3.5` 之前的（§3.4 的窗口因此
+    从 2136 行涨到 2250 行）。全文 189/179 → 205/191，§3.4 63/61 → 79/73。
+    这三个数是工具的实际输出；旧断言在此变红即为「数字确实变了」的证。
     """
     _, out = _run(tool, CHANLUN, CHANLUN / "ARCHITECTURE.md")
-    assert "引用总数（.py 桶）：全文 189 处 / 179 行；§3.4 63 处 / 61 行" in out
+    assert "引用总数（.py 桶）：全文 205 处 / 191 行；§3.4 79 处 / 73 行" in out
 
 
 def test_real_architecture_doc_discloses_unverifiable_lines(tool):
     """真文档：新桶逐行披露、条数与列出的行数一致，且**不接退出码**。
 
-    129 是 2026-10-03（Task 10a-R2）实测值：文档一增删就该有人重看这张清单 ——
-    这正是它存在的意义（它是一份人工复核清单，不是一个恒绿的指标）。
+    129 是 2026-10-03（Task 10a-R2）实测值，133 是 2026-10-04 D-42 之后的实测值：
+    文档一增删就该有人重看这张清单 —— 这正是它存在的意义
+    （它是一份人工复核清单，不是一个恒绿的指标）。
     """
     code, out = _run(tool, CHANLUN, CHANLUN / "ARCHITECTURE.md")
     assert code == 0, out
     m = re.search(r"引用行无可校验符号 (\d+)", out)
     assert m, out
-    assert int(m.group(1)) == 129, f"实测 {m.group(1)} 行；重排/增删后请人工复核这张清单"
+    assert int(m.group(1)) == 133, f"实测 {m.group(1)} 行；重排/增删后请人工复核这张清单"
     rows = re.findall(r"^  L\d+ \| .+ \| \d+ \| ", out, re.M)
-    assert len(rows) == 129, f"打印了 {len(rows)} 行，与计数不符"
+    assert len(rows) == 133, f"打印了 {len(rows)} 行，与计数不符"
     assert "不接入退出码" in out, out
 
 
