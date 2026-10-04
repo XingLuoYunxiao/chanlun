@@ -2,7 +2,9 @@ import pytest
 
 from chanlun.chan.segment import (
     Lesson6768Policy,
+    _feature_seq,
     _has_gap,
+    _is_fractal_at,
     _merge_feature,
     build_segments,
     validate_segments,
@@ -189,6 +191,44 @@ def test_case2_without_second_fractal_does_not_end_segment():
     assert len(segs) == 1
     assert segs[0].status is Status.TENTATIVE
     assert segs[0].stroke_count == len(strokes)
+
+
+def test_case2_gap_confirmation_is_causal_and_never_revoked():
+    """缺口确认必须「当下完成」：第 71 课「线段的划分，都是可以当下完成的」。
+
+    桩数据（7 笔，方向严格交替）：
+
+    ```text
+    s0 33->28  s1 28->38  s2 38->32  s3 32->37  s4 37->30  s5 30->39  s6 39->29
+    ```
+    考察 `from=0, direction=-1`：取向下笔作特征序列，元素为
+    `(33,28,0) (38,32,2) (37,30,4) (39,29,6)`（此处 `strokes[:5]` 只有前三个）。
+
+    * **第 5 笔当下**（只有 `s0..s4`）：合并序列是 `[(33,28),(38,32),(37,30)]`，
+      第 2 个元素 38 高过左右两侧 ⇒ 顶分型成立 ⇒ 确认元素是**笔 4**。
+    * **到第 7 笔**：新元素 `(39,29)` 与 `(37,30)` 有包含关系，合并后又被回退合并
+      进 `(38,32)`，合并序列塌成 `[(33,28),(39,32)]` —— **那个顶分型没了**。
+
+    于是「拿全序列去算」会得出「不确认」，把第 5 笔当下已经成立的结论撤销掉。
+    这正是 `sh.000001` 日线第 79 笔（确认元素 78 成立）到第 82 笔（被撤销）的真实
+    成因，也是 D3 的第一个根因。旧实现 `_merge_feature(_feature_seq(...))` 返回
+    `None`，本测试因此会在旧实现上失败。
+    """
+    strokes = path([33, 28, 38, 32, 37, 30, 39, 29])
+    assert len(strokes) == 7
+    assert [s.direction for s in strokes] == [-1, 1, -1, 1, -1, 1, -1]
+
+    pol = Lesson6768Policy()
+    # 第 5 笔当下就已确认，确认元素是笔 4。
+    assert pol._confirm_gap(strokes[:5], 0, -1) == 4
+    # 后来又来了第 6、7 笔 —— 结论不许被改写。
+    assert pol._confirm_gap(strokes, 0, -1) == 4
+
+    # 机理留证：全序列的合并序列只剩 2 个元素，顶分型的位置已经不存在。
+    std_full = _merge_feature(_feature_seq(strokes, 0, 1), 1)
+    assert len(std_full) == 2
+    assert [j for j in range(1, len(std_full) - 1)
+            if _is_fractal_at(std_full, j, 1)] == []
 
 
 # ============================ 单段 / 策略可插拔 ============================
@@ -448,14 +488,26 @@ class _HoleyPolicy(Lesson6768Policy):
     真实数据上 `candidates(s)` 会成片为空（`_first_three_overlap` 不成立或标准特征
     序列不足 3 个元素），导致 `best(s)` 剧烈非单调：某个起点一旦选定就把后面锁死。
     随机游走造不出这种空洞（实测 40 万次随机路径 0 例），故只能用桩复刻。
+
+    桩只模拟真实策略的**契约**，不模拟几何：
+      * 分界终点必须离起点至少 `min_strokes` 笔（真实实现里的
+        `if end_idx - start + 1 < self.min_strokes: continue`）；
+      * 分界之后还要留得下至少一段（真实实现里的分型要等后续笔确认，
+        `_ordinal_ok` / `_confirm_gap` 都会因为「笔还不够」而返回空）。
+    **后者对 `len(strokes)` 的依赖正是「可行起点随前缀增长而变化」的来源**，
+    也就是本组测试要钉的东西。
     """
 
     #: 起点 -> 该起点唯一可用的分界终点
-    TABLE = {0: 1, 1: 2, 3: 5, 6: 10}
+    TABLE = {0: 5, 1: 4}
 
     def candidates(self, strokes, start):        # noqa: D102
         end = self.TABLE.get(start)
         if end is None or end >= len(strokes):
+            return
+        if end - start + 1 < self.min_strokes:
+            return
+        if end + 1 + self.min_strokes > len(strokes):
             return
         yield SegmentBreak(
             stroke_idx=end, reason="stub", has_gap=False,
@@ -463,24 +515,28 @@ class _HoleyPolicy(Lesson6768Policy):
         )
 
 
-class _TiePolicy(_HoleyPolicy):
-    """两个起点能划出同样多的线段，用来钉「平局取更早」。"""
+class _WidePolicy(_HoleyPolicy):
+    """起点 0 自己就最早可行 —— 用来证明左端规则不是恒等于某个常数。"""
 
-    TABLE = {0: 2, 3: 5}
+    TABLE = {0: 4, 2: 7}
 
 
-def test_left_edge_takes_the_start_that_keeps_the_most_strokes_in_segments():
-    """左端起点取「还能确认最多线段」的起点，前缀交给 TENTATIVE 前导段。
+def test_left_edge_takes_the_first_prefix_causal_feasible_start():
+    """左端起点取「**第一个**可行的前缀上最早的可行起点」，前缀交给 TENTATIVE 前导段。
 
     第 67 课只说「走势可以**唯一地**划分为线段的连接」——「唯一」是对**手上的走势**
     说的；而数据文件的第一根 K 线常常只是数据商的截断点（`600180` 日线从 2021-01-04
     开始，该股 1998 年就上市了），把它当线段边界等于凭空断言一条线段从这里开始。
-    原文没有规定被截断的左端怎么起段 ⇒ 原文空白项下的口径选择，取工程判据：
-    让划分尽可能完整。
+    原文没有规定被截断的左端怎么起段 ⇒ 原文空白项下的口径选择。
 
-    桩数据（12 笔）的可达性：`candidates` 只在 {0:1, 1:2, 3:5, 6:10} 四处非空，于是
-    `best(0)=1`（走 0->1 之后笔 2 接不上），而 `best(1)=3`（1->2、3->5、6->10）。
-    硬从笔 0 起只能划 1 段。
+    取「第一个可行前缀上最早的可行起点」而不是「全序列上还能确认最多线段的起点」，
+    依据是第 71 课：「其实，线段的划分，都是可以当下完成的」。全序列 argmax 的分值
+    是**整条序列**的最优值，新来一笔就可能改写它，历史划分于是被未来改写。
+
+    桩数据（12 笔）：`candidates` 只在笔 1（终点 4）与笔 0（终点 5）非空，且都要求
+    后面留得下至少一段 —— 笔 1 需要 `len >= 8`，笔 0 需要 `len >= 9`。所以第 8 笔
+    当下笔 1 已经可行，结论此时就定死；等第 9 笔看到笔 0 也可行再回头改成笔 0，
+    就是未来函数（旧实现正是如此：12 笔时两者都只能划 1 段，平局取更早 ⇒ 笔 0）。
     """
     strokes = path([10, 18, 13, 26, 20, 24, 17, 30, 22, 28, 25, 19, 15])
     assert len(strokes) == 12
@@ -488,8 +544,8 @@ def test_left_edge_takes_the_start_that_keeps_the_most_strokes_in_segments():
     breaks = list(pol.classify(strokes))
     assert breaks, "桩策略应当至少划出一段"
     assert breaks[0].start_stroke_idx == 1, (
-        f"左端起点选了笔{breaks[0].start_stroke_idx}，"
-        "而笔 1 起能划 3 段、笔 0 起只能划 1 段"
+        f"左端起点选了笔{breaks[0].start_stroke_idx}；第 8 笔当下只有笔 1 可行，"
+        "应当取笔 1（全序列 argmax 会取笔 0）"
     )
     # 前缀不许丢：笔 0 必须由 TENTATIVE 前导段承接，且全部笔都要被覆盖。
     segs = build_segments(strokes, pol)
@@ -498,52 +554,36 @@ def test_left_edge_takes_the_start_that_keeps_the_most_strokes_in_segments():
     assert sum(s.stroke_count for s in segs) == 12
 
 
-def test_left_edge_ties_break_towards_the_earlier_start():
-    """计数相同时取更早的起点 —— 更早意味着更少的笔被划到划分之外。"""
-    strokes = path([10, 18, 13, 26, 20, 24, 17, 30, 22, 28, 25, 19, 15])
-    breaks = list(_TiePolicy().classify(strokes))
-    assert breaks, "桩策略应当至少划出一段"
-    assert breaks[0].start_stroke_idx == 0, (
-        f"平局却选了笔{breaks[0].start_stroke_idx}，应当取更早的笔 0"
-    )
+def _brute_prefix_causal_start(pol, strokes) -> int:
+    """不复用 `classify`：逐个前缀、逐个起点穷举，取第一个可行的。
+
+    与实现相比这里没有任何增量或提前退出之外的优化，写法也不同（每个前缀重新构造
+    `strokes[:t]`），用作对照。
+    """
+    for t in range(pol.min_strokes, len(strokes) + 1):
+        head = strokes[:t]
+        for s in range(t):
+            for _ in pol.candidates(head, s):
+                return s
+    return 0
 
 
-def _brute_argmax_start(pol, strokes) -> int:
-    """不复用 `classify` 的剪枝：每个起点都算一遍，取最大（平局取更早）。"""
-    n = len(strokes)
-    memo: dict[int, tuple[int, object]] = {}
+def test_left_edge_matches_brute_force_prefix_causal_reference():
+    """左端规则与「逐前缀穷举」对照一致，且两个桩给出**不同**的答案。
 
-    def best(s: int):
-        if s + pol.min_strokes > n:
-            return 0, None
-        if s in memo:
-            return memo[s]
-        res: tuple[int, object] = (0, None)
-        for br in pol.candidates(strokes, s):
-            count, _ = best(br.stroke_idx + 1)
-            if count + 1 > res[0]:
-                res = (count + 1, br)
-        memo[s] = res
-        return res
-
-    return max(range(n), key=lambda s: (best(s)[0], -s))
-
-
-def test_left_edge_prune_matches_brute_force_argmax():
-    """剪枝只省算，不得改变选出的起点。
-
-    剪枝依据：`s` 之后任何起点最多划 `(n - s') // min_strokes` 条（每条至少
-    `min_strokes` 笔），上界随 `s'` 单调不增；一旦当前最好成绩达到该上界，后面最多
-    追平，而平局取更早。这里把「每个起点都算一遍」的结果作为对照。
+    第二个断言是防「规则写死成常数」的阴性对照：`_WidePolicy` 的起点 0 自己最早
+    可行，所以必须选 0。
     """
     strokes = path([10, 18, 13, 26, 20, 24, 17, 30, 22, 28, 25, 19, 15])
-    for pol in (_HoleyPolicy(), _TiePolicy()):
+    for pol in (_HoleyPolicy(), _WidePolicy()):
         breaks = list(pol.classify(strokes))
         chosen = breaks[0].start_stroke_idx if breaks else 0
-        assert chosen == _brute_argmax_start(pol, strokes), (
-            f"{type(pol).__name__}: 剪枝选出笔{chosen}，"
-            f"全量对照是笔{_brute_argmax_start(pol, strokes)}"
+        ref = _brute_prefix_causal_start(pol, strokes)
+        assert chosen == ref, (
+            f"{type(pol).__name__}: classify 选出笔{chosen}，逐前缀对照是笔{ref}"
         )
+    assert _brute_prefix_causal_start(_HoleyPolicy(), strokes) == 1
+    assert _brute_prefix_causal_start(_WidePolicy(), strokes) == 0
 
 
 def test_classify_is_deterministic_and_non_overlapping():
