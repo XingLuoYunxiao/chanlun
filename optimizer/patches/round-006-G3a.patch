@@ -5,10 +5,10 @@
 # finding: 回试段可能是窗口右端的 TENTATIVE 线段，此时买卖点是在「回试还没走完」的时候发出来的：主干（位置口径）43 个信号里有 2 个用了未确认的回试段（b3 26→24）。
 # evidence: cd chanlun && python -m chanlun.optimizer.cli --root . --audit   # 主干口径
 #    主干 43 signals（b3 26 / s3 16 / s1 1，basis sha256=ce9f43cfa688318b，24/24 只票） → 本提案 41 signals（b3 24 / s3 16 / s1 1）（★ 该数字测于 Task 5 之前的主干；Task 5 引入 `mode`/`tol`、R1 引入 `used`、D-41 删除 `THIRD_TOL` 并加 `capped` 门之后**均未重测**，采纳前必须重跑）
-# note: 本提案 = 主干的位置口径 + 一道「离开段与回试段都必须 CONFIRMED」的门（`_exit_pair`）。相对主干只留下当时已经确认的 41 个 —— 买点必须是在当下就能确认的，不能靠事后才知道的回试段。原补丁是按旧偏移写的（把 G1a/G1b/G1c 的改动一起带上了），2026-10-01 已按位置口径的主干重做，判据（theory/quote）未变。；2026-10-02 再次重锚：Task 5 给 `_third_kind` 加了 `mode`/`tol` 形参与容忍度判据，本补丁的 `_third_kind` hunk 上下文被打断，已按新主干重做 —— `+` 行（本提案的判据改动）逐字未动，只更新上下文；重锚后 apply/反 apply 逐字复原。另：`_exit_pair` docstring 里的「回试/回抽」不是第 20 课逐字（原文「回试」「回抽」分列，另有「回抽都是第三类买卖点」），采纳前须改为逐字摘录或去掉引号。；2026-10-02 **第三次重锚**（Task 5 R1 裁决 A·F·I 之后）：这次**不能只换上下文** —— R1 裁决 F 把后缀条件由 `if tol` 改成 `if used`，而本补丁的 `+` 行里正好有 `if tol else ""` 那一行，机械重锚会让补丁在应用后**把裁决 F 回退掉**。故本次是**语义重锚**：`+` 行按「本提案的判据改动 + R1 已落地的 `used` 语义」重新表达，判据本身（`_exit_pair` 的 CONFIRMED 门 + 平铺 and 链）逐条不变；同时按上一条 note 的要求，把 `_exit_pair` docstring 的「回试/回抽」与新增注释里的「平铺 and」「这个中枢没有买卖点」三处非逐字引号去掉。另：本补丁 `# evidence:` 的 43→41 数字测于 Task 5 之前的主干，Task 5 引入 `mode`/`tol` 后未重测，采纳前须重跑。；2026-10-04 **第四次重锚**（D-41 删除 `THIRD_TOL`、`_third_kind` 去掉 `mode` 形参、加 `capped` 门之后）：这次同样是**语义重锚**而非换上下文 —— 主干已不存在 `tol`/`used`，本补丁 `+` 行里与之相关的三处（`if tol`、`used = …`、`（非严格：回试容忍 …）` 后缀）随之删除；本提案的判据（`_exit_pair` 的「离开段与回试段都必须 CONFIRMED」门 + 两根判定的平铺 and 链）**逐条不变**。另：本补丁的 `# evidence:` 数字仍测于 Task 5 之前的主干，D-41 之后主干又变了（capped 中枢不再产出第三类），采纳前必须重跑。★ D-41 裁决（2026-10-04）明确**暂不采纳**本提案：TENTATIVE 回试段产出的信号已被 `_seal` 标成 `TENTATIVE` 并在回测中排除，D-26「TENTATIVE 线段不参与中枢构造、也不参与延伸」约束的是**中枢内部**的线段、不覆盖中枢之外的回试段。本补丁按该裁决**留在待评审盘上**，判据等后续单独裁决；其实测边际量（全市场 5440 票日线：严格 b3 3065 中 243 个、s3 2723 中 118 个用了未确认的回试段）记在 ARCHITECTURE.md D-41 的「被否决的替代方案」。
+# note: 本提案 = 主干的位置口径 + 一道「离开段与回试段都必须 CONFIRMED」的门（`_exit_pair`）。相对主干只留下当时已经确认的 41 个 —— 买点必须是在当下就能确认的，不能靠事后才知道的回试段。原补丁是按旧偏移写的（把 G1a/G1b/G1c 的改动一起带上了），2026-10-01 已按位置口径的主干重做，判据（theory/quote）未变。；2026-10-02 再次重锚：Task 5 给 `_third_kind` 加了 `mode`/`tol` 形参与容忍度判据，本补丁的 `_third_kind` hunk 上下文被打断，已按新主干重做 —— `+` 行（本提案的判据改动）逐字未动，只更新上下文；重锚后 apply/反 apply 逐字复原。另：`_exit_pair` docstring 里的「回试/回抽」不是第 20 课逐字（原文「回试」「回抽」分列，另有「回抽都是第三类买卖点」），采纳前须改为逐字摘录或去掉引号。；2026-10-02 **第三次重锚**（Task 5 R1 裁决 A·F·I 之后）：这次**不能只换上下文** —— R1 裁决 F 把后缀条件由 `if tol` 改成 `if used`，而本补丁的 `+` 行里正好有 `if tol else ""` 那一行，机械重锚会让补丁在应用后**把裁决 F 回退掉**。故本次是**语义重锚**：`+` 行按「本提案的判据改动 + R1 已落地的 `used` 语义」重新表达，判据本身（`_exit_pair` 的 CONFIRMED 门 + 平铺 and 链）逐条不变；同时按上一条 note 的要求，把 `_exit_pair` docstring 的「回试/回抽」与新增注释里的「平铺 and」「这个中枢没有买卖点」三处非逐字引号去掉。另：本补丁 `# evidence:` 的 43→41 数字测于 Task 5 之前的主干，Task 5 引入 `mode`/`tol` 后未重测，采纳前须重跑。；2026-10-04 **第四次重锚**（D-41 删除 `THIRD_TOL`、`_third_kind` 去掉 `mode` 形参、加 `capped` 门之后）：这次同样是**语义重锚**而非换上下文 —— 主干已不存在 `tol`/`used`，本补丁 `+` 行里与之相关的三处（`if tol`、`used = …`、`（非严格：回试容忍 …）` 后缀）随之删除；本提案的判据（`_exit_pair` 的「离开段与回试段都必须 CONFIRMED」门 + 两根判定的平铺 and 链）**逐条不变**。另：本补丁的 `# evidence:` 数字仍测于 Task 5 之前的主干，D-41 之后主干又变了（capped 中枢不再产出第三类），采纳前必须重跑。★ D-41 裁决（2026-10-04）明确**暂不采纳**本提案：TENTATIVE 回试段产出的信号已被 `_seal` 标成 `TENTATIVE` 并在回测中排除，D-26「TENTATIVE 线段不参与中枢构造、也不参与延伸」约束的是**中枢内部**的线段、不覆盖中枢之外的回试段。本补丁按该裁决**留在待评审盘上**，判据等后续单独裁决；其实测边际量（全市场 5440 票日线：严格 b3 3065 中 243 个、s3 2723 中 118 个用了未确认的回试段）记在 ARCHITECTURE.md D-41 的「被否决的替代方案」。；2026-10-04 **第五次重锚**（D-42 把买卖点/背驰点的落点从「段尾那一笔的结束时刻」改成「线段极值所在的那根原始 bar」之后）：`_third_kind` 新增了 `bars` 形参、`_sig(...)` 每次调用都多一行 `bars=bars,`，本补丁两处 hunk 的上下文因此再次被打断。这次仍是**语义重锚**：`+` 行里两处 `_sig(...)` 都补上了 `bars=bars,` —— **不加就会在应用后把 D-42 对第三类买卖点的落点回退成段尾时刻**（`_sig` 的 `bars` 有 `None` 默认值，所以语法上不会报错，只会静默退回旧口径）。本提案的判据（`_exit_pair` 的「离开段与回试段都必须 CONFIRMED」门 + 两根判定的平铺 and 链）**逐条不变**。
 --- a/src/chanlun/chan/signal.py
 +++ b/src/chanlun/chan/signal.py
-@@ -211,6 +211,25 @@
+@@ -216,6 +216,25 @@
      return [replace(s, idx=i) for i, s in enumerate(out)]
  
  
@@ -32,9 +32,9 @@
 +
 +
  def _third_kind(segs: list[Segment], pivots: Sequence[Pivot],
-                 level: str) -> list[Signal]:
+                 level: str, bars: "pd.DataFrame | None" = None) -> list[Signal]:
      """第三类买卖点：离开中枢后回抽不回中枢（第 20 课，判据是**位置**）。
-@@ -249,24 +268,22 @@
+@@ -264,26 +283,24 @@
      for p in pivots:
          if p.capped:
              continue
@@ -51,12 +51,14 @@
 -                out.append(_sig(
 -                    SignalKind.B3, back, level, p.idx,
 -                    f"向上离开中枢{p.idx}(ZG={p.zg:.3f})后回抽低点 {back.low:.3f} 不回中枢",
+-                    bars=bars,
 -                ))
 -        elif leave.direction == -1 and leave.low < p.zd:
 -            if back.direction == 1 and back.high < p.zd:
 -                out.append(_sig(
 -                    SignalKind.S3, back, level, p.idx,
 -                    f"向下离开中枢{p.idx}(ZD={p.zd:.3f})后回抽高点 {back.high:.3f} 不回中枢",
+-                    bars=bars,
 -                ))
 +        # 两根判定必须用同一条平铺 and 链：一段既穿过 ZG 又穿过 ZD 时，嵌套
 +        # if 会把 B3 的失败当成这个中枢没有买卖点，把紧随其后的 S3 一起吞掉
@@ -65,11 +67,13 @@
 +            out.append(_sig(
 +                SignalKind.B3, back, level, p.idx,
 +                f"向上离开中枢{p.idx}(ZG={p.zg:.3f})后回抽低点 {back.low:.3f} 不回中枢",
++                bars=bars,
 +            ))
 +        elif leave.low < p.zd and back.direction == 1 and back.high < p.zd:
 +            out.append(_sig(
 +                SignalKind.S3, back, level, p.idx,
 +                f"向下离开中枢{p.idx}(ZD={p.zd:.3f})后回抽高点 {back.high:.3f} 不回中枢",
++                bars=bars,
 +            ))
      return out
  
