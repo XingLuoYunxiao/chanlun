@@ -36,7 +36,7 @@
 工作目录固定为项目根 `chanlun/`：
 
 ```bash
-cd /Users/zzz/workspace/chanlun
+cd <本项目根目录>
 ```
 
 ### 第 1 步：当真实用户用一遍系统
@@ -345,7 +345,7 @@ G1–G4 是理论类（买卖点/中枢/走势类型/线段的判据），G5 是
 `before`/`after` 可以直接重跑复核：
 
 ```bash
-cd /Users/zzz/workspace/chanlun
+cd <本项目根目录>
 PYTHONPATH=src ../.venv-chanlun/bin/python -m chanlun.optimizer.cli --root . --rounds 10 --measure
 ```
 
