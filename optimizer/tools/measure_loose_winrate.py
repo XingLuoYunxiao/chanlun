@@ -4,7 +4,7 @@
 它不改主干、不提案、不写 journal。
 
 复现：
-    cd /Users/zzz/workspace/chanlun
+    cd <本项目根目录>
     PYTHONPATH=src ../.venv-chanlun/bin/python optimizer/tools/measure_loose_winrate.py \
         --n 150 --start 2018-01-01 --out /tmp/winrate.json
 
