@@ -34,13 +34,13 @@ tags: 背驰,盘整背驰,走势类型,比较,中枢,趋势,第一类买点,背�
 这一条以前在本条目里被写成了「因此实现里不会这样」，**是错的**，2026-10-04 更正。
 实测代码比的是**单根线段**：
 
-- `src/chanlun/chan/signal.py::_entering_and_leaving`（`:260-280`）——
+- `src/chanlun/chan/signal.py::_entering_and_leaving`（`:283-315`）——
   「离开段」取中枢组的最后一段 `segs[p.end_idx]`，「前一同向段」取上一个中枢的
   `segs[pivots[k - 1].end_idx]`，**各一段**（该函数自己的 docstring 也写明这是
   **位置口径**，并说第 24 课比较力度的对象正是它）。
-- `src/chanlun/chan/signal.py::_first_kind`（`:283-313`）—— 拿这两段比极值
+- `src/chanlun/chan/signal.py::_first_kind`（`:318-348`）—— 拿这两段比极值
   （`leave.low < prev.low` / `leave.high > prev.high`）与 MACD 面积。
-- `src/chanlun/chan/signal.py::_area`（`:125-133`）—— 入参是单个 `Segment`，
+- `src/chanlun/chan/signal.py::_area`（`:134-142`）—— 入参是单个 `Segment`，
   面积按**这一根线段**的 `src_start`→`src_end` 累计，**不是**按走势段累计。
 
 所以第 27 课「把第一、三段看成两个**走势类型**之间的比较」**没有落到代码里**。
@@ -51,8 +51,23 @@ tags: 背驰,盘整背驰,走势类型,比较,中枢,趋势,第一类买点,背�
 
 ## 适用算法
 
-- `src/chanlun/chan/signal.py::_entering_and_leaving`（`:260-280`）—— 离开段/前一同向段
+- `src/chanlun/chan/signal.py::_entering_and_leaving`（`:283-315`）—— 离开段/前一同向段
   的选取，**各取单根线段**（位置口径，见上）。
-- `src/chanlun/chan/signal.py::_first_kind`（`:283-313`）—— 趋势背驰的极值条件与面积比较；
+- `src/chanlun/chan/signal.py::_first_kind`（`:318-348`）—— 趋势背驰的极值条件与面积比较；
   比较单位是**线段**，不是走势类型。
-- `src/chanlun/chan/signal.py::_area`（`:125-133`）—— **单线段**的同色柱面积累计。
+- `src/chanlun/chan/signal.py::_area`（`:134-142`）—— **单线段**的同色柱面积累计。
+
+## 2026-10-04 补正（D-41）：被段数上限掐停的中枢不参与比较
+
+上面说的「位置口径」有一个前置条件：中枢组必须**真的**是被「下一段不碰
+`[ZD, ZG]`」封口的，`segs[end_idx]` 才是离开段。`find_pivots` 的延伸循环还有
+第二个退出理由 —— 第 33 课段数上限（本级别 8 段）掐停，记在 `Pivot.capped`。
+那种中枢组内每一段（含 `end_idx`）都仍与 `[ZD, ZG]` 重叠（第 20 课中心定理一
+「走势中枢的延伸等价于任意区间[dn，gn]与[ZD，ZG]有重叠」），**本级别不存在离开段**，
+拿延伸段去比 MACD 力度就是比错了对象。
+
+D-41 因此在 `_entering_and_leaving`（`:283-315`）与
+`divergence.py::_leaving_legs` 两处都加了 `if p.capped: continue`。
+实测影响（全市场日线 5440 票）：趋势背驰条目 **180 → 116**，其中消失的 64 条
+全部落在 `capped` 中枢上；第一类买点 **137 → 91**、第一类卖点 **43 → 25**。
+可复现命令见 `docs/evidence/2026-10-04-capped-signal-gate.md`。
