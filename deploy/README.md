@@ -6,6 +6,12 @@
 | --- | --- | --- |
 | `chanlun-daily.service` / `chanlun-daily.timer` | Linux (systemd) | 工作日 17:30 Asia/Shanghai 触发 `python -m chanlun daily` |
 | `com.chanlun.daily.plist` | macOS (launchd) | 同上；本机是 macOS，所以实际装的是这个 |
+| `chanlun-optimizer.service` | Linux (systemd) | 24x7 跑 `optimizer/agent.py`（**已按用户指示暂停，见 AGENTS.md §5**） |
+| `com.chanlun.optimizer.plist` | macOS (launchd) | 同上 |
+
+四份 unit 里的项目路径与解释器路径都写成 `__PROJECT_DIR__` / `__PYTHON__`
+占位符：**launchd 与 systemd 都不展开 `~` 和环境变量**，装之前必须用 `sed`
+换成绝对路径（见下面两节）。
 
 ## 流水线实际做了什么
 
@@ -93,11 +99,20 @@ PYTHONPATH=src python -m chanlun sync --period 30 --codes 600000,000001 # 分钟
 
 ## 装（macOS，本机）
 
+**launchd 不展开 `~`、也不展开环境变量**，所以 plist 里的 `__PROJECT_DIR__` /
+`__PYTHON__` 必须先替换成绝对路径，不能直接 `cp` 过去用。在**项目根目录**执行：
+
 ```bash
-cp chanlun/deploy/com.chanlun.daily.plist ~/Library/LaunchAgents/
+sed -e "s#__PROJECT_DIR__#$(pwd)#g" -e "s#__PYTHON__#$(command -v python3)#g" \
+    deploy/com.chanlun.daily.plist > ~/Library/LaunchAgents/com.chanlun.daily.plist
+plutil -lint ~/Library/LaunchAgents/com.chanlun.daily.plist     # 先校验再装
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.chanlun.daily.plist
 launchctl print gui/$(id -u)/com.chanlun.daily | head -20    # 确认已加载 + 下次触发
 ```
+
+`__PYTHON__` 要指向**装了本项目依赖的那个解释器**（本机是虚拟环境里的
+`.venv-chanlun/bin/python`），`command -v python3` 只是省事的默认值。
+优化器那份同理，把文件名换成 `com.chanlun.optimizer.plist` 即可。
 
 手动触发一次、卸载：
 
@@ -108,10 +123,12 @@ launchctl bootout gui/$(id -u)/com.chanlun.daily
 
 ## 装（Linux，systemd）
 
+systemd 那份用的是同一套占位符，装法也是先 `sed` 再拷。在**项目根目录**执行：
+
 ```bash
-sed -e "s#__PROJECT_DIR__#$PWD#g" -e "s#__PYTHON__#$(command -v python3)#g" \
-    chanlun/deploy/chanlun-daily.service > /tmp/chanlun-daily.service
-sudo cp /tmp/chanlun-daily.service chanlun/deploy/chanlun-daily.timer /etc/systemd/system/
+sed -e "s#__PROJECT_DIR__#$(pwd)#g" -e "s#__PYTHON__#$(command -v python3)#g" \
+    deploy/chanlun-daily.service > /tmp/chanlun-daily.service
+sudo cp /tmp/chanlun-daily.service deploy/chanlun-daily.timer /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now chanlun-daily.timer
 systemctl list-timers chanlun-daily.timer
 ```
