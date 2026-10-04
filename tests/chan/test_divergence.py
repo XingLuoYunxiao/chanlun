@@ -374,3 +374,45 @@ def test_synthetic_in_pivot_separates_oscillation_from_leaving_leg():
     assert osc[0].pivot_idx == 1 and osc[0].in_pivot is True, (
         "中枢震荡段（B 的 5 <= seg6 < 8）里的盘整背驰必须是 in_pivot=True"
     )
+
+
+#: 段数到上限（8 段）、而下一段仍与 `[ZD, ZG]` 重叠的中枢：买侧 zg=18 / zd=11，
+#: 段 7 是向上段（13→22）却没有离开区间，段 8（22→18）又跌回边缘内。
+_CAPPED_POINTS = [20.0, 10.0, 18.0, 11.0, 17.0, 12.0, 16.0, 13.0, 22.0, 18.0]
+
+
+def test_capped_pivot_is_skipped_by_both_leaving_leg_implementations():
+    """D-41：`capped` 中枢不参与背驰比较，且两份实现必须**同时**跳过。
+
+    第 33 课：「中枢的延伸不能超过5段，也就是一旦出现6段的延伸，加上形成中枢本身
+    那三段，就构成更大级别的中枢了。」本级别 8 段封顶。`capped` 的定义是「到了
+    上限、而下一段仍与 `[ZD, ZG]` 重叠」——按第 20 课中心定理一「走势中枢的延伸
+    等价于任意区间[dn，gn]与[ZD，ZG]有重叠」，组内每一段（含 `end_idx`）都还在
+    延伸，`segs[p.end_idx]` **不是**离开段，拿它去比 MACD 力度就是比错了对象。
+
+    这条测试**同时**咬住两份实现：`divergence.py::_leaving_legs`（背驰侧）与
+    `signal.py::_entering_and_leaving`（买卖点侧）。实测：只把 `_leaving_legs`
+    那一处的门去掉，`test_trend_divergence_matches_b1_s1` 仍然全绿（4 只夹具票上
+    没有落在 capped 中枢上的趋势背驰，那条双向断言量不到这个分支），而本测试会
+    在第一个断言上就红 —— 所以这条护栏不是重复的。
+    """
+    from chanlun.chan.divergence import _leaving_legs
+    from chanlun.chan.signal import _entering_and_leaving
+
+    segs = _zigzag(_CAPPED_POINTS)
+    pivot = find_pivots(segs, "day")[0]
+    assert pivot.capped is True, "前提：这个中枢必须真的是被段数上限掐停的"
+    assert pivot.segment_count == 8
+    assert pivot.end_idx == 7
+    assert segs[pivot.end_idx].direction == 1, "离开段方向与趋势同向 ⇒ 没有门就会产出"
+
+    assert _leaving_legs(segs, [pivot], 1) == []
+    assert _entering_and_leaving(segs, [pivot], 1) == []
+
+    # 两端到端的兜底：背驰与第一类买卖点都不许在 capped 中枢上报出来
+    macd_df = _macd(100, {72: 1.0})
+    trend = _trend_points(
+        find_divergences(pd.DataFrame(), segs, [pivot], "day", macd_df=macd_df))
+    firsts = _first_points(
+        find_signals(pd.DataFrame(), segs, [pivot], "day", macd_df=macd_df))
+    assert (trend, firsts) == (set(), set())
