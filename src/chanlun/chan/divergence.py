@@ -187,9 +187,21 @@ def _leaving_legs(segs: list[Segment], pivots: Sequence[Pivot],
     `signal.py` 会 import 本模块，反向 import 会成环。
     两者一致性由 `tests/chan/test_divergence.py::test_trend_divergence_matches_b1_s1`
     守住（**双向**相等，不是单向包含）。
+
+    `capped` 的中枢（第 33 课段数上限掐停）**跳过**：`end_idx` 只是仍在枢内的
+    延伸段，不是离开段，拿它比 MACD 力度就是比错了对象（D-41）。
+    这一条必须与 `signal.py::_entering_and_leaving` 同步。
+
+    **守卫在哪**：上面那句「双向相等断言会暴露不一致」是**错的** —— 实测去掉本函数
+    这一处门，`test_trend_divergence_matches_b1_s1` 仍然全绿（4 只夹具票上没有落在
+    capped 中枢上的趋势背驰，那条断言量不到这个分支）。真正咬住这个分支的是
+    `test_capped_pivot_is_skipped_by_both_leaving_leg_implementations`：它对两份
+    实现各断言一次，去掉任一处门都会在对应的那行红。
     """
     out = []
     for k, p in enumerate(pivots):
+        if p.capped:
+            continue
         leave = segs[p.end_idx]
         if _dead(leave) or leave.direction != want:
             continue
