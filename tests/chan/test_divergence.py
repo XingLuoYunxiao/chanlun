@@ -102,7 +102,18 @@ def test_consolidation_divergence_area_shrinks(snap):
         assert d.area_now == pytest.approx(hist_area(macd_df, now.src_start, now.src_end,
                                                     now.direction))
         assert d.direction == now.direction
-        assert d.ts == now.end.end.ts
+        # D-42：`ts` 是**线段极值所在的那根原始 bar**，不是段尾那一笔的结束时刻
+        # （第 24 课「一般都可以抛到最高价位和买在最低价位附近」）。这里断言
+        # 「`d.ts` 那根 bar 的 high/low 确实等于线段极值」，而不是把 `now.end.end.ts`
+        # 换成一个新的字面量 —— 字面量在极值挪到别的 bar 时仍然全绿，测不出东西。
+        want = now.direction
+        col = "high" if want == 1 else "low"
+        target = now.high if want == 1 else now.low
+        rows = bars[bars["ts"] == d.ts]
+        assert len(rows) == 1, f"{d.ts} 不是夹具里的真实 bar"
+        got = float(rows[col].iloc[0])
+        assert got == pytest.approx(target), (
+            f"{d.ts} 的 {col} 应等于线段极值 {target}，实际 {got}")
 
 
 def test_consolidation_divergence_does_not_require_a_new_extreme(snap):
