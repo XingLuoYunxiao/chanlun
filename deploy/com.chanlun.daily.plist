@@ -3,10 +3,18 @@
 <!--
   缠论每日流水线：macOS launchd 版（本机是 macOS，没有 systemd）
 
-  安装：
-    cp chanlun/deploy/com.chanlun.daily.plist ~/Library/LaunchAgents/
+  安装：本文件里的 __PROJECT_DIR__ / __PYTHON__ 是占位符，**必须先替换成绝对路径**。
+  launchd 不展开 `~`、也不展开环境变量，所以不能直接 cp 过去用。
+  在**项目根目录**执行（sed 的 # 分隔符是为了避开路径里的 /）：
+
+    sed -e "s#__PROJECT_DIR__#$(pwd)#g" -e "s#__PYTHON__#$(command -v python3)#g" \
+        deploy/com.chanlun.daily.plist > ~/Library/LaunchAgents/com.chanlun.daily.plist
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.chanlun.daily.plist
     # 老系统用：launchctl load -w ~/Library/LaunchAgents/com.chanlun.daily.plist
+
+  __PYTHON__ 应当指向**装了本项目依赖的那个解释器**（本机是虚拟环境里的
+  .venv-chanlun/bin/python），不一定是 `command -v python3`；换成绝对路径即可。
+  sed 之后可以先 `plutil -lint` 校验再装。
 
   验证 / 手动触发 / 卸载：
     launchctl print gui/$(id -u)/com.chanlun.daily | head -20   # 看状态与下次触发
@@ -27,7 +35,7 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/zzz/workspace/.venv-chanlun/bin/python</string>
+    <string>__PYTHON__</string>
     <string>-m</string>
     <string>chanlun</string>
     <string>daily</string>
@@ -44,7 +52,7 @@
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/zzz/workspace/chanlun</string>
+  <string>__PROJECT_DIR__</string>
 
   <key>EnvironmentVariables</key>
   <dict>
@@ -69,8 +77,8 @@
   <false/>
 
   <key>StandardOutPath</key>
-  <string>/Users/zzz/workspace/chanlun/logs/daily.log</string>
+  <string>__PROJECT_DIR__/logs/daily.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/zzz/workspace/chanlun/logs/daily.log</string>
+  <string>__PROJECT_DIR__/logs/daily.log</string>
 </dict>
 </plist>
