@@ -731,6 +731,12 @@
     标记用 `value: [div.ts, div.price]`、日期从接口来。
     `app.js:757` 的**线段确认**标记仍用 `g.end.end.ts` —— 那是「线段在哪确认结束」，
     与本条不是一回事，**范围外、不改**。
+  - **两份 `docs/` 取证/施工快照补了「后续变更」指针**（正文一律不改）：
+    `docs/evidence/2026-10-01-chanlun-strictness-audit.md` 的 §2.10 把
+    「`ts = back.end.end.ts` ✅」记成了通过项，
+    `docs/superpowers/plans/2026-10-02-strict-loose-mode.md` 里贴的代码片段也是旧口径。
+    两者都是**有日期的快照**，按仓库纪律不回改历史，只在开头各补一段指向 D-42 的说明，
+    免得后来的人照着旧口径改回去。
   - **下游三处显示消费点无需改代码**：`backtest/runner.py:96`、
     `scan/watchlist.py:127`、`scan/watchlist.py:129`、`scan/scanner.py:288`
     读的就是 `sig.ts` / `sig.price`。
