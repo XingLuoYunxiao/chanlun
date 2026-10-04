@@ -380,8 +380,10 @@ def test_penetrating_retest_is_absorbed_when_pivot_not_capped():
 
 @pytest.mark.parametrize("code, tentative_ts", [
     # 状态取自回抽段：段还没被后续段确认时，信号也是 tentative（`confirmed_at` 为 None）
+    # `sh.601088` 的日期是背驰段极值那根 bar 的 `ts`（D-42 把口径从段尾
+    # `seg.end.end.ts` 改成极值 bar；旧值是 `2024-12-27`）。
     ("sh.600000", []),
-    ("sh.601088", ["2024-12-27"]),
+    ("sh.601088", ["2023-06-01"]),
     ("sz.300059", []),
     ("sz.300750", []),
 ])
@@ -402,6 +404,16 @@ def test_second_kind_origin_path_is_loose_only(code, tentative_ts):
               and s.reason.startswith("盘整背驰 ")]
     assert origin, "夹具上应有第 27 课支路发射的第二类买卖点"
     assert [s.ts for s in origin if s.status is Status.TENTATIVE] == tentative_ts
+    # D-42：`ts` 是背驰段极值所在的那根原始 bar，`price` 必须真的出现在那根 bar 上。
+    # 只钉一个日期字面量测不出这个口径 —— 极值挪到别的 bar 时字面量照样对得上。
+    origin_bars = _bars_of(code)
+    for s in origin:
+        rows = origin_bars[origin_bars["ts"] == s.ts]
+        assert len(rows) == 1, f"{s.ts} 不是夹具里的真实 bar"
+        col = "low" if s.kind is SignalKind.B2 else "high"
+        got = float(rows[col].iloc[0])
+        assert got == pytest.approx(s.price), (
+            f"{s.ts} 的 {col} 应等于 {s.price}，实际 {got}")
     assert all((s.status is Status.CONFIRMED) == (s.confirmed_at is not None)
                for s in origin)
     # 回抽低点/高点不破背驰段极值 —— 这就是第 8 段「不出现新低」的口径
