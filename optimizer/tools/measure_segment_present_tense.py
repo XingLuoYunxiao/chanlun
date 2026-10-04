@@ -21,18 +21,30 @@
 > 注意不要把「不在最终划分里」当作违规指标 —— 那个量的是**与最终划分的一致性**，
 > 一个完全单调但与最终划分不同的划分会被它冤枉。真指标只看**相邻前缀之间的消失**。
 
-四个变体（用来证明「翻开关修不好」）：
+变体（两个根因 × 各自的开/关，用来分解各自的贡献）：
 
-  L0  主干：全序列 argmax 左端 + DP 目标（`segment.py::classify` 现状）
-  F1  热身冻结左端 + DP 目标（左端只用最前面 W 笔算一次）
-  F2  热身冻结左端 + 「向前首个满足」目标（第 71 课字面程序）
-  L1  起点固定第 0 笔 + 「向前首个满足」目标（完全当下但结构塌）
+  L0   旧主干：全序列 argmax 左端 + **前视**缺口确认
+  F1   热身冻结左端（只用最前面 W 笔取 argmax）+ 前视缺口
+  F2   热身冻结左端 + 「向前首个满足」目标 + 前视缺口
+  L1   起点固定第 0 笔 + 「向前首个满足」目标 + 前视缺口
+  D3   因果左端 + 因果缺口确认 —— **这是已落主干的口径**（D-40）
+  D3-  只修缺口（左端仍取全序列 argmax）
+  D3+  只修左端（缺口仍前视）
+
+`gap_full` / `gap_causal` 都是**自带**的复刻实现，所以 L0 那一行在 D-40 落地之后
+仍然量的是**落地前**的口径 —— 工具不会因为主干被改而偷偷换掉基线。
+L0 与 D3 的差就是本次修复的全部效果。
 
 用法：
 
-    cd /Users/zzz/workspace/chanlun
+    cd <本项目根目录>
+    # 全 24 只票（复现 D-40 记录里的数字）
     PYTHONPATH=src ../.venv-chanlun/bin/python \
-        optimizer/tools/measure_segment_present_tense.py --sample 5
+        optimizer/tools/measure_segment_present_tense.py --sample 24 --stride 40
+
+    # 顺带校验「增量推进」与「逐前缀重算」两种因果实现等价
+    PYTHONPATH=src ../.venv-chanlun/bin/python \
+        optimizer/tools/measure_segment_present_tense.py --sample 3 --verify-gap
 
     # 逐根 bar 复算（贵）：确认线段首次可见时刻 vs confirmed_at
     PYTHONPATH=src ../.venv-chanlun/bin/python \
@@ -100,6 +112,40 @@ def walk_first(pol, strokes, start):
     return out
 
 
+def gap_full(strokes, from_idx, direction):
+    """**前视**缺口确认：一次拿全序列的合并特征序列找分型（旧主干口径）。
+
+    这就是 D3 的第一个根因：`_merge_feature` 的最后一个元素可能还没封闭，
+    新笔一到就被并进前一个元素，早先成立的分型随之消失。
+    """
+    sub = S._feature_seq(strokes, from_idx, -direction)
+    if len(sub) < 3:
+        return None
+    std = S._merge_feature(sub, -direction)
+    for j in range(1, len(std) - 1):
+        if S._is_fractal_at(std, j, -direction):
+            return std[j + 1][2]
+    return None
+
+
+def gap_causal(strokes, from_idx, direction):
+    """**因果**缺口确认：逐笔推进，某个前缀上一旦成立就定死（第 71 课「当下完成」）。
+
+    增量推进用的是 `_merge_push`。它与「每个前缀都重新 `_merge_feature` 一次」是否
+    等价是可测的，不是推理 —— `--verify-gap` 就是那把尺子。
+    """
+    merge_dir = -direction
+    std: list[list[float | int]] = []
+    for i in range(from_idx, len(strokes)):
+        stroke = strokes[i]
+        if stroke.direction != direction:
+            continue
+        S._merge_push(std, stroke.high, stroke.low, i, merge_dir)
+        if len(std) >= 3 and S._is_fractal_at(std, len(std) - 2, merge_dir):
+            return int(std[-1][2])
+    return None
+
+
 def _argmax_start(pol, strokes, walk):
     start, best = 0, -1
     for s in range(len(strokes)):
@@ -121,18 +167,51 @@ def make_classify(walk, mode):
             start = _argmax_start(self, head, walk)
         elif mode == "first0":
             start = 0
+        elif mode == "causal":
+            # 最早的前缀 t 上、最小的可行起点 —— 只看 strokes[:t]，不前视。
+            start, found = 0, False
+            for t in range(self.min_strokes, n + 1):
+                head = strokes[:t]
+                for s in range(t):
+                    if next(iter(self.candidates(head, s)), None) is not None:
+                        start, found = s, True
+                        break
+                if found:
+                    break
         else:
             raise ValueError(mode)
         return walk(self, strokes, start)
     return classify
 
 
+# (标签, 走法, 左端口径, 缺口口径)
 VARIANTS = [
-    ("L0 全序列argmax + DP目标", walk_dp, "trunk"),
-    ("F1 热身冻结 + DP目标", walk_dp, "frozen"),
-    ("F2 热身冻结 + 首个满足", walk_first, "frozen"),
-    ("L1 起点0 + 首个满足", walk_first, "first0"),
+    ("L0 旧主干：argmax+前视缺口", walk_dp, "trunk", gap_full),
+    ("F1 热身冻结+前视缺口", walk_dp, "frozen", gap_full),
+    ("F2 冻结+首个满足+前视缺口", walk_first, "frozen", gap_full),
+    ("L1 起点0+首个满足+前视缺口", walk_first, "first0", gap_full),
+    ("D3 因果左端+因果缺口（已落主干）", walk_dp, "causal", gap_causal),
+    ("D3- 只修缺口（左端仍argmax）", walk_dp, "trunk", gap_causal),
+    ("D3+ 只修左端（缺口仍前视）", walk_dp, "causal", gap_full),
 ]
+
+
+def _patch(variant):
+    """装上变体的 `classify` 与 `_confirm_gap`，返回还原用的 (classify, gap)。"""
+    _, walk, mode, gap = variant
+    orig_cls = S.Lesson6768Policy.classify
+    orig_gap = S.Lesson6768Policy._confirm_gap
+    S.Lesson6768Policy.classify = make_classify(walk, mode)
+    S.Lesson6768Policy._confirm_gap = staticmethod(gap)
+    return orig_cls, orig_gap
+
+
+def _restore(saved):
+    orig_cls, orig_gap = saved
+    S.Lesson6768Policy.classify = orig_cls
+    # 主干的 `_confirm_gap` 是 @staticmethod；还原时也必须包回去，
+    # 否则普通函数会被当成实例方法绑定，调用时多收一个 self。
+    S.Lesson6768Policy._confirm_gap = staticmethod(orig_gap)
 
 
 # ---------------------------------------------------------------- 测量
@@ -143,67 +222,123 @@ def confirmed_ids(snap):
 
 def structure(codes):
     """每变体的结构：段数 / 确认段数 / 最长段笔数。"""
-    orig = S.Lesson6768Policy.classify
     print("=== M2 结构对比（最长段越小越不塌）===")
-    print(f"{'code':10s}{'笔':>6s} | " + " | ".join(f"{v[0]:>22s}" for v in VARIANTS))
-    try:
-        for code in codes:
-            bars = store.read(code, "day")
-            if bars is None or len(bars) == 0:
-                continue
-            strokes = ChanEngine(code, "day").full(bars).strokes
-            cells = []
-            for _, walk, mode in VARIANTS:
-                S.Lesson6768Policy.classify = make_classify(walk, mode)
-                try:
-                    segs = S.build_segments(strokes)
-                finally:
-                    S.Lesson6768Policy.classify = orig
-                conf = sum(1 for s in segs if s.status is Status.CONFIRMED)
-                mx = max((s.stroke_count for s in segs), default=0)
-                cells.append(f"{len(segs):3d}段/{conf:3d}确/{mx:4d}长")
-            print(f"{code:10s}{len(strokes):6d} | " + " | ".join(f"{c:>22s}" for c in cells))
-    finally:
-        S.Lesson6768Policy.classify = orig
+    print(f"{'code':10s}{'笔':>6s} | " + " | ".join(f"{v[0]:>26s}" for v in VARIANTS))
+    for code in codes:
+        bars = store.read(code, "day")
+        if bars is None or len(bars) == 0:
+            continue
+        strokes = ChanEngine(code, "day").full(bars).strokes
+        cells = []
+        for variant in VARIANTS:
+            saved = _patch(variant)
+            try:
+                segs = S.build_segments(strokes)
+            finally:
+                _restore(saved)
+            conf = sum(1 for s in segs if s.status is Status.CONFIRMED)
+            mx = max((s.stroke_count for s in segs), default=0)
+            cells.append(f"{len(segs):3d}段/{conf:3d}确/{mx:4d}长")
+        print(f"{code:10s}{len(strokes):6d} | " + " | ".join(f"{c:>26s}" for c in cells))
 
 
 def monotonicity(codes, stride):
     """真指标：相邻前缀之间消失的**中间段**确认线段数。"""
-    orig = S.Lesson6768Policy.classify
     print(f"\n=== M1 第 71 课单调性违规（真指标，stride={stride}）===")
     print("「消失中间」= 已确认线段在下一前缀消失、且当时不是上一前缀的末段")
-    print(f"{'variant':24s} {'累计确认':>8s} {'消失总':>7s} {'消失中间':>9s} {'末段(正常)':>11s}")
+    print(f"{'variant':30s} {'累计确认':>8s} {'消失总':>7s} {'消失中间':>9s} {'末段(正常)':>11s}")
+    for variant in VARIANTS:
+        label = variant[0]
+        saved = _patch(variant)
+        try:
+            tot = step = step_mid = 0
+            for code in codes:
+                bars = store.read(code, "day", start=START, end=END)
+                if bars is None or len(bars) == 0:
+                    continue
+                eng = ChanEngine(code, "day", signal_fn=find_signals)
+                prev_ids: list[str] = []
+                prev: set[str] | None = None
+                for k in range(250, len(bars) + 1, stride):
+                    ids = confirmed_ids(eng.full(bars.iloc[:k]))
+                    cur = set(ids)
+                    tot += len(cur)
+                    if prev is not None:
+                        tail = prev_ids[-1] if prev_ids else None
+                        for g in prev - cur:
+                            step += 1
+                            if g != tail:
+                                step_mid += 1
+                    prev, prev_ids = cur, ids
+            print(f"{label:30s} {tot:8d} {step:7d} {step_mid:9d} "
+                  f"{step - step_mid:11d}")
+        finally:
+            _restore(saved)
+    print("\n→ L0 与 D3 两行的差就是本次修复的全部效果（累计确认 / 消失中间）。")
+    print("→ D3- 与 D3+ 两行是单根因对照：两条都修才拿到最好的「消失中间」。")
+    print("→ 无状态规则做不到 0：末段之外的残留需要跨次调用锁定已宣布分界点。")
+
+
+def violations(codes, stride):
+    """列出 D3（已落主干）残留的「消失中间」逐条明细，便于人工复核。"""
+    variant = next(v for v in VARIANTS if v[0].startswith("D3 "))
+    print(f"\n=== M6 残留违规逐条（{variant[0]}）===")
+    saved = _patch(variant)
+    total = 0
     try:
-        for label, walk, mode in VARIANTS:
-            S.Lesson6768Policy.classify = make_classify(walk, mode)
-            try:
-                tot = step = step_mid = 0
-                for code in codes:
-                    bars = store.read(code, "day", start=START, end=END)
-                    if bars is None or len(bars) == 0:
-                        continue
-                    eng = ChanEngine(code, "day", signal_fn=find_signals)
-                    prev_ids: list[str] = []
-                    prev: set[str] | None = None
-                    for k in range(250, len(bars) + 1, stride):
-                        ids = confirmed_ids(eng.full(bars.iloc[:k]))
-                        cur = set(ids)
-                        tot += len(cur)
-                        if prev is not None:
-                            tail = prev_ids[-1] if prev_ids else None
-                            for g in prev - cur:
-                                step += 1
-                                if g != tail:
-                                    step_mid += 1
-                        prev, prev_ids = cur, ids
-                print(f"{label:24s} {tot:8d} {step:7d} {step_mid:9d} "
-                      f"{step - step_mid:11d}")
-            finally:
-                S.Lesson6768Policy.classify = orig
+        for code in codes:
+            bars = store.read(code, "day", start=START, end=END)
+            if bars is None or len(bars) == 0:
+                continue
+            eng = ChanEngine(code, "day", signal_fn=find_signals)
+            prev_ids: list[str] = []
+            prev: set[str] | None = None
+            for k in range(250, len(bars) + 1, stride):
+                ids = confirmed_ids(eng.full(bars.iloc[:k]))
+                cur = set(ids)
+                if prev is not None:
+                    tail = prev_ids[-1] if prev_ids else None
+                    for g in sorted(prev - cur):
+                        if g != tail:
+                            total += 1
+                            print(f"  {code:10s} k={k:5d}  消失的中间段 {g}")
+                prev, prev_ids = cur, ids
     finally:
-        S.Lesson6768Policy.classify = orig
-    print("\n→ 若某变体把「消失中间」降到 0，它就是修法；实测全部 > 0。")
-    print("→ 无状态规则做不到 0：真正的单调性要求跨次调用锁定已宣布分界点。")
+        _restore(saved)
+    print(f"→ 共 {total} 条。这些是第 71 课性质 1 的残留违反，需要跨次调用锁定"
+          f"已宣布分界点才能清掉。")
+
+
+def verify_gap(codes):
+    """校验 `gap_causal` 的增量推进 == 每个前缀都重新合并的逐前缀重算。"""
+    print("\n=== M5 缺口确认：增量推进 vs 逐前缀重算 ===")
+
+    def batch(strokes, from_idx, direction):
+        for t in range(from_idx + 3, len(strokes) + 1):
+            sub = S._feature_seq(strokes[:t], from_idx, -direction)
+            if len(sub) < 3:
+                continue
+            std = S._merge_feature(sub, -direction)
+            for j in range(1, len(std) - 1):
+                if S._is_fractal_at(std, j, -direction):
+                    return std[j + 1][2]
+        return None
+
+    checked = bad = 0
+    for code in codes:
+        bars = store.read(code, "day", start=START, end=END)
+        if bars is None or len(bars) == 0:
+            continue
+        strokes = ChanEngine(code, "day").full(bars).strokes
+        for from_idx in range(len(strokes) - 3):
+            for direction in (1, -1):
+                checked += 1
+                if gap_causal(strokes, from_idx, direction) != batch(
+                        strokes, from_idx, direction):
+                    bad += 1
+    print(f"{checked} 组 (code, from_idx, direction)  checked={checked} "
+          f"mismatches={bad}")
+    print("→ mismatches 必须为 0，否则 D3 的增量实现与因果语义不一致。")
 
 
 def candidates_growth(codes, stride, probe_start=3):
@@ -280,21 +415,29 @@ def per_bar(codes):
 def main() -> int:
     ap = argparse.ArgumentParser(description="线段层当下性测量")
     ap.add_argument("--sample", type=int, default=5,
-                    help="M1/M3 用前 N 只 AUDIT_CODES（默认 5）")
+                    help="M1/M3 用前 N 只 AUDIT_CODES（默认 5；0 = 全部 24 只）")
     ap.add_argument("--stride", type=int, default=40, help="前缀步长（默认 40）")
     ap.add_argument("--structure-codes", default="600180,603777,sh.600000,sh.000001",
                     help="M2 用哪些标的（逗号分隔）")
     ap.add_argument("--per-bar", default="",
                     help="M4 用哪些标的（逗号分隔；留空则跳过，很慢）")
+    ap.add_argument("--verify-gap", action="store_true",
+                    help="M5 校验增量推进 == 逐前缀重算（用 --sample 指定的标的）")
+    ap.add_argument("--violations", action="store_true",
+                    help="M6 逐条列出 D3 残留的「消失中间」")
     args = ap.parse_args()
 
-    codes = list(AUDIT_CODES)[:args.sample]
+    codes = list(AUDIT_CODES) if args.sample <= 0 else list(AUDIT_CODES)[:args.sample]
     structure_codes = [c.strip() for c in args.structure_codes.split(",") if c.strip()]
 
     print(f"审计标的（M1/M3）：{codes}")
     structure(structure_codes)
     monotonicity(codes, args.stride)
     candidates_growth(codes, args.stride)
+    if args.verify_gap:
+        verify_gap(codes)
+    if args.violations:
+        violations(codes, args.stride)
     if args.per_bar:
         per_bar([c.strip() for c in args.per_bar.split(",") if c.strip()])
     return 0
