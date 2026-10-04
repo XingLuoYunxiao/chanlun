@@ -516,3 +516,129 @@ def test_real_architecture_doc_discloses_unverifiable_lines(tool):
     rows = re.findall(r"^  L\d+ \| .+ \| \d+ \| ", out, re.M)
     assert len(rows) == 129, f"打印了 {len(rows)} 行，与计数不符"
     assert "不接入退出码" in out, out
+
+
+# --------------------------------------------------------------------------- #
+# 引用行内容指纹：整文件行号平移检测
+# --------------------------------------------------------------------------- #
+def _prepend_junk(path: Path, n: int = 15) -> None:
+    body = path.read_text(encoding="utf-8")
+    head = "\n".join(f"# 扰动填充 {i}" for i in range(1, n + 1))
+    path.write_text(head + "\n" + body, encoding="utf-8")
+
+
+def test_fingerprint_baseline_catches_whole_file_shift_that_old_criteria_miss(tool, tmp_path):
+    """反向对照：头部插 15 行 ⇒ 旧四类判据 exit 0，指纹桶必须 exit 1。
+
+    这是这一桶存在的唯一理由：整文件平移后，「行号在范围内」与「符号定义行在
+    范围内」两个问题的答案都还是「在」，所以旧判据**在退出码上完全无反应**。
+    """
+    root, doc = _mini(tmp_path, {"src/chanlun/chan/foo.py": FOO}, DOC_HEAD + "见 `foo.py:3-4`。\n")
+    code, out = _run(tool, root, doc, "--update-baseline")
+    assert code == 0, out
+    assert (root / "optimizer" / "tools" / "doc_refs_baseline.json").is_file()
+
+    _prepend_junk(root / "src" / "chanlun" / "chan" / "foo.py")
+
+    old_code, old_out = _run(tool, root, doc, "--no-fingerprints")
+    assert old_code == 0, old_out
+    assert "失败 0 条" in old_out  # 旧判据：看不见平移
+
+    new_code, new_out = _run(tool, root, doc)
+    assert new_code == 1, new_out
+    assert "不符 1 条" in new_out, new_out
+    assert "foo.py:3-4#0" in new_out, new_out
+
+
+def test_fingerprint_baseline_is_blind_to_doc_line_shift(tool, tmp_path):
+    """负对照：只动**文档**（前面插一段话）⇒ 指纹必须仍是 0 条不符。
+
+    键里不含文档行号就是为了这个：否则每次改 ARCHITECTURE.md 都会假警报一片。
+    """
+    root, doc = _mini(tmp_path, {"src/chanlun/chan/foo.py": FOO}, DOC_HEAD + "见 `foo.py:3-4`。\n")
+    assert _run(tool, root, doc, "--update-baseline")[0] == 0
+    body = doc.read_text(encoding="utf-8")
+    doc.write_text("<!-- 插一段，文档行号整体下移 -->\n\n" + body, encoding="utf-8")
+    code, out = _run(tool, root, doc)
+    assert code == 0, out
+    assert "不符 0 条 / 未入基线 0 条 / 基线残留 0 条" in out, out
+
+
+def test_fingerprint_baseline_is_blind_to_eof_append(tool, tmp_path):
+    """负对照：在**被引文件末尾**追加一行 ⇒ 不动任何被引行，指纹必须仍是 0 条不符。
+
+    这条挡的是「拿文件总行数当指纹」那种偷懒实现：那样每次 EOF 追加都会假红，
+    而 EOF 追加恰恰是本项目推荐的写法（插在中间会移动后面所有被引行）。
+    """
+    root, doc = _mini(tmp_path, {"src/chanlun/chan/foo.py": FOO}, DOC_HEAD + "见 `foo.py:3-4`。\n")
+    assert _run(tool, root, doc, "--update-baseline")[0] == 0
+    src = root / "src" / "chanlun" / "chan" / "foo.py"
+    src.write_text(src.read_text(encoding="utf-8") + "# EOF 追加\n", encoding="utf-8")
+    code, out = _run(tool, root, doc)
+    assert code == 0, out
+    assert "不符 0 条 / 未入基线 0 条 / 基线残留 0 条" in out, out
+
+
+def test_fingerprint_covers_lines_inside_the_range_not_just_the_edges(tool, tmp_path):
+    """区间**中段**改一个字也必须被抓住 —— 只钉首末两行的实现会漏掉它。"""
+    root, doc = _mini(tmp_path, {"src/chanlun/chan/foo.py": FOO}, DOC_HEAD + "见 `foo.py:3-5`。\n")
+    assert _run(tool, root, doc, "--update-baseline")[0] == 0
+    src = root / "src" / "chanlun" / "chan" / "foo.py"
+    lines = src.read_text(encoding="utf-8").splitlines()
+    assert lines[3].strip() == "return 1"  # 第 4 行，落在区间 (3,5) 的**中段**
+    lines[3] = "    return 999"
+    src.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    code, out = _run(tool, root, doc)
+    assert code == 1, out
+    assert "不符 1 条" in out, out
+
+
+def test_fingerprint_baseline_update_is_deterministic(tool, tmp_path):
+    """同一份代码跑两次 --update-baseline，文件必须逐字节相同；重复引用各占一键。"""
+    doc = DOC_HEAD + "见 `foo.py:3-4`。\n\n见 `foo.py:3-4`。\n"
+    root, doc_path = _mini(tmp_path, {"src/chanlun/chan/foo.py": FOO}, doc)
+    baseline = root / "optimizer" / "tools" / "doc_refs_baseline.json"
+    assert _run(tool, root, doc_path, "--update-baseline")[0] == 0
+    first = baseline.read_bytes()
+    assert "foo.py:3-4#0" in first.decode("utf-8")
+    assert "foo.py:3-4#1" in first.decode("utf-8")
+    assert _run(tool, root, doc_path, "--update-baseline")[0] == 0
+    assert baseline.read_bytes() == first
+
+
+def test_fingerprint_baseline_missing_is_disclosed_as_not_running(tool, tmp_path):
+    """没有基线文件时不许静默全绿：必须打印「这一桶没有在跑」。
+
+    退出码仍由旧判据决定（0）是有意的：没有基线是「还没建」，不是「引用漂了」；
+    但输出必须让人看见这一桶没跑 —— 否则它就是本项目最恨的那种恒绿指标。
+    """
+    root, doc = _mini(tmp_path, {"src/chanlun/chan/foo.py": FOO}, DOC_HEAD + "见 `foo.py:3-4`。\n")
+    code, out = _run(tool, root, doc)
+    assert code == 0, out
+    assert "这一桶没有在跑" in out, out
+
+
+def test_help_names_the_fingerprint_bucket_as_exit_code_owner(tool):
+    """`--help` 也要说清指纹桶能改退出码（它和旧的「只披露」桶不是一类）。"""
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), pytest.raises(SystemExit):
+        tool.main(["--help"])
+    text = buf.getvalue()
+    assert "引用行内容指纹不符" in text, text
+    assert "--update-baseline" in text, text
+
+
+def test_real_repo_fingerprint_baseline_is_committed_and_matches(tool):
+    """真仓库：基线随仓库提交，且与当前被引行逐条对上 —— 这是整项硬化的总闸。
+
+    任何「改了被引代码行却不重记指纹」的提交都会在这里变红；它跑在全量测试里，
+    比 CLI 的退出码更难绕过。
+    """
+    baseline = CHANLUN / "optimizer" / "tools" / "doc_refs_baseline.json"
+    assert baseline.is_file(), "指纹基线没提交；跑 --update-baseline 生成它"
+    code, out = _run(tool, CHANLUN, CHANLUN / "ARCHITECTURE.md")
+    assert code == 0, out
+    assert "不符 0 条 / 未入基线 0 条 / 基线残留 0 条" in out, out
