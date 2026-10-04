@@ -112,6 +112,35 @@ class Divergence:
         return DivergenceKind(self.kind).name_cn
 
 
+def extreme_ts(bars: "pd.DataFrame | None", seg: Segment, want: int) -> str:
+    """线段极值所在**原始 bar** 的时刻。`want=1` 取最高点，`want=-1` 取最低点。
+
+    为什么不是 `seg.end.end.ts`：`Segment.high/low` 由 `segment.py:451-452` 的
+    `max/min(x.high for x in 笔)` 定义，而 `Stroke.high/low` 又是
+    `max/min(a.price, b.price)`（`stroke.py:82-83`）—— 极值落在**某一笔端的分型**
+    上，不一定是段尾那一笔。实测 `sz.001331` 的 `seg6`（44 笔 TENTATIVE）最低点
+    落在段**开头**（2024-04-17），而段尾是向上笔。
+
+    为什么不是区间 `argmax`：`[src_start, src_end]` 内可能存在**不是分型端点**的
+    异常高/低 bar（实测 `sz.301439` 段内最高 bar 是 25.35，而 `Segment.high`
+    只有 18.38），取 argmax 会落到那根 bar 上。所以按**值相等**定位极值 bar。
+
+    找不到时退回 `seg.end.end.ts`（保持旧口径，不抛）。
+    """
+    if bars is None:
+        return seg.end.end.ts
+    a, b = int(seg.src_start), int(seg.src_end)
+    if a < 0 or b >= len(bars) or a > b:
+        return seg.end.end.ts
+    col = "high" if want == 1 else "low"
+    target = seg.high if want == 1 else seg.low
+    vals = bars[col].iloc[a:b + 1].to_numpy(float)
+    for k, v in enumerate(vals):
+        if abs(float(v) - target) <= 1e-9:
+            return str(bars["ts"].iloc[a + k])
+    return seg.end.end.ts
+
+
 def _dead(seg: Segment) -> bool:
     return seg.status is Status.INVALIDATED
 
@@ -159,7 +188,7 @@ def _seal(div: Divergence, seg: Segment) -> Divergence:
 def _make(kind: DivergenceKind, seg: Segment, ref: Segment, level: str,
           pivots: Sequence[Pivot], seg_idx: int, ref_idx: int,
           a_now: float, a_prev: float, new_extreme: bool,
-          reason: str) -> Divergence:
+          reason: str, bars: "pd.DataFrame | None" = None) -> Divergence:
     pivot, pivot_idx = _locate(pivots, seg_idx)
     # 第 49 课：中枢震荡段与中枢完成后的离开段必须分开。按
     # `pivot.py:125-127` 的下标约定，`segments[end_idx]` 是**离开段**，中枢震荡
@@ -169,7 +198,8 @@ def _make(kind: DivergenceKind, seg: Segment, ref: Segment, level: str,
     price = seg.low if seg.direction == -1 else seg.high
     return _seal(
         Divergence(
-            idx=0, kind=kind, direction=seg.direction, ts=seg.end.end.ts,
+            idx=0, kind=kind, direction=seg.direction,
+            ts=extreme_ts(bars, seg, seg.direction),
             price=price, level=level, seg_idx=seg_idx, ref_seg_idx=ref_idx,
             area_now=a_now, area_prev=a_prev, new_extreme=new_extreme,
             in_pivot=in_pivot, pivot_idx=pivot_idx, reason=reason,
@@ -215,7 +245,8 @@ def _leaving_legs(segs: list[Segment], pivots: Sequence[Pivot],
 
 
 def _trend(segs: list[Segment], pivots: Sequence[Pivot], level: str,
-           macd_df: pd.DataFrame) -> list[Divergence]:
+           macd_df: pd.DataFrame,
+           bars: "pd.DataFrame | None" = None) -> list[Divergence]:
     """趋势背驰：两个同向中枢之间比较离开段力度（第 37 课「没有趋势，没有背驰」）。
 
     判据与 `signal.py::_first_kind` 的 `b1` / `s1` **逐条相同**（同样的走势分组、
@@ -248,14 +279,16 @@ def _trend(segs: list[Segment], pivots: Sequence[Pivot], level: str,
             out.append(_make(
                 DivergenceKind.TREND, leave, prev, level, pivots, i,
                 _index_of(segs, prev), a_now, a_prev, True,
-                f"趋势背驰：{leave.end.end.ts} 创{where}，MACD 面积 "
+                f"趋势背驰：{extreme_ts(bars, leave, want)} 创{where}，MACD 面积 "
                 f"{a_now:.4f} < 前一同向走势 {a_prev:.4f}",
+                bars=bars,
             ))
     return out
 
 
 def _consolidation(segs: list[Segment], pivots: Sequence[Pivot], level: str,
-                   macd_df: pd.DataFrame) -> list[Divergence]:
+                   macd_df: pd.DataFrame,
+                   bars: "pd.DataFrame | None" = None) -> list[Divergence]:
     """盘整背驰：同向的 `Ai` 与 `Ai+2` 比较力度（第 39 课）。
 
     第 39 课原文：「把a定义为A0，则Ai与Ai+2之间就可以不断地比较力度，用盘整
@@ -293,8 +326,9 @@ def _consolidation(segs: list[Segment], pivots: Sequence[Pivot], level: str,
         out.append(_make(
             DivergenceKind.CONSOLIDATION, now, prev, level, pivots, i, i - 2,
             a_now, a_prev, new_extreme,
-            f"盘整背驰：{now.end.end.ts} {where}，MACD 面积 {a_now:.4f} < "
-            f"同向前段 {prev.end.end.ts} 的 {a_prev:.4f}",
+            f"盘整背驰：{extreme_ts(bars, now, now.direction)} {where}，"
+            f"MACD 面积 {a_now:.4f} < 同向前段 {extreme_ts(bars, prev, prev.direction)} 的 {a_prev:.4f}",
+            bars=bars,
         ))
     return out
 
@@ -324,7 +358,7 @@ def find_divergences(
     if macd_df is None or not segs:
         return ()
 
-    out = _trend(segs, pivots, level, macd_df)
-    out.extend(_consolidation(segs, pivots, level, macd_df))
+    out = _trend(segs, pivots, level, macd_df, bars)
+    out.extend(_consolidation(segs, pivots, level, macd_df, bars))
     out.sort(key=lambda d: (d.ts, d.kind.value))
     return tuple(replace(d, idx=i) for i, d in enumerate(out))
