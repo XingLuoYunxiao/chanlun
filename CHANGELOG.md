@@ -379,7 +379,136 @@
     修点在 `stroke.py::select_pivotal_fractals`，按「同源残留缺陷同轮修」
     需与其它 `stroke.py` 改动同轮。**未实现前不得写「已修复」。**
 
-> 下面这段不是「未发布的改动」，是**关于本节怎么用**的一条纪律**说明**（不随发版搬走）：
+- **线段划分改为「前缀因果」：缺口确认不再借用未来的笔，窗口左端不再按全序列 argmax 选**
+  （版本影响 `MINOR` —— **判据变更**：同一只票的线段划分会与上一版不同）。
+  这是审计报告里 **D3** 的落地。原实现有两处**各自独立**的「向后借用数据」：
+  1. **缺口确认前视**（`src/chanlun/chan/segment.py` 的 `_confirm_gap`）：旧实现把
+     `from_idx` 之后的**全部**笔取出来合并、找分型，再返回分型**下一个**元素的笔号 ——
+     而那个元素可能落在**当前前缀之外**。可复现反例（`sh.000001`，`start=62`，
+     `direction=1`，候选 `k=2`）：`n=79` 笔时特征序列命中分型、用**第 78 笔**宣布了
+     66 这个分界点；`n=82` 笔时第 78 笔已被包含处理合并掉、66 又消失。
+  2. **左端起段漂移**（同文件 `classify` 的窗口左端）：旧实现按**全序列 argmax**
+     选起点，数据一多最优起点就往前跳（`sh.601012`：k=250 笔时起点是第 13 笔，
+     k=330 笔时变成第 1 笔）—— 前缀之间的对比根本不是同一件事。
+  - **原文依据**：第 71 课「其实，线段的划分，都是可以当下完成的……」要求分界点只能由
+    **它之前（含它）已经出现的笔**决定；第 78 课又说明第二种情况的确认元素**可以远在后面**。
+    两条合起来是一条很具体的约束：**向未来「等待」可以，向未来「借用」不可以。**
+    第 79 课「…34、56、78，其中前两者可以进行包含关系处理，因此可以合并为36（指区间）…」
+    给出「先合并、再看分型」的顺序依据。
+  - **改法**：`_confirm_gap` 改为按笔逐根推进、只用已走完的笔判定分型（新增内部助手
+    `_merge_push`，**它不是前缀稳定的**，只用于这里）；窗口左端改为取**最早的前缀上
+    第一个可行的起点**（因果，不再做全序列比较）。
+  - **实测**（`optimizer/tools/measure_segment_present_tense.py --sample 24 --stride 40`，
+    24 只票日线；列＝累计确认 / 消失总 / **消失中间（真违规）** / 末段）：
+    旧主干 `7855 / 64 / 20 / 44` → **新实现 `7787 / 52 / 14 / 38`**
+    ⇒ **违规 −30%，累计确认 −0.9%**。单因子臂 `D3-`（只修缺口）`7866 / 57 / 17 / 40`、
+    `D3+`（只修左端）`7776 / 59 / 17 / 42` —— 两个根因各消 3 个，**两条都修才拿到 14**。
+  - **没有做到 0，如实记录**：**残留 14 条中间段消失**（M6 已逐条列出，见
+    `optimizer/theory/L71-SEGMENT-PRESENT-TENSE.md`）。真正的 0 需要**跨次调用锁定
+    已宣布的分界点**（有状态），本轮没做 ⇒ **本条目不得写成「已修复」**，
+    D-39 的「已知空白」继续保留。也**不得**写成「前视已彻底消除」：M4 逐根 bar 实测
+    `sh.600030` 仍有 1 处、最大提前 3 根 bar（`sh.600000` 为 0）。
+  - **被否决的替代方案**（完整表见 `ARCHITECTURE.md` 的 **D-40**）：起点固定第 0 笔
+    （违规 5 是塌结构换来的：`sh.000001` 最长段 37 → **376**）、第 71 课**字面程序**
+    「每个转折点取第一个满足」（违规 20 → **28**，更差）、「已宣布即永久」（违规 0 但
+    `pytest` **36 failed / 917 passed**）、平局取更早确认的候选（违规 11，比 14 好，
+    但**原文没有依据**且把划分与确认机制耦合 ⇒ 未采纳）。
+  - **回归护栏**（新增，**都用改前的源码反向验证过会红**）：
+    `tests/chan/test_segment.py::test_case2_gap_confirmation_is_causal_and_never_revoked`
+    （把主干源码还原后 ⇒ `assert None == 4`）、
+    `::test_left_edge_takes_the_first_prefix_causal_feasible_start` 与
+    `::test_left_edge_matches_brute_force_prefix_causal_reference`
+    （还原后 ⇒ `_HoleyPolicy: classify 选出笔0，逐前缀对照是笔1`）。
+    等价性护栏 `--verify-gap`：**700 组 checked=700 mismatches=0**。
+  - 决策记录：`ARCHITECTURE.md` **D-40**（并给 D-39 追加第三轮变更历史）；
+    理论条目：`optimizer/theory/L71-SEGMENT-PRESENT-TENSE.md`（**已重写**：
+    撤回第二轮「3 次 / 0.17%」与「四个变体都修不好」两条论断）。
+- **部署模板不再写死本机绝对路径**（版本影响 `PATCH`）。
+  `deploy/com.chanlun.daily.plist` / `deploy/com.chanlun.optimizer.plist` 里原本写死了
+  `/Users/zzz/workspace/...`，别人 clone 下来照抄一定跑不起来。改为与 systemd 那两份
+  unit 一致的 `__PROJECT_DIR__` / `__PYTHON__` 占位符，安装说明（文件头注释 +
+  `deploy/README.md`）同步改成「先 `sed` 替换再 `cp`」，并写明 **launchd 不展开 `~`
+  也不展开环境变量**、`__PYTHON__` 应指向装了依赖的解释器、装前先 `plutil -lint`。
+  - **实测**：两份模板渲染后 `plutil -lint` 均为 `OK`；仓库内 `/Users/zzz` 残留
+    **0** 处（`deploy/` 下）。
+- **仓库内其余写死本机绝对路径的地方一并清掉**（版本影响 `PATCH`）。
+  上一条只修了 `deploy/`，但**同一条毛病在别处还有 14 处**，别人 clone 下来同样照抄不了：
+  `ARCHITECTURE.md`（5 处复现命令）、`AGENTS.md`（4 处：项目根说明 2 行、
+  环境小节 1 条命令、依赖位置 1 句）、`optimizer/PROMPTS.md`（2 处）、
+  `optimizer/theory/L20-THIRD-TOLERANCE.md`（1 处跑法）、
+  `optimizer/tools/` 下 6 个文件（5 个「复现」块 + `run_patch_tests.py` 的散文）。
+  - **改法**：命令一律改成 `cd <本项目根目录>`（与 `README.md` 同一写法）；
+    散文改成相对描述 —— `AGENTS.md` 顶部改为「本机 checkout 里它位于外层工作区仓库的
+    子目录 `chanlun/`」，依赖位置改为「项目根目录上一级的 `.venv-chanlun/`
+    （下文写 `../.venv-chanlun/`）」。
+  - **实测**：`grep -rn "/Users/zzz"`（排除 `docs/evidence/`、`docs/superpowers/plans/`、
+    `chanlun108/`）现在**只剩 `CHANGELOG.md` 里两处引用旧路径的叙述**（即本条目与上一条），
+    其余文件 **0** 处。
+  - **刻意不改**：`docs/evidence/*`（带日期的实测快照）与
+    `docs/superpowers/plans/2026-10-02-strict-loose-mode.md`（当时的执行计划）。
+    它们是**历史记录**，改掉就是伪造历史 —— 与「已发布的 CHANGELOG 条目不要改」同一条纪律。
+  - **顺带订正 `AGENTS.md` §2 一句已经过期的说明**：原文写「本仓库**没有 git remote**，
+    所以不写版本对比链接」，而 2026-10-04 起 remote 是
+    `git@github.com:XingLuoYunxiao/chanlun.git`。改为记录 remote 并写明
+    「下次发版时补 `[x.y.z]` 的对比链接」。
+  - **`ARCHITECTURE.md` 的 5 处是逐行同长替换**（`cd <本项目根目录>` 与原文同样只占 1 行），
+    所以该文件里 **186 条行号引用一条都没漂**：重跑
+    `PYTHONPATH=src ../.venv-chanlun/bin/python optimizer/tools/check_doc_line_refs.py`
+    ⇒ `引用总数（.py 桶）：全文 186 处 / 176 行；§3.4 60 处 / 58 行`、
+    `硬判据通过 185 / 186`、`失败 0 条`、`符号漂移告警 5 条`、`首末行空行 12 条`、
+    `CHECKER_EXIT=0`；护栏用例 `tests/optimizer/test_check_doc_line_refs.py` **34 passed**。
+- **`validate_pivots` 补上 `capped` 不变量校验**（版本影响 `PATCH`；**这是加固，不是修 bug**）。
+  `Pivot.capped` 决定 `inside` 是否剔除 `group[-1]`（D-38），因而**决定 GG/DD** ——
+  但**没有任何校验器看过这个标志**，标错了会静默改变中枢振幅。
+  - **改法**：`validate_pivots` 里新增一条 —— `capped=True` 必须**正好 `MAX_SEGMENTS` 段**
+    （`capped` 只在「到了上限、且下一段仍在枢内」时为真，此时组内段数恰好等于上限）。
+  - **先测全量再下结论**：24 只票审计语料实测
+    `pivots=72 / capped=12 / capped 段数不符=0 / validate_pivots 报错=0`
+    ⇒ 该不变量**事实上已经处处成立**，所以这是**加固**（防将来回归），
+    **不得写成「修好了某个 bug」**。
+  - **护栏可失败性已验证**（把条件改成 `if False and p.capped and ...`）：
+    `1 failed, 7 passed, 34 deselected`，红的是
+    `tests/chan/test_pivot.py::test_validate_pivots_catches_each_invariant[kw7]`
+    （`assert [] != []`，报在 `tests/chan/test_pivot.py:422`）；恢复后
+    `tests/chan/test_pivot.py` **42 passed**（原 41）。
+  - **行号影响已逐条核对**：`pivot.py` 336 → 345 行，`git diff -U0` 只有两个 hunk
+    （`:309` 与 `:329`），而 `ARCHITECTURE.md` 里全部 `pivot.py:NNN` 引用
+    **被引用的最大行号是 `272-303`**，都在改动点之前 ⇒ **无需重锚**。
+  - **顺带实测并登记校验器的一个盲点**（见下方「已知空白与未实现项」）：
+    它只看「文件存在 / 行号在范围内 / 区间不倒置」，**整文件插入造成的行号漂移它看不见**。
+- **订正两处理论条目里与代码不符的口径描述**（版本影响 `PATCH`）。
+  两处都是「文档说代码没这么干，代码其实这么干了」——`optimizer/theory/*.md`
+  **不在行号校验器的扫描范围内**，所以这类分叉不会被任何测试拦住。
+  1. `optimizer/theory/L39-CONSOLIDATION-DIVERGENCE.md` 的「判据」一节原写
+     「线段天然同向交替，所以 `segments[i]` 与 `segments[i+2]` 必然同向，**无需额外筛选**」，
+     但 `src/chanlun/chan/divergence.py:270-271` **确实显式筛掉了同向对**。
+     已更正为：确认线段确实交替（实测 **确认线段 395 / 相邻对 371 / 同向相邻对 0**），
+     **但那是实测事实、不是代码强制的不变量**，所以代码里仍然保留这个筛选。
+  2. `optimizer/theory/L27-DIVERGENCE-UNIT.md` 新增一节
+     「本项目实际实现的是「位置口径」，不是「走势类型口径」（已知差距）」：
+     第 27 课要求比较的是**两个走势类型**，而本项目比的是**位置**
+     （`signal.py` 的 `_entering_and_leaving`、`_first_kind`、`_area`）。
+     这是**已登记但本轮不改**的差距 —— 改它属 `AGENTS.md` §5 判据变更，
+     要重锚 `tests/chan/test_signal.py` 里冻结的数字。
+     该文件 `:27` 那句被 `[0.2.0]` 登记为「悬空引用」的过度概括，本轮一并消掉。
+- **登记校验器的一个已实测盲点：整文件插入造成的行号漂移，它完全看不见。**
+  `optimizer/tools/check_doc_line_refs.py` 的硬判据只有三条
+  （**文件存在 / 行号在范围内 / 区间不倒置**，见其模块 docstring 的第 4 条规则），
+  「符号漂移」那一维也只认**逐字出现在被引 doc 行上**的符号。
+  - **实测（扰动法）**：在 `src/chanlun/chan/segment.py` **顶部插入 15 行垃圾**，
+    再跑校验器 ⇒ 输出与扰动前**逐字节相同**，`BASE_EXIT=0`、`PERT_EXIT=0`
+    —— 所有落在插入点之后的 `segment.py:NNN` 引用都已经指错行，而它一条都不报。
+  - **本轮为什么没被这条咬到**：D-40 那次大改了 `segment.py`（布局位移最大到 **+62 行**），
+    该文件在 `ARCHITECTURE.md` 里的 **26 条 `segment.py:NNN` 引用是逐条按内容重新核过**的；
+    `pivot.py` 那次的两个 hunk 落在 `:309` 与 `:329`，而被引用的最大行号是 `272-303`。
+    两次都是**逐条核对**出来的，不是校验器报出来的。
+  - **一个天真的修法已被实测否决**：试过「被引 doc 行上任意 token 经 `find_def_line`
+    解析后必须落在引用区间内」这条规则，实测 **`.py refs=186 / with_own_line_anchor=0 /
+    drifting=0`** —— 引用键（path + line）是从**区间文本**里解析出来的，
+    不是从那一行上的符号来的，所以这条规则在现有文档上**没有任何信号**。
+    真正可用的做法是记住「每个区间当初锚的是哪个符号」再重新解析，
+    属**后续独立任务**，本轮只登记、不改。
+
 >
 > ---
 > 记一条**写文档时踩到的坑**：`0.1.0` 发布时本节并不是空的，而它当时装的东西
