@@ -306,7 +306,8 @@ def validate_pivots(pivots: Sequence[Pivot]) -> list[str]:
 
     这些不变量由 `find_pivots` 的定义直接推出，因此任何一条被违反都说明实现
     或调用方出了问题，而不是「缠论本身有歧义」：
-    `dd <= zd < zg <= gg`、至少三段、线段下标连续且相邻中枢首尾相接。
+    `dd <= zd < zg <= gg`、至少三段、线段下标连续且相邻中枢首尾相接，
+    以及 `capped=True` 必须正好是 `MAX_SEGMENTS` 段（上限掐停的定义，见 D-38）。
     """
     problems: list[str] = []
     for i, p in enumerate(pivots):
@@ -324,6 +325,14 @@ def validate_pivots(pivots: Sequence[Pivot]) -> list[str]:
             problems.append(
                 f"pivot {i}: 有 {p.segment_count} 段，超过本级别上限 {MAX_SEGMENTS} 段"
                 "（第 33 课：延伸不超过 5 段，加上形成中枢本身那三段）"
+            )
+        if p.capped and p.segment_count != MAX_SEGMENTS:
+            # `capped` 只在「到了上限、且下一段仍在枢内」时才为真，此时组内段数
+            # 恰好等于上限。这个标志决定 `inside` 是否剔除 `group[-1]`（D-38），
+            # 因而决定 GG/DD —— 之前没有任何校验器看它，标错了会静默改变中枢振幅。
+            problems.append(
+                f"pivot {i}: capped=True 但只有 {p.segment_count} 段"
+                f"（上限掐停必然正好 {MAX_SEGMENTS} 段，见 D-38）"
             )
         if p.start_ts > p.end_ts:
             problems.append(f"pivot {i}: 时间区间颠倒")
