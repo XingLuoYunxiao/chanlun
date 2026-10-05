@@ -205,8 +205,10 @@ def test_minute_periods_are_scoped_to_the_watchlist(env, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 0
 
-    assert {c for c, p, _ in calls if p == "30"} == {"sh.600000"}, "30 分只同步自选池"
-    assert {c for c, p, _ in calls if p == "day"} == {"sh.600000", "sz.000001"}, "日线仍走全市场"
+    # D-43：范围按**市场**分派 —— 港股/美股没有分钟源，A 股才用 `_period_scope`。
+    # `000001` 是 A 股（深市），所以这条断言仍然拦得住「把非自选 A 股也算了分钟」。
+    assert {c for c, p, _ in calls if p == "30"} == {"600000"}, "30 分只同步自选池"
+    assert {c for c, p, _ in calls if p == "day"} == {"600000", "000001"}, "日线仍走全市场"
     conn = _conn(env)
     try:
         assert meta.get_structure_snapshot(conn, "600000", "30") is not None, "自选票的分钟结构要算"

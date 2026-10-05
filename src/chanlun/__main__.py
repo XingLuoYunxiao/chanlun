@@ -46,13 +46,14 @@ from typing import Any, Sequence
 
 from tqdm import tqdm
 
-from .calendar import get_calendar
+from .calendar import calendar_for, get_calendar
 from .chan.macd import macd
 from .config import PROJECT_ROOT, Config, load_config
-from .data import markets, meta, periods, quality, store
+from .data import markets, meta, periods, quality, sources, store
 from .data import sync as sync_mod
-from .data.baostock_source import fetch_bars, strip_bs_code, to_bs_code
+from .data.baostock_source import strip_bs_code, to_bs_code
 from .data.factors import MIN_OVERLAP
+from .data.sources import fetch_bars
 from .data.universe import build_universe
 from .notify import build_notifier, notify_scan, notify_track
 from .scan import (
@@ -185,7 +186,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_seed = sub.add_parser(
         "seed-watchlist",
-        help="把自选池重置成七个大盘指数（上证/深证/创业板/沪深300/上证50/中证500/科创50）")
+        help="把自选池重置成默认大盘指数（7 个 A 股 + 恒生/恒生科技 + 道琼斯/纳斯达克）")
     p_seed.add_argument(
         "--keep", action="store_true",
         help="只补缺的，不清空已有自选（缺省清空重建：用户要的是「默认只放指数」）")
@@ -338,7 +339,8 @@ def _tdx_index_frame(cfg: Config, code: str) -> tuple[pd.DataFrame | None, str]:
 
 
 def _cmd_seed_watchlist(args, cfg: Config) -> int:
-    """把自选池重置成七个大盘指数，并把缺的日线一并拉下来。
+    """把自选池重置成默认的大盘指数（7 个 A 股 + 2 个港股 + 2 个美股），
+    并把缺的日线一并拉下来。
 
     为什么单独取数、不复用 `_sync_period`：
 
@@ -350,51 +352,77 @@ def _cmd_seed_watchlist(args, cfg: Config) -> int:
     """
     conn = meta.init(cfg.data.meta_db)
     try:
-        rows = meta.seed_watchlist(conn, replace=not bool(args.keep))
-        listed = "、".join(f"{code} {name}" for code, name in meta.DEFAULT_WATCHLIST)
-        print(f"自选池：{len(rows)} 只 —— {listed}")
+        meta.seed_watchlist(conn, replace=not bool(args.keep))
+        # 报的是**池子里实际有什么**，不是默认表里写的是什么。两者会不一样：
+        # `--keep` 会留下用户自己加的票（实测池里有一只 ST洲际）。之前拿
+        # `seed_watchlist` 返回的条数配 `DEFAULT_WATCHLIST` 的名字打印，
+        # 报出过「12 只」却只列了 11 个 —— 数字和名单互相打架。
+        have = meta.get_watchlist(conn)
+        listed = "、".join(f"{r['code']} {r['name']}" for r in have)
+        print(f"自选池：{len(have)} 只 —— {listed}")
         if args.no_sync:
             return 0
-        cal = get_calendar()
-        end = cal.last_trading_day(dt.date.today())
         ok = failed = skipped = 0
         for code, _name in meta.DEFAULT_WATCHLIST:
             try:
-                start = _start_for(code, "day", True, cal, end, args.since)
-                df = fetch_bars(to_bs_code(code), "day", start, end, adjust="3")
-                origin = "baostock 不复权"
-                if len(df) == 0:
+                # 默认池现在含港股/美股指数（D-43）：日历、取数源、复权口径
+                # 都必须按市场选，不能一律 A 股。`cal` 逐只重算 —— 港股/美股
+                # 用「周一到周五」，A 股用交易日历。
+                key = sources.normalize_code(code)
+                mkt = sources.market_of(key)
+                cal = calendar_for(key)
+                end = cal.last_trading_day(dt.date.today())
+                start = _start_for(key, "day", True, cal, end, args.since)
+                df = fetch_bars(key, "day", start, end, adjust="3")
+                origin = f"{sources.source_of(key)} 不复权"
+                if len(df) == 0 and mkt in ("sh", "sz", "bj"):
                     # 数据源没有这只指数 → 先在**本地通达信整包**里找（科创50 就是这样来的）。
-                    fallback, why = _tdx_index_frame(cfg, code)
+                    # 只有 A 股指数能走这条路：整包按 `sh600000.day` 命名，没有港股/美股。
+                    fallback, why = _tdx_index_frame(cfg, key)
                     if fallback is not None and len(fallback):
                         df, origin = fallback, why
                     else:
                         # 两条路都没有：**不谎报**。库里有旧文件就照实记它的行数，
                         # 并把原因写进 error —— 页面上它仍是「有数据」，日报会报出来。
-                        prev = meta.get_sync(conn, code, "day")
-                        have = store.read(code, "day") if store.exists(code, "day") else None
+                        prev = meta.get_sync(conn, key, "day")
+                        have = store.read(key, "day") if store.exists(key, "day") else None
                         _record(
-                            conn, code, "day", "3",
+                            conn, key, "day", "3",
                             start_ts=(str(have["ts"].iloc[0])
                                       if have is not None and len(have) else None),
                             end_ts=(str(have["ts"].iloc[-1])
                                     if have is not None and len(have) else None),
                             rows=len(have) if have is not None else int(prev["rows"]) if prev else 0,
-                            error=f"baostock 返回 0 行；{why or '本地无通达信整包'}",
+                            error=f"{sources.source_of(key)} 返回 0 行；{why or '本地无通达信整包'}",
                         )
                         skipped += 1
-                        log.warning("指数无数据 code=%s（baostock 0 行，%s）", code, why)
+                        log.warning("指数无数据 code=%s（%s 0 行，%s）", key, sources.source_of(key), why)
                         continue
-                store.upsert(code, "day", df)
-                stored = store.read(code, "day")
+                elif len(df) == 0:
+                    prev = meta.get_sync(conn, key, "day")
+                    have = store.read(key, "day") if store.exists(key, "day") else None
+                    _record(
+                        conn, key, "day", "3",
+                        start_ts=(str(have["ts"].iloc[0])
+                                  if have is not None and len(have) else None),
+                        end_ts=(str(have["ts"].iloc[-1])
+                                if have is not None and len(have) else None),
+                        rows=len(have) if have is not None else int(prev["rows"]) if prev else 0,
+                        error=f"{sources.source_of(key)} 返回 0 行",
+                    )
+                    skipped += 1
+                    log.warning("指数无数据 code=%s（%s 0 行）", key, sources.source_of(key))
+                    continue
+                store.upsert(key, "day", df)
+                stored = store.read(key, "day")
                 _record(
-                    conn, code, "day", "3",
+                    conn, key, "day", "3",
                     start_ts=str(stored["ts"].iloc[0]) if len(stored) else None,
                     end_ts=str(stored["ts"].iloc[-1]) if len(stored) else None,
                     rows=len(stored), error=None,
                 )
                 ok += 1
-                print(f"  {code}: {len(stored)} 根（{origin}）"
+                print(f"  {key}: {len(stored)} 根（{origin}）"
                       f" {stored['ts'].iloc[0]} → {stored['ts'].iloc[-1]}")
             except Exception as exc:  # noqa: BLE001 - 单只失败不中断整批
                 failed += 1

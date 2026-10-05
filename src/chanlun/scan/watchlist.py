@@ -260,7 +260,10 @@ def track_watchlist(
             names = {str(r["code"]): (r["name"] or "") for r in watch_rows}
         else:
             code_list = [str(c).strip() for c in codes if str(c).strip()]
-            names = {str(r["code"]): (r["name"] or "") for r in meta.get_universe(conn)}
+            # `--codes` 走 `name_of`（品种表 → 自选池 → 内置指数名），
+            # 而不是只查 `get_universe`：指数不在品种表里，只查它的话
+            # `--codes sh.000001` / `--codes hk.hsi` 的跟踪行会只剩一串代码。
+            names = {c: meta.name_of(conn, c) for c in code_list}
         synced = {(str(r["code"]), str(r["period"])): r for r in meta.all_sync(conn)}
 
         rows: list[TrackRow] = []

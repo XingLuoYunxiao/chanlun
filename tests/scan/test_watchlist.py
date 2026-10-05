@@ -141,6 +141,23 @@ def test_track_reads_watchlist_table_when_codes_none(env):
     assert rows[0].name == "浦发银行"
 
 
+def test_track_codes_path_also_resolves_builtin_index_names(env):
+    """`--codes` 指定的**指数**也要有名字。
+
+    `codes=None` 走自选池表（名字存在 `watchlist.name` 里），但 `--codes`
+    早先只查 `meta.get_universe` —— 指数不在品种表里，于是
+    `python -m chanlun scan --watch --codes hk.hsi` 的跟踪行只剩一串代码
+    （推送文案里写成 `- hk.hsi  [day]`，中间两个空格）。
+    修法是改走 `meta.name_of`（品种表 → 自选池 → 内置指数名）。
+    """
+    bars = synth_bars(300, day_step=2, close=12.0)
+    env.write("hk.hsi", "day", bars)
+    env.sync("hk.hsi", "day", bars)
+    rows = track_watchlist(["hk.hsi"], conn=env.conn, snapshot_source=_snap_plain,
+                           macd_fn=EQUAL_AREAS, save=False)
+    assert rows[0].name == "恒生指数", "内置指数名没兜住，推送文案会缺名字"
+
+
 def test_track_reports_insufficient_data_without_crashing(env):
     rows = track_watchlist(["600000"], conn=env.conn, snapshot_source=_snap_plain,
                            macd_fn=EQUAL_AREAS, save=False)

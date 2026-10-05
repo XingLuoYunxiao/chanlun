@@ -76,8 +76,8 @@ def test_sync_only_requested_codes(env, monkeypatch):
     rc = cli.main(["sync", "--period", "day", "--codes", "600000,000001"])
     assert rc == 0
 
-    # 只处理指定代码
-    assert {c[0] for c in calls} == {"sh.600000", "sz.000001"}
+    # 只处理指定代码（取数层收到的是落库键，见 D-43）
+    assert {c[0] for c in calls} == {"600000", "000001"}
     rows = _sync_rows(env)
     assert set(rows) == {"600000", "000001"}
     assert all(r["error"] is None for r in rows.values())
@@ -159,7 +159,10 @@ def test_sync_without_codes_uses_universe(env, monkeypatch):
 
     monkeypatch.setattr(cli, "fetch_bars", fake_fetch)
     assert cli.main(["sync", "--period", "day"]) == 0
-    assert set(calls) == {"sh.600000", "sz.000001"}
+    assert set(calls) == {"600000", "000001"}, (
+        "注入的取数函数收到的是**落库键**（D-43 起）：市场前缀与数据商写法"
+        "由 sources.vendor_symbol 在取数层内部映射，调用方不再自己拼"
+    )
 
 
 def test_minute_sync_without_codes_uses_watchlist(env, monkeypatch):
@@ -187,7 +190,7 @@ def test_minute_sync_without_codes_uses_watchlist(env, monkeypatch):
 
     monkeypatch.setattr(cli, "fetch_bars", fake_fetch)
     assert cli.main(["sync", "--period", "30"]) == 0
-    assert calls == ["sh.600000"], "30 分只该同步自选池里的那一只"
+    assert calls == ["600000"], "30 分只该同步自选池里的那一只（收到的是落库键）"
 
 
 def test_universe_command_prints_count(env, monkeypatch, capsys):
@@ -295,8 +298,9 @@ def test_derived_periods_are_not_treated_as_minute_periods():
     assert cli._is_minute_period("month") is False
 
 
-# ---------------- 默认自选池 = 七个大盘指数 ----------------
-def test_seed_watchlist_resets_the_pool_to_the_seven_indices(env, monkeypatch):
+# ---------------- 默认自选池 = 11 个大盘指数 ----------------
+# 2026-10-05（D-43）：7 个 A 股 + 恒生/恒生科技 + 道琼斯/纳斯达克，共 11 只。
+def test_seed_watchlist_resets_the_pool_to_the_default_indices(env, monkeypatch):
     """用户要的是「默认只放指数」，所以缺省必须**清空重建**，不是往旧池子里补。
 
     指数走 `adjustflag=3`（不复权）：指数没有除权，用缺省的 `2` 取数价格一样，
