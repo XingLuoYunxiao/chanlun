@@ -84,6 +84,20 @@ def period_end(day: dt.date, period: str) -> dt.date:
     raise ValueError(f"{period!r} 不是派生周期")
 
 
+def period_start(day: dt.date, period: str) -> dt.date:
+    """某个交易日所属自然周/自然月的**第一天**（周一 / 月初）。
+
+    增量同步派生周期时用它：最后一根周/月K可能还没走完，必须从它所属
+    自然周/月的**第一天**重新取日线再聚合，否则 `store.upsert` 会把半根K固化，
+    下一周再补成两根（spec §6.1）。
+    """
+    if str(period) == "week":
+        return day - dt.timedelta(days=day.weekday())
+    if str(period) == "month":
+        return day.replace(day=1)
+    raise ValueError(f"{period!r} 不是派生周期")
+
+
 def is_complete(last_ts: str, period: str, cal) -> bool:
     """派生周期的最后一根是否**已经走完**（该周期后面还有没有交易日）。
 

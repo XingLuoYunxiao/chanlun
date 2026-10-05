@@ -20,6 +20,8 @@ baostock 静默当成空数据）、`store.market_of`（决定落哪个目录）
 
 from __future__ import annotations
 
+import re
+
 #: 两位前缀优先于一位前缀判定（先查 HEAD2 再查 HEAD1）。
 HEAD2: dict[str, str] = {
     "92": "bj",  # 北交所改号后号段（43/83/87 → 920xxx）
@@ -112,9 +114,74 @@ INDEX_PREFIXES: dict[str, tuple[str, ...]] = {
     "bj": ("899",),
 }
 
+#: 港股/美股指数的**显式代码集**（小写）。
+#:
+#: 为什么不能像 A 股那样按号段判：港股的「代码」是字母（`hsi`/`hstech`），
+#: 美股的也是（`dji`/`ixic`），没有号段可言。而且港股个股是 5 位数字、
+#: 美股个股是字母，光看形态分不出指数与个股（`hsi` 与将来可能的某个美股
+#: 个股符号长得一样）。所以**只能白名单**，且必须显式维护。
+#:
+#: 为什么只收这 4 个：用户明确要的是「恒生指数、恒生科技」和「美股主要指数」。
+#: 标普 500（`us.INX`）、纳斯达克 100（`us.NDX`）、国企指数（`hk.HSCEI`）
+#: 数据源都有，但**用户没要**，收进来会让自选池默认项变多、页面变挤。
+#: 将来要加，只改这一处（见 ARCHITECTURE.md D-43）。
+INDEX_CODES: dict[str, frozenset[str]] = {
+    "hk": frozenset({"hsi", "hstech"}),
+    "us": frozenset({"dji", "ixic"}),
+}
+
+#: 本系统支持的市场前缀。A 股三个（沪深北）+ 港股 + 美股。
+MARKETS: tuple[str, ...] = ("sh", "sz", "bj", "hk", "us")
+
+#: 美股取数符号的形态：字母开头，后跟字母/数字/点/连字符（`brk.b`、`aapl`）。
+#: 腾讯美股符号带交易所后缀（`aapl.oq`），所以点必须允许。
+US_SYMBOL_RE = re.compile(r"^[a-z][a-z0-9.\-]{0,9}$")
+
+#: 港股取数符号的形态：5 位数字（个股）或纯字母（指数，`hsi`/`hstech`）。
+HK_SYMBOL_RE = re.compile(r"^(?:\d{5}|[a-z]{1,10})$")
+
+
+def is_hk(code: str) -> bool:
+    """是不是港股代码（`hk.00700` / `hk.hsi`）。"""
+    return _market_prefix(code) == "hk"
+
+
+def is_us(code: str) -> bool:
+    """是不是美股代码（`us.dji` / `us.aapl`）。"""
+    return _market_prefix(code) == "us"
+
+
+def is_a_share(code: str) -> bool:
+    """是不是 A 股代码（沪深北）。**必须带前缀或能判定号段**，否则按 `BARE_DEFAULT`。"""
+    text = str(code or "").strip().lower()
+    if not text:
+        return False
+    market, sep, _ = text.partition(".")
+    if sep:
+        return market in ("sh", "sz", "bj")
+    return market_of_bare(text) is not None or is_ambiguous(text)
+
+
+def _market_prefix(code: str) -> str:
+    """取显式前缀（`hk.00700` → `hk`）；没有前缀返回空串。
+
+    注意与 `store.market_of` 的区别：那个函数**前缀优先且未知前缀也放行**，
+    因为它要决定落哪个目录（未知前缀按自己一个目录）。这里只回答
+    「是不是这个市场」，所以未知前缀一律不认。
+    """
+    text = str(code or "").strip().lower()
+    market, sep, digits = text.partition(".")
+    if not sep or not digits:
+        return ""
+    return market
+
 
 def is_index(code: str) -> bool:
-    """是不是**指数**。必须带市场前缀：裸码 `000001` 是平安银行，`399001` 也判不出来。
+    """是不是**指数**。
+
+    A 股：必须带市场前缀，按号段判（裸码 `000001` 是平安银行，判不出来）。
+    港股/美股：按 `INDEX_CODES` 白名单判（字母代码无号段可言），
+    **输入大小写不敏感**（`hk.HSI` 与 `hk.hsi` 同键，见 D-43）。
 
     用途是同步时的复权口径 —— 指数没有除权除息，必须按 `adjustflag=3`（不复权）
     落库，否则 `sync_state.adjust` 会写成前复权，页面在指数上显示「前复权」，
@@ -124,4 +191,6 @@ def is_index(code: str) -> bool:
     market, _, digits = text.partition(".")
     if not digits:
         return False
+    if market in INDEX_CODES:
+        return digits in INDEX_CODES[market]
     return digits.startswith(INDEX_PREFIXES.get(market, ()))

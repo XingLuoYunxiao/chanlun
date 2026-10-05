@@ -85,6 +85,36 @@ def get_calendar(refresh: bool = False) -> Calendar:
     return _CACHE
 
 
+#: 港股/美股的宽松日历缓存（与 A 股日历分开，互不污染）。
+_WEEKDAY_CACHE: "Calendar | None" = None
+
+
+def weekday_calendar() -> Calendar:
+    """「周一至周五」日历，**不排除港美节假日**。港股/美股专用。
+
+    为什么不复用 `get_calendar()`：那是 **A 股**日历，它把中国法定假日标成非交易日。
+    港股在国庆/春节期间照常开市 —— 若拿 A 股日历给港股算增量起点，
+    `next_trading_day("2026-09-30")` 会跳到 `2026-10-08`，
+    **10-01~10-07 的港股行情会被整段跳过**，在 parquet 里留下一个洞，
+    而缠论结构会跨着洞算。这比多取几天冗余危险得多。
+
+    代价是不排除港美节假日（复活节、感恩节等）：那只会让增量起点落在
+    一个休市日上，数据商返回空或从下一个交易日起 —— **少取为误，多取无碍**。
+    见 ARCHITECTURE.md D-43 / spec §7.4 G8。
+    """
+    global _WEEKDAY_CACHE
+    if _WEEKDAY_CACHE is None:
+        _WEEKDAY_CACHE = Calendar(_weekday_fallback(), source="weekday")
+    return _WEEKDAY_CACHE
+
+
+def calendar_for(code: str) -> Calendar:
+    """按市场选日历：A 股用真实交易日历，港股/美股用宽松日历。"""
+    from .data import markets  # 局部导入，避免 data 层与 calendar 层的循环导入
+
+    return get_calendar() if markets.is_a_share(code) else weekday_calendar()
+
+
 # ---- 便捷函数 ----
 def is_trading_day(d: dt.date | str) -> bool:
     return get_calendar().is_trading_day(d)

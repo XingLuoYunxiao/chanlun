@@ -67,12 +67,24 @@ def to_bs_code(code: str) -> str:
     校验很关键：`sh.300059` 这类写错交易所的代码，baostock 不会报错，
     而是以 `error_code="0"` 返回零行。若不拦截，全市场同步会静默把该股
     当成「数据为空」，下游则安静地得出「无信号」。
+
+    **这个函数只处理 A 股**（沪深北）。港股/美股走 `sources.fetch_bars`，
+    不经过 baostock，所以这里对 `hk.` / `us.` 前缀**显式报错**而不是放行 ——
+    放行的后果是港股代码被送进 baostock 查询，然后以「零行 = 无信号」的形式
+    安静地失败（见 ARCHITECTURE.md D-43）。
     """
     c = str(code).strip().lower()
     if "." in c:
         market, _, num = c.partition(".")
         if not num:
             raise ValueError(f"代码缺少数值部分: {code!r}")
+        if market in ("hk", "us"):
+            raise ValueError(
+                f"{code!r} 不是 A 股代码（市场 {market!r}），baostock 不提供该市场；"
+                f"港股/美股请走 sources.fetch_bars"
+            )
+        if market not in ("sh", "sz", "bj"):
+            raise ValueError(f"无法识别的市场前缀: {code!r}（支持 sh/sz/bj/hk/us）")
         expected = _expected_market(num)
         if expected is not None and market != expected:
             raise ValueError(
@@ -81,6 +93,14 @@ def to_bs_code(code: str) -> str:
         return c
     if not c:
         raise ValueError("空代码")
+    # A 股代码一律 6 位数字。裸的 5 位数字是**港股**（`00700`），
+    # 不拦的话 `market_of_bare` 判不出来、`is_ambiguous` 又因 `0` 开头返回 True，
+    # 于是 `00700` 会被静默改写成 `sz.00700` —— 一个根本不存在的深市代码。
+    if not (len(c) == 6 and c.isdigit()):
+        raise ValueError(
+            f"无法判断交易所: {code}（A 股代码是 6 位数字；"
+            f"港股 5 位数字请写 hk.00700，美股请写 us.<代码>）"
+        )
     expected = _expected_market(c)
     if expected is not None:
         return f"{expected}.{c}"
@@ -94,12 +114,22 @@ def strip_bs_code(bs_code: str) -> str:
 
 
 def period_to_frequency(period: str) -> str:
+    """本项目周期名 → baostock 的 `frequency` 码。
+
+    baostock 只认 `d` / `w` / `m` 与分钟码；`week` / `month` 这类长写法它**不认**，
+    会回 `10004012 请求数据类型不正确`。这个映射原先写的是 `return p`，
+    于是 `sync --period week` 每次都三连重试后失败（实测 2026-10-05）。
+
+    > 2026-10-05 起周/月线一律由本地日线聚合（`sources.fetch_bars`），
+    > 正常路径不会再走到这里；但 `fetch_bars` 是公开函数，直接把 `week`
+    > 递进来时不该发出一个数据商必然拒绝的请求。
+    """
     p = str(period).strip().lower()
     if p in DAY_PERIODS:
-        return "d" if p == "day" else p
+        return {"day": "d", "d": "d", "week": "w", "w": "w", "month": "m", "m": "m"}[p]
     if p in MIN_PERIODS:
         return p
-    raise ValueError(f"不支持的周期: {period!r}（支持 day/60/30/15/5）")
+    raise ValueError(f"不支持的周期: {period!r}（支持 day/week/month/60/30/15/5）")
 
 
 def fetch_bars(

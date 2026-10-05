@@ -341,6 +341,11 @@ def move_watch(conn: sqlite3.Connection, code: str, delta: int) -> list[str]:
 # 指数名不在 `universe` 表里（那张表只有股票），所以名字必须和代码一起写死在这里。
 # 代码用**落库键**（`markets.store_key` 的结果）：沪市指数必须带前缀（裸 `000001`
 # 是平安银行），深市 `399xxx` 反而要裸写，否则和页面加进来的键不是同一个字符串。
+#
+# 2026-10-05（D-43）追加港股/美股四个指数。它们一律**小写 + 市场前缀**：
+# `hk.hsi` / `us.dji` 是落库键也是页面上的规范写法；数据商要的写法
+# （`hkHSI` / `.DJI`）由 `data/sources.py` 的 `vendor_symbol` 在取数时映射，
+# 不许写进这里 —— 写进来就会变成一个既不是落库键也不是数据商写法的第三种字符串。
 DEFAULT_WATCHLIST: tuple[tuple[str, str], ...] = (
     ("sh.000001", "上证指数"),
     ("399001", "深证成指"),
@@ -349,6 +354,10 @@ DEFAULT_WATCHLIST: tuple[tuple[str, str], ...] = (
     ("sh.000016", "上证50"),
     ("sh.000905", "中证500"),
     ("sh.000688", "科创50"),
+    ("hk.hsi", "恒生指数"),
+    ("hk.hstech", "恒生科技指数"),
+    ("us.dji", "道琼斯"),
+    ("us.ixic", "纳斯达克综合"),
 )
 
 
@@ -358,8 +367,8 @@ def seed_watchlist(
     *,
     replace: bool = False,
 ) -> list[str]:
-    """写入默认自选池。`replace=True` 清空后重建（`--reset` 用），否则只补缺的，
-    已经在池里的票**保持用户排好的位置**。返回写入后的顺序。"""
+    """写入默认自选池。`replace=True` 清空后重建（`seed-watchlist` 不带 `--keep` 时），
+    否则只补缺的，已经在池里的票**保持用户排好的位置**。返回写入后的顺序。"""
     pairs = tuple(rows) if rows is not None else DEFAULT_WATCHLIST
     if replace:
         conn.execute("DELETE FROM watchlist")

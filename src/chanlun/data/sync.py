@@ -14,9 +14,9 @@ import logging
 import sqlite3
 from dataclasses import dataclass
 
-from ..calendar import get_calendar
-from . import markets, meta, store
-from .baostock_source import fetch_bars, to_bs_code
+from ..calendar import calendar_for
+from . import meta, periods, sources, store
+from .sources import fetch_bars
 
 log = logging.getLogger("chanlun.sync")
 
@@ -27,10 +27,11 @@ FULL_START = "1990-01-01"
 def adjust_for(code: str, cfg) -> str:  # noqa: ANN001 - cfg 是 Config，避免循环导入
     """这只票该按哪个复权口径落库。
 
-    指数没有除权除息，必须 `3`（不复权）：否则 `sync_state.adjust` 会写「前复权」，
-    页面在指数上显示「前复权」，而它的含义（除权参考价折算）对指数根本不成立。
+    口径收敛只有一份实现（`sources.adjust_for`）：A 股原样用 `cfg.bs_adjust`，
+    指数强制 `3`（不复权，否则 `sync_state.adjust` 会写「前复权」而那个概念
+    对指数不成立），港股/美股强制 `3`（两个源都只有原始价，见 D-43）。
     """
-    return "3" if markets.is_index(to_bs_code(code)) else str(cfg.bs_adjust)
+    return sources.adjust_for(sources.normalize_code(code), str(cfg.bs_adjust))
 
 
 def start_for(
@@ -50,6 +51,23 @@ def start_for(
         return (since or dt.date.fromisoformat(FULL_START)).isoformat()
     nxt = cal.next_trading_day(str(last)[:10])
     return None if nxt > end else nxt.isoformat()
+
+
+def _drop_open_tail(code: str, period: str) -> None:
+    """删掉库里最后一根周/月K，交给本次重取的结果覆盖。
+
+    `store.upsert` 按 `ts` 合并，而派生周期的 `ts` 是**该周期内最后一个交易日**
+    （`periods.aggregate` 取 `grouped["ts"].max()`）。周一同步落的是 `ts=周一`，
+    周三重取会得到 `ts=周三` —— 两个不同的 `ts`，`upsert` 会把它们当成两根K，
+    于是同一周在图上出现两次。所以重取前先删掉那一根。
+
+    只在确认那一根**还没走完**时调用（`sync_one` 里的 `reopen`）：已走完的周期
+    起点不回退，也就不会产生新的 `ts`。
+    """
+    df = store.read(code, period)
+    if len(df) == 0:
+        return
+    store.write(code, period, df.iloc[:-1])
 
 
 @dataclass(frozen=True)
@@ -92,23 +110,46 @@ def sync_one(
 
     `fetch` 是给调用方注入自己的取数函数用的：命令行把自己的 `fetch_bars` 传进来，
     这样 `cli.fetch_bars` 仍然是那个可打桩的点（换掉它不该让 20 个命令行测试全改）。
+    注入函数的签名是 `(落库键, period, start, end, adjust=...)`，
+    与 `sources.fetch_bars` 一致 —— 符号映射与市场分派都在它内部完成。
     """
     fetch = fetch or fetch_bars
-    cal = cal or get_calendar()
-    end = cal.last_trading_day(dt.date.today())
     key = str(code)
     adjust = "2"
 
     try:
-        key = markets.store_key(to_bs_code(code))
-        adjust = adjust_for(key, cfg)
+        key = sources.normalize_code(code)
+        adjust = sources.adjust_for(key, str(cfg.bs_adjust))
+        # 日历必须按市场选：A 股用交易日历，港股/美股用「周一到周五」。
+        # 用 A 股日历算港股的 `next_trading_day` 会在国庆那周直接跳过 10-01~10-07，
+        # 而港股那几天是开市的（spec §7.4 / D-43）。
+        cal = cal or calendar_for(key)
+        end = cal.last_trading_day(dt.date.today())
         start = start_for(key, period, full, cal, end, since)
+        reopen = False
+        if periods.is_derived(period):
+            # 周/月线一律由本地日线聚合（spec §6.1），三个市场都是。
+            # 只有**最后一根还没走完**时才回退起点：那一根会随日线每天变，
+            # 必须从它所属自然周/月的第一天重新取，否则半根K会被固化在库里、
+            # 下一周再补成两根。已经走完的周期不回退 —— 否则每次增量同步
+            # 都要为每只票多打两次网络请求，而且 `skipped` 永远不会出现。
+            last = store.last_ts(key, period)
+            reopen = bool(last) and not full and not periods.is_complete(str(last), period, cal)
+            if not last or full or reopen:
+                floor = (
+                    FULL_START
+                    if full or not last
+                    else periods.period_start(dt.date.fromisoformat(str(last)[:10]), period).isoformat()
+                )
+                start = floor if start is None else min(start, floor)
         if start is None:
             return SyncOneResult(key, period, "skipped", adjust=adjust)
-        df = fetch(to_bs_code(key), period, start, end, adjust=adjust)
+        df = fetch(key, period, start, end, adjust=adjust)
         if len(df) == 0:
             meta.set_sync(conn, key, period, None, None, 0, adjust, error=None)
             return SyncOneResult(key, period, "skipped", adjust=adjust)
+        if reopen:
+            _drop_open_tail(key, period)
         store.upsert(key, period, df)
         stored = store.read(key, period)
         start_ts = str(stored["ts"].iloc[0]) if len(stored) else None

@@ -134,7 +134,10 @@ def test_sync_one_writes_parquet_and_sync_state(cfg, conn, monkeypatch):
     assert out.status == "ok", out.error
     assert out.rows == 2
     assert out.start_ts == "2026-09-29" and out.end_ts == "2026-09-30"
-    assert seen["code"] == "sh.600000", "取数要用带市场前缀的代码"
+    assert seen["code"] == "600000", (
+        "取数层收到的是**落库键**（D-43）：符号映射（`sh600000` / `hkHSI` / `.DJI`）"
+        "下沉到 data/sources.py 的 vendor_symbol，sync 不再自己拼"
+    )
     assert seen["start"] == sync.FULL_START
     assert seen["adjust"] == str(cfg.bs_adjust)
 
@@ -200,3 +203,68 @@ def test_sync_one_skips_without_touching_the_source_when_already_latest(cfg, con
     out = sync.sync_one(conn, cfg, "600000", "day", cal=CAL)
     assert out.status == "skipped"
     assert called == [], "已是最新就不该再打网络"
+
+
+# ---------------- 派生周期（周/月）由本地日线聚合 ----------------
+def test_sync_one_hands_the_source_the_store_key_on_a_derived_period(cfg, conn, monkeypatch):
+    """取数层收到的是**落库键**，周期是**调用方要的那个**。
+
+    派生周期「取日线再聚合」发生在 `sources.fetch_bars` 里（`tests/data/test_sources.py`
+    钉住那一条），`sync_one` 只负责把落库键与周期原样递下去、把结果落到 `week/`。
+    2026-10-05 修正（D-43）：A 股原先让 baostock 给原生周线，但
+    `period_to_frequency("week")` 把 `"week"` 原样当 `frequency` 发出去，
+    baostock 回 `10004012 请求数据类型不正确`，`sync --period week` 从来没成功过。
+    """
+    seen: dict[str, object] = {}
+
+    def fake_fetch(code, period, start, end, adjust="2"):  # noqa: ANN001
+        seen.update(code=code, period=period, start=start)
+        return _bars(["2026-09-30"])
+
+    monkeypatch.setattr(sync, "fetch_bars", fake_fetch)
+    out = sync.sync_one(conn, cfg, "600000", "week", cal=CAL)
+
+    assert out.status == "ok", out.error
+    assert seen["code"] == "600000", "取数层收到的是落库键（D-43）"
+    assert seen["period"] == "week", "周期原样递下去，聚合在 sources.fetch_bars 里做"
+    assert store.path_for("600000", "week").exists(), "聚合后的周K落在 week/ 目录"
+
+
+def test_sync_one_recomputes_the_unfinished_boundary_week(cfg, conn, monkeypatch):
+    """最后一根周K还没走完就必须从本周第一天重取，否则半根K会被固化。
+
+    桩日历的"今天"是 2026-09-30（周三）。库里最后一根周K落在 2026-09-28，
+    它所属自然周从 2026-09-28（周一）开始 —— 起点必须回退到那天。
+    """
+    store.upsert("600000", "week", _bars(["2026-09-28"]))
+    seen: dict[str, object] = {}
+
+    def fake_fetch(code, period, start, end, adjust="2"):  # noqa: ANN001
+        seen.update(period=period, start=start)
+        return _bars(["2026-09-30"])
+
+    monkeypatch.setattr(sync, "fetch_bars", fake_fetch)
+    out = sync.sync_one(conn, cfg, "600000", "week", cal=CAL)
+
+    assert out.status == "ok", out.error
+    assert seen["start"] == "2026-09-28", "未走完的那一根要从自然周第一天重取"
+    assert list(store.read("600000", "week")["ts"]) == ["2026-09-30"], (
+        "重取修正的是同一根：旧的那根 ts=2026-09-28 必须先删掉，"
+        "否则 upsert 按 ts 合并会留下两根同周的K"
+    )
+
+
+def test_sync_one_skips_a_derived_period_whose_boundary_bar_is_finished(cfg, conn, monkeypatch):
+    """最后一根周K已经走完就不该再打网络 —— 否则 `skipped` 永远不会出现。
+
+    桩日历把 2026-09-30 当成本周最后一个交易日，所以 `ts=2026-09-30` 的那根
+    是"已走完"的；`start_for` 返回 `None`，不该回退、也不该取数。
+    """
+    store.upsert("600000", "week", _bars(["2026-09-30"]))
+    called: list[int] = []
+    monkeypatch.setattr(sync, "fetch_bars", lambda *a, **k: called.append(1) or _bars([]))
+    out = sync.sync_one(conn, cfg, "600000", "week", cal=CAL)
+
+    assert out.status == "skipped"
+    assert called == [], "已走完的周K不许回退起点重取"
+    assert list(store.read("600000", "week")["ts"]) == ["2026-09-30"]
