@@ -204,7 +204,7 @@ def test_watchlist_structure_serves_week_for_the_indices(client):
 def test_watchlist_move_reorders_and_persists(client):
     items = client.get("/api/watchlist").json()["items"]
     codes = [i["code"] for i in items]
-    assert codes == [c for c, _ in meta.DEFAULT_WATCHLIST], "默认池就是那 7 个指数"
+    assert codes == [c for c, _ in meta.DEFAULT_WATCHLIST], "默认池就是那 11 个指数（D-43 起含恒生/恒生科技/道琼斯/纳斯达克）"
     assert "600030" not in codes and "600519" not in codes, "用户选定：原来的 4 只股票删掉"
 
     last = codes[-1]
@@ -251,7 +251,7 @@ def _clear_cache() -> None:
 def _watch_item(client, code: str, **params) -> dict:
     """按 `code` 找自选池里的那一项。
 
-    **不许假设 `items[0]`**：默认池是 7 个指数，本模块的夹具只给其中 `sh.000001`
+    **不许假设 `items[0]`**：默认池是 11 个指数，本模块的夹具只给其中 `sh.000001`
     落了合成日线，其余全是 `missing: True`；顺序也由用户排过。
     """
     r = client.get("/api/watchlist/structure", params={"period": "day", **params})

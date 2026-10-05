@@ -5,8 +5,9 @@
 1. **品种代码在接口边界就归一化并校验**。Store 落盘用的是**裸数字**代码
    （`data/day/sh/600000.parquet`），而 baostock 用 `sh.600000`；两边混用会把
    文件找错地方。更要紧的是交易所前缀：`sh.300059` 在 baostock 那里不报错、
-   只返回零行，若放过去，页面会安静地显示「这只票没有结构」。所以这里用
-   `to_bs_code()` 校验，前缀不符直接 400。
+   只返回零行，若放过去，页面会安静地显示「这只票没有结构」。归一化与校验
+   **只有一份实现** —— `data/sources.normalize_code`（D-43），这里只负责把
+   它的 `DataSourceError` 翻成 400。
 2. **没有数据就是 404，不返回空数组**。同一类错误（代码写错、周期没同步、
    真的没上市）在页面上必须给出不同的话，否则用户没法自救。
 3. **结构对象一律带 `status` 与 `confirmed_at`**。页面要把未确认的笔画虚线、
@@ -19,7 +20,6 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-import re
 import threading
 import time
 from dataclasses import dataclass
@@ -37,8 +37,10 @@ from ..chan.signal import SignalMode, find_signals
 from ..chan.types import Status, to_jsonable
 from ..data import adjust as adjust_mod
 from ..data import markets, meta, store
+from ..data import search as search_mod
 from ..data import sync as sync_mod
 from ..data import periods as periods_mod
+from ..data import sources
 from ..data.baostock_source import to_bs_code
 from ..data.types import DataSourceError
 from ..version import version_info
@@ -53,7 +55,6 @@ DISCLAIMER = "仅结构信号提示，不构成投资建议；结构为收盘后
 #: 接口认得的周期。`week`/`month` **不落库**：本地日线聚合出来（见 `periods_mod`），
 #: 所以它们没有自己的 parquet，也不需要 `sync --period week`。
 PERIODS = ("day", "week", "month", "60", "30", "15", "5")
-_CODE_RE = re.compile(r"^(?:(sh|sz|bj)\.?)?(\d{6})$")
 
 #: 默认显示窗口（根数）。**窗口只决定看得见多少，不决定怎么划分**：
 #: 结构一律在完整历史上算完再裁到窗口（见 `snapshot_of`），所以同一只票
@@ -81,23 +82,22 @@ MAX_MA_PERIOD = 1000
 
 # ---------------- 工具 ----------------
 def normalize_code(raw: str) -> str:
-    """把各种写法归一成 **store 的键**；前缀与号段不符时抛 400。
+    """把各种写法归一成 **store 的键**；认不出来时抛 400。
 
-    注意这里**不是**一律去前缀：`sh.000300`（沪深300）与 `sz.000300` 是同号段不同品种，
+    **这里不再自己写一份正则**（D-43）：归一化只有 `data/sources.normalize_code`
+    一处实现 —— 它认得 A 股 6 位数字与 `sh./sz./bj.` 前缀、港股 `hk.00700` /
+    `hk.HSI`、美股 `us.DJI`，并负责「前缀与号段矛盾」的报错。两处各写一份
+    必然分叉：API 认得而取数层不认得的代码会一路走到 `to_bs_code` 才炸成 500。
+
+    注意归一化**不是**一律去前缀：`sh.000300`（沪深300）与 `sz.000300` 同号段不同品种，
     去掉前缀会退化成裸码 `000300`，按约定指向深市，于是页面安静地读到别人的文件
     （实测表现为 404 或画出另一只票的曲线）。要不要保留前缀只由
     `markets.store_key` 一处决定。
     """
-    text = str(raw or "").strip().lower().replace(" ", "")
-    m = _CODE_RE.match(text)
-    if not m:
-        raise HTTPException(status_code=400, detail=f"无法识别的代码: {raw!r}（应为 6 位数字，可带 sh./sz./bj. 前缀）")
-    market, digits = m.group(1), m.group(2)
     try:
-        bs = to_bs_code(f"{market}.{digits}" if market else digits)
-    except ValueError as exc:  # 号段与前缀矛盾（例如 sh.300059）
+        return sources.normalize_code(raw)
+    except DataSourceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return markets.store_key(bs)
 
 
 def normalize_adjust_or_400(value: str | None) -> str:
@@ -199,8 +199,22 @@ def _extrapolation_note(df: pd.DataFrame, factors: pd.DataFrame) -> str:
     return f"（因子表自 {first} 起，{start} ~ {first} 为外推值）"
 
 
+def _raw_only_note(code: str) -> str:
+    """落库只有不复权价时，页面该说**为什么**。
+
+    A 股「无除权记录」和港美股「取不到另两态」是两回事，不能都说成「三态相同」：
+    港股源（腾讯 `fqkline`）的复权序列实测不可用，美股源（新浪）只给原始价。
+    说成三态相同等于替数据商背书「这只票从来没除过权」—— 那是假话。
+    """
+    mkt = sources.market_of(code)
+    if mkt in ("hk", "us"):
+        where = "港股" if mkt == "hk" else "美股"
+        return f"不复权：{where}数据源只提供原始价（复权序列实测不可用），另两态取不到"
+    return "无除权记录（三态相同，价格即不复权原始价）"
+
+
 def _apply_factors(df: pd.DataFrame, factors: pd.DataFrame, adjust: str,
-                   stored: str = "raw") -> tuple[pd.DataFrame, str, str]:
+                   stored: str = "raw", *, raw_only_note: str = "") -> tuple[pd.DataFrame, str, str]:
     """按因子表把行情切成三态之一，并如实报告**实际生效**的口径。
 
     `stored` 是落库口径（见 `_stored_adjust`）。它决定用哪条公式：落库是不复权
@@ -217,7 +231,7 @@ def _apply_factors(df: pd.DataFrame, factors: pd.DataFrame, adjust: str,
                 return df, "qfq", "本票为前复权落库（baostock），无独立除权因子：前复权即当前价格"
             name = {"raw": "不复权", "hfq": "后复权"}[adjust]
             return df, "qfq", f"本票为前复权落库（baostock），且无除权因子，无法还原{name}：当前显示前复权"
-        return df, "raw", "无除权记录（三态相同，价格即不复权原始价）"
+        return df, "raw", raw_only_note or "无除权记录（三态相同，价格即不复权原始价）"
     if stored == "qfq":
         if adjust == "qfq":
             # 前复权是**原样返回**（`unapply_adjust` 对 qfq 直接 return）：这条路上
@@ -312,7 +326,8 @@ def _period_frame(code: str, period: str, *, adjust: str, meta_db) -> tuple[pd.D
     base = periods_mod.base_period(period)
     full = _read_bars(code, base, None, requested=period)
     factors = pd.DataFrame() if meta_db is None else factors_for(meta_db, code)
-    full, effective, note = _apply_factors(full, factors, adjust, _stored_adjust(meta_db, code, base))
+    full, effective, note = _apply_factors(full, factors, adjust, _stored_adjust(meta_db, code, base),
+                                          raw_only_note=_raw_only_note(code))
     if periods_mod.is_derived(period):
         full = periods_mod.aggregate(full, period)
     return full, effective, note, _factor_fingerprint(factors)
@@ -581,6 +596,35 @@ def universe(request: Request, limit: int = Query(200, ge=1, le=10000), q: str =
         needle = q.strip().lower()
         items = [i for i in items if needle in str(i["code"]) or needle in str(i["name"]).lower()]
     return {"count": len(items), "items": items[:limit]}
+
+
+@router.get("/api/search")
+def search(request: Request, q: str = "", limit: int = Query(20, ge=1, le=100)) -> dict[str, Any]:
+    """按**代码或名称**找票。返回的是**落库键**，页面拿它直接取数。
+
+    两个来源，页面不区分优先级（`source` 字段说明了每条来自哪里）：
+
+    - `universe` —— 本地品种表（通达信整包导入）。A 股的**全量**名单在这里，
+      代码与名称都是本系统的写法，离线可用。
+    - `smartbox` —— 腾讯联想词。港股/美股**只有**这条路：本系统不落它们的品种表。
+
+    `skipped` 是**给用户看的话**，不是日志：数据商那里有、但本期范围不做的标的
+    （港股权证、基金、标普500、美股个股……）必须说出来。安静地丢掉会让用户
+    以为搜索坏了，而真相是那类标的不在范围里（spec §2.2）。
+
+    联想词接口不通时**不报错**：本地结果照常返回，失败原因放在 `error` 里，
+    页面可以选择提示或不提示。搜索是增强功能，不该让整个页面用不了。
+    """
+    text = str(q or "").strip()
+    if not text:
+        return {"query": "", "count": 0, "items": [], "skipped": [], "error": ""}
+    cfg = _cfg(request)
+    conn = meta.init(cfg.data.meta_db)
+    try:
+        rows = [dict(r) for r in meta.get_universe(conn)]
+    finally:
+        conn.close()
+    return {"query": text, **search_mod.search(rows, text, limit).as_dict(limit)}
 
 
 @router.get("/api/bars")
@@ -865,7 +909,17 @@ def sync_blocker(code: str, period: str) -> str | None:
     if periods_mod.base_period(period) == "day":
         return None  # 日线（含由日线聚合的周/月）指数也拿得到
     try:
-        bs = to_bs_code(code)
+        key = sources.normalize_code(code)
+    except DataSourceError:  # 认不出的代码：不在这里判，交给 normalize_code 报参数错
+        return None
+    # 非 A 股（港股/美股）的可用性只由取数层的 capabilities 说话 ——
+    # 那是**唯一**知道「哪个源给不给这个周期」的地方。这里再写一份的话，
+    # 页面说"能补"、接口说"补不了"的老毛病会换个市场重演。
+    if sources.market_of(key) not in ("sh", "sz", "bj"):
+        cap = sources.capabilities(key, period)
+        return None if cap["supported"] else str(cap["reason"])
+    try:
+        bs = to_bs_code(key)
     except ValueError:  # 认不出的代码：不在这里判，交给 normalize_code 报参数错
         return None
     if markets.is_index(bs):

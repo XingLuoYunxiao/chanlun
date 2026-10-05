@@ -113,6 +113,22 @@ def test_adjust_default_is_qfq_and_reports_effective(client):
     assert "无除权记录" in body["adjust_note"]
 
 
+def test_hk_stock_says_the_other_two_modes_are_unavailable_not_that_none_exist(client, cfg):
+    """港股/美股**取不到**另两态，跟「这只票没除过权」不是一回事。
+
+    旧文案一律印「无除权记录（三态相同）」，等于替数据商声称腾讯 2004 年以来
+    从没除过权 —— 页面上的说明和实际拿到的东西相反。
+    """
+    store.write("hk.00700", "day", _bars())
+    body = client.get("/api/bars", params={"code": "hk.00700", "period": "day"}).json()
+    assert body["adjust_effective"] == "raw"
+    assert "三态相同" not in body["adjust_note"], body["adjust_note"]
+    assert "取不到" in body["adjust_note"] and "不复权" in body["adjust_note"]
+    # 负控：A 股那条路仍必须是「无除权记录」，别把两种情形一起改了
+    a = client.get("/api/bars", params={"code": "600000", "period": "day"}).json()
+    assert "无除权记录" in a["adjust_note"] and "取不到" not in a["adjust_note"]
+
+
 def test_adjust_modes_change_prices_when_factors_exist(client, cfg):
     _add_factors(cfg)
     raw = client.get("/api/bars", params={"code": "600000", "period": "day",
