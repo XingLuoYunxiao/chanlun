@@ -297,6 +297,23 @@ button, input { font: inherit; color: inherit; }
 .adjust-note { font-size: 11px; color: var(--mohui); }
 .adjust-note.is-warn { color: var(--amber); }
 
+/* 「加自选」按钮：**落在图上方的工具条里**，因为用户是在看某只票的过程中
+   决定「这只值得盯」的 —— 让他先回左侧栏搜一遍代码再说，就是把动作拆成两步。
+   已在自选池时按钮转成琥珀色并改文案（点一下移出），不用另开一个状态图标。 */
+.fav {
+  padding: 4px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--indigo);
+  border-radius: var(--r);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.fav:hover { border-color: var(--indigo); }
+.fav[aria-pressed="true"] { border-left-color: var(--amber); color: var(--amber); }
+.fav-err { font-size: 11px; color: var(--amber); }
+
 .ma-toggles { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .ma-toggle {
   display: inline-flex;

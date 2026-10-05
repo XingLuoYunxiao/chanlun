@@ -280,7 +280,8 @@
 
   // 工具条上的口径：按钮写"请求"的口径，实际生效口径不一致时用一句话说清原因。
   // 例：这只票没有除权记录 → 请求前复权，实际就是原始价，按钮仍显示"前复权"，
-  // 旁边的说明写明"无除权记录（三态相同）"，否则用户会以为复权算错了。
+  // 旁边的说明由后端写（A 股"无除权记录（三态相同）"；港股/美股是"另两态取不到"，
+  // 那是两回事，别在前端统一成一句），否则用户会以为复权算错了。
   function applyAdjustUI(body) {
     const btn = $("#adjust-btn");
     btn.textContent = `复权 · ${ADJUST_LABEL[state.adjust] || state.adjust}`;
@@ -1167,9 +1168,12 @@
       p.className = "watch-empty";
       p.textContent = "自选股是空的。把常看的票加进来，点一下就能看它的笔、线段、中枢和买卖点。";
       box.append(p);
+      renderFav(); // 空池也算一次"自选池变了"：按钮要退回「☆ 加自选」
       return;
     }
     for (let i = 0; i < items.length; i += 1) box.append(watchRow(items[i], i, items.length));
+    // 自选池是加自选按钮的**唯一真相**：每次重画都让按钮跟着对一次。
+    renderFav();
   }
 
   function span(cls, text) {
@@ -1307,7 +1311,7 @@
     });
     row.append(mv, rm);
     // 换票的绑定**不看 `missing`**：`missing` 说的是「当前这个周期本地没数据」，
-    // 而点击要回答的是「我要看这只票」。自选池全是 7 个大盘指数，切到 30分/5分 时
+    // 而点击要回答的是「我要看这只票」。自选池全是 11 个大盘指数（D-43），切到 30分/5分 时
     // 每一行都 missing（指数没有分钟线），一旦把点击绑在 !missing 上，整栏就点不动了
     // —— 用户看到的就是"点自选股没反应、不跳 K 线"。点过去之后再按那个周期的真实
     // 情况提示（能补就给同步按钮，补不了就说清为什么）。
@@ -1326,18 +1330,64 @@
     box.hidden = false;
   }
 
+  // 「代码 / 名称」两种输入要落成同一个东西：**落库键**。
+  //
+  // 代码形态自己就能判（`600000` / `sh.000300` / `hk.hsi` / `us.dji`）——
+  // 注意前缀是**字母**、基码是**字母或数字**：自选池里本来就有 `hk.hsi`、
+  // `us.ixic` 这种「字母代码」，旧正则只认 `2 个字母 + 点 + 6 位数字`，
+  // 于是港美指数在页面上永远加不进自选（后端 `sources.normalize_code` 早就收它们了）。
+  //
+  // 名称形态只能问后端：港股/美股没有本地品种表，名称→代码只有 `/api/search` 一条路。
+  const CODE_RE = /^([0-9]{6}|[a-zA-Z]{2}\.[a-zA-Z0-9]+)$/;
+
+  function codeOf(raw) {
+    // 候选列表回填的是「代码 名称」，取第一段就是代码。
+    const head = String(raw || "").trim().split(/\s+/)[0] || "";
+    return CODE_RE.test(head) ? head : "";
+  }
+
+  // 名称 → 代码。返回 `{code, note}`：搜不到时 `code` 为空、`note` 里是**为什么**。
+  // 「搜不到」和「这类标的本期不做」必须分开说 —— 前者是输入问题，后者是范围问题。
+  async function resolveCode(raw) {
+    const text = String(raw || "").trim();
+    if (!text) return { code: "", note: "" };
+    const direct = codeOf(text);
+    if (direct) return { code: direct, note: "" };
+    let body = {};
+    try {
+      body = await (await fetch(`/api/search?q=${encodeURIComponent(text)}&limit=5`)).json();
+    } catch (err) {
+      return { code: "", note: "" }; // 搜索不可用不该拦住代码取数
+    }
+    const hit = (body.items || [])[0];
+    if (hit) return { code: hit.code, note: "" };
+    const skipped = (body.skipped || []).join("；");
+    if (skipped) return { code: "", note: `「${text}」没有可看的标的。被排除的：${skipped}` };
+    return { code: "", note: `本地品种表和数据商联想词里都没有「${text}」。A 股可以直接写 6 位代码。` };
+  }
+
   async function addWatch() {
     const input = $("#watch-code");
     const raw = input.value.trim();
     if (!raw) return;
     // 允许"600000 浦发银行"：名称跟在代码后面一起存，自选栏里才认得出是哪只票。
     // 名称不是必填 —— 输代码也能加，名字缺了就用库里已有的。
-    const m = raw.match(/^([0-9]{6}|[a-zA-Z]{2}\.[0-9]{6})\s*(.*)$/);
-    if (!m) {
-      watchError(`看不懂「${raw}」。写 6 位代码（600000），或带市场前缀（sh.000300），名称可以跟在后面。`);
-      return;
+    //
+    // 也可以只写名称（用户 2026-10-05 要求）：先按代码形态试，不成再问 `/api/search`。
+    // 搜出来的是**落库键**，所以港美指数、港股个股都能从这一格加进来。
+    let code = codeOf(raw);
+    let name = "";
+    if (code) {
+      name = raw.slice(raw.indexOf(code) + code.length).trim();
+    } else {
+      const found = await resolveCode(raw);
+      if (!found.code) {
+        watchError(found.note || `看不懂「${raw}」。写 6 位代码（600000）、带市场前缀（sh.000300 / hk.00700 / us.dji），或者直接写名称。`);
+        return;
+      }
+      code = found.code;
+      name = "";
     }
-    const code = m[1], name = m[2].trim();
     let resp;
     try {
       resp = await fetch("/api/watchlist", {
@@ -1362,33 +1412,115 @@
 
   // 输入即搜：候选列表用浏览器原生 datalist，不自己造下拉框。
   // 只有"记住选择"这件事需要自己做，所以输入框里的字始终是用户写的。
+  //
+  // 两个输入框（顶栏的票 + 自选栏的加自选）共用 `/api/search`：
+  // 它同时覆盖**代码和名称**，也覆盖港股/美股（本地品种表里没有这两个市场）。
+  // 联想词接口不通时它只返回本地结果，不报错 —— 搜索是增强，不该让页面用不了。
   let searchTimer = null;
-  async function fillUniverse(q) {
-    let body;
-    try {
-      body = await (await fetch(`/api/universe?q=${encodeURIComponent(q)}&limit=20`)).json();
-    } catch (err) {
-      return;
-    }
-    const list = $("#universe-options");
+
+  function fillOptions(list, items) {
     list.innerHTML = "";
-    for (const it of body.items || []) {
+    for (const it of items) {
       const opt = document.createElement("option");
       opt.value = `${it.code} ${it.name || ""}`.trim();
       list.append(opt);
     }
   }
 
+  async function fillUniverse(q, selector) {
+    let body;
+    try {
+      body = await (await fetch(`/api/search?q=${encodeURIComponent(q)}&limit=20`)).json();
+    } catch (err) {
+      return;
+    }
+    fillOptions($(selector), body.items || []);
+  }
+
+  // ------------------------------------------------------------------ 加自选按钮
+  // 用户 2026-10-05 要求：**在股票界面上**就能加自选，而不是先跑去自选栏搜一遍代码。
+  // 按钮状态直接由 `state.watch` 派生（不另存一份「已加」标记）：自选栏是唯一真相，
+  // 复制一份状态迟早会和它对不上。
+  function favError(text) {
+    const box = $("#fav-error");
+    if (!text) { box.hidden = true; box.textContent = ""; return; }
+    box.textContent = text;
+    box.hidden = false;
+  }
+
+  function inWatchlist(code) {
+    return (state.watch || []).some((it) => it.code === code);
+  }
+
+  function renderFav() {
+    const btn = $("#fav-btn");
+    if (!btn) return;
+    const code = state.code;
+    const has = inWatchlist(code);
+    btn.textContent = has ? "★ 已在自选" : "☆ 加自选";
+    btn.setAttribute("aria-pressed", has ? "true" : "false");
+    btn.title = has
+      ? `${code} 已在左侧自选栏；点一下把它移出去`
+      : `把当前这只票（${code}）加进左侧自选栏`;
+    btn.disabled = !code;
+  }
+
+  $("#fav-btn").addEventListener("click", async () => {
+    const code = state.code;
+    if (!code) return;
+    favError("");
+    const has = inWatchlist(code);
+    let resp;
+    try {
+      resp = has
+        ? await fetch(`/api/watchlist?code=${encodeURIComponent(code)}`, { method: "DELETE" })
+        : await fetch("/api/watchlist", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            // 名字从**当前图上的详情**取：`state.data` 里已有本地库认得的名称，
+            // 传空串也不会丢名字（后端 `add_watch` 会回落到库里已有的）。
+            body: JSON.stringify({ code, name: nameOfCurrent() }),
+          });
+    } catch (err) {
+      favError(`操作失败：连不上本地服务（${err}）。`);
+      return;
+    }
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      favError(body.detail || `操作失败：HTTP ${resp.status}`);
+      return;
+    }
+    await loadWatch();
+    renderFav();
+  });
+
+  // 当前这只票显示用的名称。`/api/structure` 的返回里带 `name`（`api.py` 用
+  // `meta.name_of` 查的）。取不到就返回空串 —— 后端会去库里找，
+  // 这里**不许编**一个名字出来（编错了自选栏里就是一条假记录）。
+  function nameOfCurrent() {
+    const d = state.data;
+    return d && typeof d.name === "string" ? d.name.trim() : "";
+  }
+
   // ------------------------------------------------------------------ 交互绑定
   function setCode(code) {
     state.code = code;
     $("#code").value = code;
+    renderFav();
   }
 
-  $("#query").addEventListener("submit", (ev) => {
+  $("#query").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const raw = $("#code").value.trim() || "600000";
-    state.code = raw;
+    // 名称也要能直接回车：先试代码形态，不成再问 `/api/search`。
+    // 两条路都落成**落库键**，所以「浦发银行」和「恒生指数」都能这么进去。
+    const found = await resolveCode(raw);
+    if (!found.code && found.note) {
+      showNotice("这一条看不了", found.note);
+      return;
+    }
+    const code = found.code || raw;
+    setCode(code);
     const rawLimit = parseInt($("#limit").value, 10);
     state.limit = Number.isFinite(rawLimit) ? Math.max(60, Math.min(20000, rawLimit)) : null;
     load();
@@ -1432,7 +1564,14 @@
     const q = $("#watch-code").value.trim();
     clearTimeout(searchTimer);
     if (!q) return;
-    searchTimer = setTimeout(() => fillUniverse(q), 150);
+    searchTimer = setTimeout(() => fillUniverse(q, "#universe-options"), 150);
+  });
+  // 顶栏的票输入框也给候选：代码和**名称**都能搜（用户 2026-10-05 要求）。
+  $("#code").addEventListener("input", () => {
+    const q = $("#code").value.trim();
+    clearTimeout(searchTimer);
+    if (!q) return;
+    searchTimer = setTimeout(() => fillUniverse(q, "#code-options"), 150);
   });
 
   // 复权：一个按钮循环三态。切换后行情、均线、结构一起换口径 ——

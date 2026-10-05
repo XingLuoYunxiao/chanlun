@@ -16,10 +16,11 @@
 
   <form class="query" id="query" autocomplete="off">
     <label class="field">
-      <span class="field-label">代码</span>
-      <input id="code" name="code" type="text" inputmode="numeric" placeholder="600000" value="600000"
-             aria-label="股票代码">
+      <span class="field-label">代码 / 名称</span>
+      <input id="code" name="code" type="text" list="code-options" placeholder="600000 / 浦发银行"
+             value="600000" aria-label="股票代码或名称">
     </label>
+    <datalist id="code-options"></datalist>
     <div class="periods" role="tablist" aria-label="级别">
       <button type="button" class="period is-on" role="tab" aria-selected="true" data-period="day">日线</button>
       <button type="button" class="period" role="tab" aria-selected="false" data-period="week">周线</button>
@@ -76,11 +77,14 @@
       <div class="watch-empty">自选股是空的。把常看的票加进来，点一下就能看它的笔、线段、中枢和买卖点。</div>
     </div>
 
-    <p class="watch-foot">默认是七个大盘指数；日线在本地，周线/月线由日线聚合。缺数据的票会标出来，↑↓ 调顺序。</p>
+    <p class="watch-foot">默认是 11 个大盘指数（含恒生 / 恒生科技 / 道琼斯 / 纳斯达克）；日线在本地，周线/月线由日线聚合。缺数据的票会标出来，↑↓ 调顺序。</p>
   </aside>
 
   <main class="stage">
     <div class="tools">
+      <button type="button" class="fav" id="fav-btn" aria-pressed="false"
+              title="把当前这只票加进左侧自选栏">☆ 加自选</button>
+      <span class="fav-err" id="fav-error" role="alert" hidden></span>
       <button type="button" class="adjust" id="adjust-btn"
               title="点击切换复权口径：前复权 → 后复权 → 不复权"
               aria-label="复权口径，点击切换">复权 · 前复权</button>

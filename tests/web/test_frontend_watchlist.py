@@ -437,12 +437,16 @@ def test_watch_rows_have_up_and_down_buttons():
 
 def test_watch_foot_no_longer_claims_only_day_bars_are_local():
     html = _html()
-    assert "默认是七个大盘指数" in html
+    # D-43（2026-10-05）：默认池从 7 个 A 股指数扩到 **11** 个
+    # （+恒生 / 恒生科技 / 道琼斯 / 纳斯达克），`watch-foot` 里的「七个」已经不对。
+    # 这条断言在修复前的 html 上**实测红**（旧文案只写「默认是七个大盘指数」）。
+    assert "默认是 11 个大盘指数" in html
+    assert "七个大盘指数" not in html
 
 def test_a_row_without_data_is_still_clickable():
     """「这个周期没数据」只该影响那一行显示的价格，**不该把点击一起关掉**。
 
-    自选池现在全是 7 个大盘指数，而 baostock 对指数不返回分钟线 —— 所以一切到
+    自选池现在全是 11 个大盘指数（D-43），而 baostock 对指数不返回分钟线 —— 所以一切到
     30分/5分，整栏每一行都是「未同步」。如果换票的绑定写在 `if (!it.missing)` 里面，
     这时整栏就点不动了：用户点了自选股，页面纹丝不动，看起来像"看不了自选股"。
     （实测：`?period=30` 下点第 3 行，输入框仍是 sh.000001，图表不变。）
