@@ -208,7 +208,12 @@ def test_minute_periods_are_scoped_to_the_watchlist(env, monkeypatch, capsys):
     # D-43：范围按**市场**分派 —— 港股/美股没有分钟源，A 股才用 `_period_scope`。
     # `000001` 是 A 股（深市），所以这条断言仍然拦得住「把非自选 A 股也算了分钟」。
     assert {c for c, p, _ in calls if p == "30"} == {"600000"}, "30 分只同步自选池"
-    assert {c for c, p, _ in calls if p == "day"} == {"600000", "000001"}, "日线仍走全市场"
+    day_codes = {c for c, p, _ in calls if p == "day"}
+    assert {"600000", "000001"} <= day_codes, "日线仍走全市场"
+    # 2026-10-13：日线范围还要含指数与申万行业板块 —— 它们不在 `universe` 里，
+    # 不显式补上就永远停在旧日期（实测申万 144/155 停在 2026-09-30，D-49 空白）。
+    assert any(str(c).startswith("sw.") for c in day_codes), "申万行业板块要进日线范围"
+    assert any(str(c).endswith("000300") for c in day_codes), "指数要进日线范围"
     conn = _conn(env)
     try:
         assert meta.get_structure_snapshot(conn, "600000", "30") is not None, "自选票的分钟结构要算"

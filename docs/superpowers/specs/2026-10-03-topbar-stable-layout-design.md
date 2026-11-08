@@ -310,8 +310,20 @@ body {
 > 旧 CSS 才如预期变红。**护栏写完必须拿「修复前的输入」跑一遍**，
 > 否则它可能只是在数一个恰好相等的数。
 
-另：`tests/optimizer/test_check_doc_line_refs.py:481` 钉着 `app.js` 的行数与三处被引区间，
+另：`tests/optimizer/test_check_doc_line_refs.py::test_real_architecture_doc_is_green_and_enumerates_app_js`
+钉着 `app.js` 的行数与三处被引区间，
 本次 `app.js` 1461 → 1483 行，已同步更新。
+
+> **2026-10-09 复核更正**：上面这句原文写的是
+> `tests/optimizer/test_check_doc_line_refs.py` **第 481 行**。那个行号**在 HEAD 上就已经是错的**
+> —— 该测试里的注释块被 D-41 起的多次改动越推越后，2026-10-09 复核实为
+> 第 717-718 行（`app.js` 行数断言）与第 756-761 行（被引区间元组）。
+> （这里刻意写成 `path` + 「第 N 行」而不是可解析的 `path:N`：
+> 那是个**反例**，写成可解析形式会被 `check_doc_line_refs.py` 当成真引用。）
+> 这里改成**测试函数名**，因为它不会随插行腐烂。
+> 这个 rot 之所以长期没人发现，是因为 `optimizer/tools/check_doc_line_refs.py`
+> **只扫 `ARCHITECTURE.md`**（`--doc` 默认值），**不扫本文档**；
+> 已作为已知空白登记进 `ARCHITECTURE.md` §5 与 `CHANGELOG.md`。
 
 ### 6.2 文档
 

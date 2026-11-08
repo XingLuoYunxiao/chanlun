@@ -152,3 +152,39 @@ def test_only_structure_that_intersects_the_window_is_sent(client):
     assert body["counts_total"]["segments"] == FULL_SEGMENTS
     assert body["counts_total"]["pivots"] == FULL_PIVOTS
     assert body["counts"]["segments"] == len(body["segments"]) < FULL_SEGMENTS
+
+
+# ---------------------------------------------------------------- 级别递归
+def test_api_serves_the_recursive_levels(client):
+    """`/api/structure` 必须带**级别递归**（D-51），且第 0 层等于 `pivots`。
+
+    `structure_payload` 走的是 `to_jsonable(view.snap)`，所以 `Snapshot.levels`
+    一落地它就自动出口 —— 这条用例钉住那个「自动」，免得以后有人把 levels
+    从 payload 里删掉或改名。
+    """
+    body = _structure(client, 2000)
+    levels = body.get("levels")
+    assert levels, "响应里没有 levels —— 递归没有出口"
+    assert [lv["depth"] for lv in levels] == list(range(len(levels)))
+    assert levels[0]["level"] == "day"
+    assert {_piv_key(p) for p in levels[0]["pivots"]} == {
+        _piv_key(p) for p in body["pivots"]
+    }, "第 0 层就是本级别的 pivots，两边必须是同一份"
+    # 走势类型必须带 f2 所需的区间与方向
+    for lv in levels:
+        for t in lv["trends"]:
+            assert "high" in t and "low" in t and "direction" in t
+
+
+def test_levels_are_not_clipped_by_the_visible_window(client):
+    """`levels` 是**唯一不随窗口裁剪**的字段 —— 它要回答的是上下文问题。
+
+    递归的高级别天然跨越数年；拿 300 根的窗口去裁，三级必然全空（这正是
+    未加约定前实测到的：`limit=200` 时 L0/L1/L2 的中枢数都是 0）。
+    可见/全史的区分由 `counts` / `counts_total` 那一对表达，这里沿用同一约定。
+    """
+    small = _structure(client, 300)
+    full = _structure(client, 2000)
+    assert small["levels"] == full["levels"], "levels 不该随 limit 变"
+    # 对照：pivots 确实随窗口变，否则这条断言什么都没测到
+    assert len(small["pivots"]) <= len(full["pivots"])

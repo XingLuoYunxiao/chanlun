@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import threading
 import time
@@ -30,12 +31,14 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
+from ..calendar import calendar_for
 from ..chan.divergence import DivergenceKind, find_divergences
 from ..chan.engine import ChanEngine, Snapshot
 from ..chan.macd import macd as compute_macd
 from ..chan.signal import SignalMode, find_signals
 from ..chan.types import Status, to_jsonable
 from ..data import adjust as adjust_mod
+from ..data import industry
 from ..data import markets, meta, store
 from ..data import search as search_mod
 from ..data import sync as sync_mod
@@ -54,7 +57,13 @@ DISCLAIMER = "仅结构信号提示，不构成投资建议；结构为收盘后
 
 #: 接口认得的周期。`week`/`month` **不落库**：本地日线聚合出来（见 `periods_mod`），
 #: 所以它们没有自己的 parquet，也不需要 `sync --period week`。
-PERIODS = ("day", "week", "month", "60", "30", "15", "5")
+#:
+#: **`"1"` 是 2026-10-13 补上的**：`chan.pivot.LEVEL_UP` 原先没有 `"1"`，导致
+#: `level_chain("1") == ["1"]` —— 1 分钟基准**只能出 L0、递归不上去**，
+#: 且失败无声（不抛错，只是没有上一级）。级别表补齐后这里才把它放出来。
+#: 注意**数据**仍受源限制：baostock 没有 1 分钟，东财只留 1 个交易日 ——
+#: 能不能取到是 `capabilities` 的事，与「接口认不认得这个周期」是两回事。
+PERIODS = ("1", "5", "15", "30", "60", "day", "week", "month")
 
 #: 默认显示窗口（根数）。**窗口只决定看得见多少，不决定怎么划分**：
 #: 结构一律在完整历史上算完再裁到窗口（见 `snapshot_of`），所以同一只票
@@ -602,8 +611,11 @@ def universe(request: Request, limit: int = Query(200, ge=1, le=10000), q: str =
 def search(request: Request, q: str = "", limit: int = Query(20, ge=1, le=100)) -> dict[str, Any]:
     """按**代码或名称**找票。返回的是**落库键**，页面拿它直接取数。
 
-    两个来源，页面不区分优先级（`source` 字段说明了每条来自哪里）：
+    三个来源，页面不区分优先级（`source` 字段说明了每条来自哪里）：
 
+    - `industry` —— 申万一级/二级行业指数（内置清单，`industry.py`）。**排在前面**：
+      搜「银行」时本地品种表里同名个股有几十只，按 `limit` 一截就把行业指数挤没了，
+      而用户输一个行业名，要的大半就是那个行业指数。
     - `universe` —— 本地品种表（通达信整包导入）。A 股的**全量**名单在这里，
       代码与名称都是本系统的写法，离线可用。
     - `smartbox` —— 腾讯联想词。港股/美股**只有**这条路：本系统不落它们的品种表。
@@ -621,10 +633,51 @@ def search(request: Request, q: str = "", limit: int = Query(20, ge=1, le=100)) 
     cfg = _cfg(request)
     conn = meta.init(cfg.data.meta_db)
     try:
-        rows = [dict(r) for r in meta.get_universe(conn)]
+        rows = industry.search_rows() + [dict(r) for r in meta.get_universe(conn)]
     finally:
         conn.close()
     return {"query": text, **search_mod.search(rows, text, limit).as_dict(limit)}
+
+
+@router.get("/api/industries")
+def industries(request: Request, level: str = "") -> dict[str, Any]:
+    """申万一级 / 二级行业指数清单（D-44）。
+
+    **纯本地**：清单内置在 `industry.py`，`local` 来自本机 `meta.db` 的
+    `sync_state` —— 两条路都不联网。
+
+    `local` = 本机已经有这个板块的**日线**（`rows > 0` 且没有 `error`）。
+    页面用它决定卡片是亮着还是标「待同步」；没有它就只能在点进去之后
+    才发现是空图 —— 那次「悄悄留白」的教训（D-44 收尾）说的就是这件事。
+
+    `level` 只认 `"1"`/`"2"`，空给全部；**非法级别返回空列表**，不猜也不报错
+    （与 `industry.all_boards` 同一约定，调用方自己决定怎么提示）。
+
+    `as_of` 是**内置清单的核对日期**，不是"今天"：`python -m chanlun industry --check`
+    拿实测列表和它对，有差异会逐条列出来。页面把它显示出来，用户才知道这份
+    清单有多旧 —— 悄悄过期比过期本身更坏。
+    """
+    lv = str(level or "").strip()
+    boards = industry.all_boards(lv)
+    cfg = _cfg(request)
+    conn = meta.init(cfg.data.meta_db)
+    try:
+        # 同步失败的行也躺在 `sync_state` 里（`error` 非空、`rows` 可能为 0），
+        # 把它当「有数据」会让卡片亮着却画出空图。
+        local = {
+            r["code"]
+            for r in meta.all_sync(conn, "day")
+            if not r["error"] and r["rows"] > 0
+        }
+    finally:
+        conn.close()
+    return {
+        "count": len(boards),
+        "level": lv,
+        "levels": [{"level": k, "name": v} for k, v in industry.LEVEL_NAMES.items()],
+        "as_of": industry.CHECKED_ON,
+        "items": [{**b.as_dict(), "local": b.code in local} for b in boards],
+    }
 
 
 @router.get("/api/bars")
@@ -642,7 +695,99 @@ def bars(request: Request, code: str, period: str = "day",
         "code": key, "period": period, "count": len(df), "bars": _bars_payload(df),
         "adjust": adj, "adjust_effective": effective, "adjust_note": note,
         "ma": ma_payload(df, periods), "ma_periods": list(periods),
+        # 页面据此判断"要不要自己去补最新"（D-49）。末根取的是**读出来的这份数据**的
+        # 末根（`_bars_payload` 用的也是 `r.ts`），不是磁盘上 parquet 的末根。
+        **freshness(key, period, str(df["ts"].iloc[-1]) if len(df) else None),
     }
+
+
+@router.get("/api/structure/trail", response_model=None)
+def structure_trail(request: Request, code: str, period: str = "day",
+                    adjust: str = "qfq", step: int | None = None,
+                    refresh: bool = False) -> dict[str, Any]:
+    """**信号留痕**：当时标过、后来被走势证伪的买卖点。
+
+    看盘页把它叠在图上（虚线/空心标记），让用户看得见「这里当时标过、后来没了」。
+    买卖点是需要后续走势确认的**当下判断**，被证伪是正常现象 —— 悄悄从图上消失
+    才是错的。见 `chan/audit.py` 与 `chan/state.py::reconcile`。
+
+    **为什么单独一个端点、而且带缓存**：留痕要按检查点回放（每 `step` 根算一次
+    全量结构）。实测 1 分钟的 2.2 万根序列**单次** `full()` 就要 121~233 ms，
+    20 个检查点就是 2.4~4.7 s —— 放进 `/api/structure` 会把首屏拖垮。
+    所以：图先渲染，留痕随后叠加；而且**算一次存一次**（`meta.signal_trail`），
+    因为留痕是**耐久产物**，除非数据变了历史不会变。
+
+    `step` 缺省按序列长度自适应，把成本压在约 1.5 秒以内；想更细就显式传。
+    `refresh=true` 强制重算（判据/数据改过之后用）。
+    """
+    cfg = _cfg(request)
+    key = normalize_code(code)
+    adj = normalize_adjust_or_400(adjust)
+    meta_db = cfg.data.meta_db
+    try:
+        full, _eff, _note, _fp = _period_frame(key, period, adjust=adj, meta_db=meta_db)
+    except HTTPException:
+        raise
+    if len(full) == 0:
+        raise HTTPException(status_code=404, detail=f"{key} 的 {period} 周期没有本地数据")
+    as_of = str(full["ts"].iloc[-1])
+
+    # 自适应分辨率。**这里的分母是「能看见多少短命信号」的直接决定因素**：
+    # 实测分母取 18 时（2.3 万根的 1 分钟序列约每 1300 根检查一次、≈6 个交易日），
+    # 页面上显示「已证伪 0 条」—— 短命信号全被跨过去了，功能看起来像没生效。
+    # 取 60（≈每 390 根、1.6 个交易日）才看得见；首次约 3~4 秒，之后**走缓存**。
+    # 留痕是耐久产物，这个代价只付一次。
+    auto_step = max(1, len(full) // 60)
+    want_step = int(step) if step else auto_step
+
+    if not refresh:
+        conn = meta.init(meta_db)
+        try:
+            cached = meta.get_signal_trail(conn, key, period, adj)
+        finally:
+            conn.close()
+        # 新鲜度判据 = **最后一根 + 分辨率**：数据没动、分辨率没变，历史就不会变。
+        if cached and cached["as_of"] == as_of and cached["step"] == want_step:
+            return json.loads(cached["payload"]) | {"cached": True}
+
+    from ..chan.audit import trail as _trail
+
+    try:
+        tr = _trail(key, period, step=want_step, bars=full)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    payload = {
+        "code": tr.code,
+        "period": tr.period,
+        "adjust": adj,
+        "as_of": as_of,
+        "step": tr.step,
+        "bars": tr.bars,
+        "checkpoints": len(tr.checkpoints),
+        "alive": len(tr.alive),
+        "falsified": [
+            {
+                "kind": e.kind,
+                "ts": e.ts,
+                "price": e.price,
+                "src_start": e.src_start,
+                "src_end": e.src_end,
+                "first_seen": e.first_seen,
+                "last_seen": e.last_seen,
+                "falsified_at": e.falsified_at,
+                "reason": e.reason,
+            }
+            for e in tr.falsified
+        ],
+    }
+    conn = meta.init(meta_db)
+    try:
+        meta.save_signal_trail(conn, key, period, adj, as_of, tr.step,
+                               json.dumps(payload, ensure_ascii=False))
+    finally:
+        conn.close()
+    return payload | {"cached": False}
 
 
 @router.get("/api/structure", response_model=None)
@@ -671,11 +816,14 @@ def structure(request: Request, code: str, period: str = "day",
             raise
         # 404 顺带回答「这个周期到底能不能补」：页面靠它决定给不给「同步这个周期」
         # 按钮。让后端判、而不是前端去猜号段，规则只有一处（`sync_blocker`）。
-        blocker = sync_blocker(key, period)
+        # `freshness(..., None)` 就是它 —— 并额外给出最新交易日是哪天：本地一条都
+        # 没有时，提示里至少要说得出一个具体日期。
+        fresh = freshness(key, period, None)
         return JSONResponse(
             status_code=404,
-            content={"detail": exc.detail, "syncable": blocker is None,
-                     "sync_hint": blocker or ""},
+            content={"detail": exc.detail, "syncable": fresh["syncable"],
+                     "sync_hint": fresh["sync_hint"],
+                     "expected_as_of": fresh["expected_as_of"]},
         )
     body = structure_payload(view, include_merged=merged, mode=mode)
     conn = meta.init(cfg.data.meta_db)
@@ -687,6 +835,10 @@ def structure(request: Request, code: str, period: str = "day",
         "code": key, "name": name, "period": period,
         "adjust": adj, "adjust_effective": view.effective, "adjust_note": view.note,
         "ma": ma_payload(view.bars, periods), "ma_periods": list(periods),
+        # 结构已经算完了，顺便把"这份数据落不落后"告诉页面（D-49）。
+        # `as_of` 来自结构快照本身（`structure_payload` 里的 `to_jsonable(view.snap)`），
+        # 不是这里另造的第二个日期口径。
+        **freshness(key, period, view.snap.as_of),
     })
     return body
 
@@ -798,11 +950,13 @@ def watchlist_structure(request: Request, period: str = "day", limit: int = DEFA
     conn = meta.init(cfg.data.meta_db)
     try:
         rows = [dict(r) for r in meta.get_watchlist(conn)]
-        # 自选池只记代码（加自选时懒得输名字），名称从 universe 表兜底：
+        # 自选池只记代码（加自选时懒得输名字），名称统一从 `meta.name_of` 兜底：
         # 左侧栏里一排光秃秃的数字，看盘时根本认不出是哪只票。
-        # 指数**不在品种表里**（那张表只有股票），名称来自默认池或加自选时存的那一份。
-        names = {str(r["code"]): str(r["name"] or "") for r in meta.get_universe(conn)}
-        names.update({str(c): str(n) for c, n in meta.DEFAULT_WATCHLIST})
+        #
+        # ★ 这里原先自己拼了一份「universe ∪ 内置指数」的字典，是 `meta.name_of`
+        # 之外**第二份取名实现**。`name_of` 现在又多了申万行业一处来源，两份必然漂移
+        # （行业加进池子，左栏就只剩 `sw.801120`）。改成只调那一个出处。
+        names = {str(r["code"]): meta.name_of(conn, str(r["code"])) for r in rows}
     finally:
         conn.close()
 
@@ -912,24 +1066,46 @@ def sync_blocker(code: str, period: str) -> str | None:
         key = sources.normalize_code(code)
     except DataSourceError:  # 认不出的代码：不在这里判，交给 normalize_code 报参数错
         return None
-    # 非 A 股（港股/美股）的可用性只由取数层的 capabilities 说话 ——
-    # 那是**唯一**知道「哪个源给不给这个周期」的地方。这里再写一份的话，
-    # 页面说"能补"、接口说"补不了"的老毛病会换个市场重演。
-    if sources.market_of(key) not in ("sh", "sz", "bj"):
-        cap = sources.capabilities(key, period)
-        return None if cap["supported"] else str(cap["reason"])
-    try:
-        bs = to_bs_code(key)
-    except ValueError:  # 认不出的代码：不在这里判，交给 normalize_code 报参数错
-        return None
-    if markets.is_index(bs):
-        # 实测 baostock 对 sh.000001/sh.000300/sh.000688 的分钟线一律返回 0 行
-        # （重登重试后仍是 0），本地通达信整包也只有 lday、没有分钟线。
-        return (
-            f"{code} 是指数，baostock 不提供指数的分钟线，同步这个周期只会空跑。"
-            "指数看日线/周线/月线即可（周月线由本地日线聚合）。"
-        )
-    return None
+    # A 股与港股/美股走**同一个**口径来源：`sources.capabilities` ——
+    # 那是**唯一**知道「哪个源给不给这个周期」的地方。曾经 A 股这一支自己在下面
+    # 硬写了一条「指数没有分钟线」的护栏，2026-10-13 那条判断过时了：
+    # 指数分钟线改走东财后，`sh.000300` / `sz.399001` / `sh.000688` 实测各能取到
+    # 1536 根 5 分钟，而护栏还在挡 —— **正是这段注释警告过的老毛病**（写两份，
+    # 「页面说能补、接口说补不了」换个市场重演）。所以删掉硬编码，统一交给 capabilities。
+    cap = sources.capabilities(key, period)
+    return None if cap["supported"] else str(cap["reason"])
+
+
+def freshness(code: str, period: str, as_of: str | None) -> dict[str, Any]:
+    """本地数据落不落后于**该市场的最新交易日**，以及这个周期补不补得了。
+
+    **这是全项目唯一一份「要不要去补最新」的判断。** 前端不许自己比日期、更不许
+    按号段猜"这是不是指数"—— 两处各写一套的话，页面说"能补"、接口说"补不了"
+    （D-43 踩过：`sh.300059` 不报错、只返回零行）。
+
+    返回四个键：
+
+    - `expected_as_of`：最新交易日（`YYYY-MM-DD`）。`as_of` 为空也照样给 ——
+      404 的提示要说得出一个具体日期，说"数据可能不是最新"等于没说。
+    - `stale`：`as_of` 是否**早于**它。`as_of` 为空时 `False`：不知道就不猜，
+      宁可漏补一次，也不要在没有依据时去发请求。
+    - `syncable` / `sync_hint`：`sync_blocker` 的结论原样转出来，让页面**跳过**
+      那些必然被拒的组合（如指数 + 分钟线）。
+
+    只比日期：实测 30 分钟线的 `as_of` 是 `"2026-09-30 15:00"` 这种带时间的串，
+    整串拿去比会永远小于任何日期串 —— 于是每只**已经最新**的票都会白发一次同步。
+
+    日历按市场选（`calendar_for`）：A 股用真实交易日历，港股/美股用工作日日历。
+    两处都是模块级缓存的，所以这里不会产生新的盘中 I/O。
+    """
+    expected = calendar_for(code).last_trading_day(dt.date.today()).isoformat()
+    blocker = sync_blocker(code, period)
+    return {
+        "expected_as_of": expected,
+        "stale": bool(as_of) and str(as_of)[:10] < expected,
+        "syncable": blocker is None,
+        "sync_hint": blocker or "",
+    }
 
 
 def _task_view(key: tuple[str, str], rec: dict[str, Any]) -> dict[str, Any]:

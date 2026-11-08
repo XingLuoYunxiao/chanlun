@@ -64,10 +64,22 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Sequence
 
-from .types import Segment, Status
+from .types import LevelSegment, Status
 
 #: 级别升级：一个级别的中枢扩展后成为上一级别的中枢。
+#:
+#: **`"1"` 是 2026-10-13 补上的，缺它会让「1 分钟基准」完全递归不上去。**
+#: 链条断在第一步不会报错，只会**静默只出 L0**：`next_level("1")` 走未知级别的
+#: 退化分支返回 `"1+"`，而 `level_chain` 见到 `+` 就 `break` —— 于是
+#: `level_chain("1") == ["1"]`。用户明确要的「以 1 分钟为基准往上递归」
+#: 在此之前是**做不到**的，且失败方式无声（不会抛错，只是没有上一级）。
+#:
+#: 补上后 `level_chain("1") == ["1", "5", "30", "day", "week", "month"]`，
+#: 即 1 分钟 → 5 分钟 → 30 分钟 → 日 → 周 → 月，与行情周期恰好逐档对齐。
+#: 注意这只补了**级别名链**；1 分钟**数据**仍受数据源限制（baostock 没有 1 分钟、
+#: 东财只留 1 个交易日），见 ARCHITECTURE §5。
 LEVEL_UP: dict[str, str] = {
+    "1": "5",
     "5": "30",
     "30": "day",
     "day": "week",
@@ -121,16 +133,22 @@ class Pivot:
         return self.end_idx - self.start_idx + 1
 
 
-def _overlaps(seg: Segment, zd: float, zg: float) -> bool:
-    """线段与中枢区间 `[zd, zg]` 是否有重叠（闭区间相交）。"""
+def _overlaps(seg: LevelSegment, zd: float, zg: float) -> bool:
+    """段与中枢区间 `[zd, zg]` 是否有重叠（闭区间相交）。"""
     return seg.low <= zg and seg.high >= zd
 
 
-def find_pivots(segments: Sequence[Segment], level: str) -> list[Pivot]:
-    """按第 17 课从线段序列中依次找出中枢。
+def find_pivots(segments: Sequence[LevelSegment], level: str) -> list[Pivot]:
+    """按第 17 课从「段」序列中依次找出中枢。
 
-    只使用 `CONFIRMED` 线段；`TENTATIVE` 线段被完全忽略（既不参与构造，
-    也不参与延伸），因此调用方可以安全地把「含未确认尾段」的线段序列传进来。
+    入参是 `LevelSegment` 协议，不是具体的 `Segment`：**同一个函数服务两个
+    递归层**。最低级别喂线段（第 84 课的 `f1(a0)=a1`），更高级别喂次级别走势
+    类型（`f2(an)=an+1`）。第 84 课原话是「关于第二条的中枢过程规则，是一直
+    没有任何改变的」—— 所以这里刻意不复制一份平行的实现，见
+    `chan/recursion.py`。
+
+    只使用 `CONFIRMED` 段；`TENTATIVE` 段被完全忽略（既不参与构造，
+    也不参与延伸），因此调用方可以安全地把「含未确认尾段」的段序列传进来。
 
     返回的 `start_idx`/`end_idx` 是**入参列表**的下标（未确认段被跳过后，
     下标可能不连续，这是刻意的）。
@@ -166,8 +184,17 @@ def find_pivots(segments: Sequence[Segment], level: str) -> list[Pivot]:
             continue
 
         # 中枢方向由 A、C 段确定（第 20 课：「A、C段，其方向与中枢形成的方向是
-        # 一致的」）。相邻确认段方向必然交替，故 `trio[0]`/`trio[2]` 同向。
-        direction = trio[0].direction
+        # 一致的」）。
+        #
+        # 对**线段**输入，相邻确认段方向必然交替，故 `trio[0]`/`trio[2]` 同向，
+        # `trio[0].direction` 就是要的那个方向 —— 行为与引入本行之前逐字相同。
+        #
+        # 对**走势类型**输入（f2 递归，见 `recursion.py`）这个前提**不成立**：
+        # 实测走势类型序列的相邻同向率 51%（`optimizer/tools/measure_recursion.py`）。
+        # 根因是「盘整」走势类型按第 17 课就没有方向，如实记 `direction=0`。
+        # 所以取组内第一个有方向的段作为中枢方向；三者全无方向时退化为「整个组
+        # 都是中枢中的段」，见下面的 `zn`。
+        direction = next((s.direction for s in trio if s.direction), 0)
 
         # 延伸（第 20 课中心定理一）：
         # 「走势中枢的延伸等价于任意区间[dn，gn]与[ZD，ZG]有重叠。换言之，若有
@@ -192,9 +219,12 @@ def find_pivots(segments: Sequence[Segment], level: str) -> list[Pivot]:
         # 遍历中枢中所有Zn。」
         #
         # 中枢方向由 A、C 段确定（同课：「A、C段，其方向与中枢形成的方向是
-        # 一致的」），所以 Zn 就是组内与 `trio[0]` 同向的那些段；反向段（B 以及
-        # 延伸中夹进来的回抽段）**不进 GG/DD**。`zn` 至少含 A、C 两段，不会为空。
-        zn = [s for s in group if s.direction == direction]
+        # 一致的」），所以 Zn 就是组内与 `direction` 同向的那些段；反向段（B 以及
+        # 延伸中夹进来的回抽段）**不进 GG/DD**。`direction` 为 0（三种走势类型全
+        # 是盘整）时没有「同向」可言，整个组都算中枢中的段 —— 这是 D-51 对
+        # 「中枢里全是无方向段」那一支的显式口径，不是兜底防崩。
+        zn = (list(group) if direction == 0
+              else [s for s in group if s.direction == direction])
         # 延伸是被谁掐停的？循环条件里段数上限判在「有重叠」**之前**，所以退出时
         # `j - i` 恰好等于上限还不足以说明是上限掐停的 —— 若 `confirmed[j]` 本来
         # 就不碰 `[zd, zg]`，有没有上限都会停在同一组，`group[-1]` 仍然是离开段。
@@ -230,8 +260,8 @@ def find_pivots(segments: Sequence[Segment], level: str) -> list[Pivot]:
                 dd=min(s.low for s in inside),
                 start_idx=positions[i],
                 end_idx=positions[j - 1],
-                start_ts=group[0].start.start.ts,
-                end_ts=group[-1].end.end.ts,
+                start_ts=group[0].start_ts,
+                end_ts=group[-1].end_ts,
                 level=level,
                 # 右端用尽可用线段 → 右侧还可能延伸，未定。
                 status=Status.TENTATIVE if back is None else Status.CONFIRMED,
@@ -240,7 +270,7 @@ def find_pivots(segments: Sequence[Segment], level: str) -> list[Pivot]:
                 # 延伸，属于未来函数。
                 confirmed_at=(
                     None if back is None
-                    else (back.confirmed_at or back.end.end.ts)
+                    else (back.confirmed_at or back.end_ts)
                 ),
                 src_start=group[0].src_start,
                 src_end=group[-1].src_end,

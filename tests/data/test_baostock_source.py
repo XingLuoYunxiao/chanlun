@@ -1,5 +1,7 @@
 """baostock 数据源集成测试（需要网络）。"""
 
+import socket
+
 import pandas as pd
 import pytest
 
@@ -182,3 +184,57 @@ def test_nonzero_error_code_still_raises_after_retries(fake_bs, monkeypatch):
     _wire(monkeypatch, fake_bs, _FakeBS([_FakeRS([], "10001001", "用户未登录")]))
     with pytest.raises(DataSourceError):
         fake_bs.fetch_bars("sh.600000", "day", "2024-01-01", "2024-01-05")
+
+
+# ---------------------------------------------------------------- socket 超时防护
+# baostock 的 socket 是**裸创建**的（`baostock/util/socketutil.py` 里直接
+# `socket.socket(...)`，从不 `settimeout`）。服务端接受连接后不回包时，
+# `send_msg` 里的 `recv` 会**永久**阻塞 —— 上面的重试只在「拿到响应之后」才生效。
+# 2026-10-08 的定时任务就是这样卡了 6 小时 14 分：主线程栈停在 `sock_recv`，
+# 累计 CPU 只有 2.8 秒，落库停在 17:36:32 的第 26 只票。
+
+
+class _SocketSpyBS(_FakeBS):
+    """在 `login()` 里裸建一个 socket，量「baostock 建出来的 socket 有没有超时」。
+
+    这里必须真的建 socket：断言 `socket.getdefaulttimeout()` 只能证明我们设过，
+    证明不了 baostock 那个**常驻 socket 自己**带上了超时。
+    """
+
+    def __init__(self, results):
+        super().__init__(results)
+        self.probe = None
+        self.default_during_login = None
+
+    def login(self):
+        self.probe = socket.socket()  # 与 baostock 内部同样的裸创建
+        self.default_during_login = socket.getdefaulttimeout()
+        return _FakeRS([], "0", "")
+
+
+def test_login_socket_carries_timeout_and_does_not_leak_process_default(fake_bs, monkeypatch):
+    fake = _wire(monkeypatch, fake_bs, _SocketSpyBS([_FakeRS([])]))
+    before = socket.getdefaulttimeout()
+    try:
+        fake_bs.fetch_bars("sh.600000", "day", "1990-01-01", "1990-01-05")
+        # 先钉「真的设过」，再钉「设成了 SOCKET_TIMEOUT」。
+        # 少了前一条，这个测试会**自证**：把 `SOCKET_TIMEOUT` 改成 `None`
+        # 之后 `None == None` 照样绿（2026-10-09 用变异实测确认过）。
+        assert fake.default_during_login is not None, "登录期间必须真的设过超时"
+        assert fake.default_during_login == fake_bs.SOCKET_TIMEOUT
+        # 常驻 socket 自己带着超时：恢复进程默认值**不会**把它改回阻塞
+        assert fake.probe.gettimeout() is not None, "常驻 socket 必须自己带着超时"
+        assert fake.probe.gettimeout() == fake_bs.SOCKET_TIMEOUT
+        # 不污染进程默认值 —— 看盘页进程里 uvicorn 等其它 socket 不受影响
+        assert socket.getdefaulttimeout() == before
+    finally:
+        if fake.probe is not None:
+            fake.probe.close()
+
+
+def test_socket_timeout_is_a_finite_budget_not_a_hang():
+    """超时必须是个**有限正数**；`None` 就是本次事故的形状。"""
+    from chanlun.data import baostock_source as bst
+
+    assert bst.SOCKET_TIMEOUT is not None
+    assert 0 < bst.SOCKET_TIMEOUT <= 120

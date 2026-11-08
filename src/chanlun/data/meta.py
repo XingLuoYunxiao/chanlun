@@ -11,6 +11,7 @@ from typing import Any, Iterable, Sequence
 import pandas as pd
 
 from ..config import load_config
+from . import industry
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sync_state (
@@ -59,6 +60,22 @@ CREATE TABLE IF NOT EXISTS structure_snapshot (
     payload    TEXT NOT NULL,
     updated_at TEXT,
     PRIMARY KEY (code, period)
+);
+
+--: 信号留痕的**缓存**（`chan/audit.py::trail`）。留痕是**耐久产物** —— 除非数据
+--: 变了，历史不会变 —— 所以算一次存一次，不要每次点图都回放。
+--: **键要带口径**：留痕是价格的函数（`qfq` 与 `raw` 会得出不同结构），
+--: 与 `structure_snapshot` 只按 (code, period) 存不同。
+--: `step` 与 `as_of` 一起构成**新鲜度判据**：最后一根变了或分辨率变了就重算。
+CREATE TABLE IF NOT EXISTS signal_trail (
+    code       TEXT NOT NULL,
+    period     TEXT NOT NULL,
+    adjust     TEXT NOT NULL,
+    as_of      TEXT NOT NULL,
+    step       INTEGER NOT NULL,
+    payload    TEXT NOT NULL,
+    updated_at TEXT,
+    PRIMARY KEY (code, period, adjust)
 );
 
 CREATE TABLE IF NOT EXISTS scan_result (
@@ -279,14 +296,22 @@ def get_scan_results(conn: sqlite3.Connection, run_date: str | None = None) -> l
 def name_of(conn: sqlite3.Connection, code: str) -> str:
     """这只票叫什么。查不到就返回空串（页面自己决定要不要显示）。
 
-    三处来源，优先级从高到低：品种表（股票的正式名）→ 自选池（用户加自选时存的名字，
-    改名后应当以这里的为准）→ 内置指数名。指数不在 `universe` 里，没有第三处，
+    四处来源，优先级从高到低：品种表（股票的正式名）→ 自选池（用户加自选时存的名字，
+    改名后应当以这里的为准）→ 申万行业清单（一级/二级行业指数，纯静态表，
+    `industry.py`）→ 内置指数名。指数不在 `universe` 里，没有这几处，
     `sh.000001` 在页面上就只剩一串数字。
+
+    申万行业排在内置指数**之前**：两者不会撞码（行业键恒为 `sw.801xxx`），
+    所以顺序只影响可读性 —— 让「行业清单」和「内置指数」在代码里相邻，
+    比夹在中间好找。
     """
     for table in ("universe", "watchlist"):
         row = conn.execute(f"SELECT name FROM {table} WHERE code=?", (code,)).fetchone()
         if row is not None and row["name"]:
             return str(row["name"])
+    name = industry.name_of(code)
+    if name:
+        return name
     return dict(DEFAULT_WATCHLIST).get(str(code), "")
 
 
@@ -436,3 +461,37 @@ def get_adjust_factors(conn: sqlite3.Connection, code: str) -> pd.DataFrame:
 
 def all_adjust_codes(conn: sqlite3.Connection) -> list[str]:
     return [r["code"] for r in conn.execute("SELECT DISTINCT code FROM adjust_factor ORDER BY code")]
+
+def save_signal_trail(
+    conn: sqlite3.Connection,
+    code: str,
+    period: str,
+    adjust: str,
+    as_of: str,
+    step: int,
+    payload: str,
+) -> None:
+    """写留痕缓存。幂等：同一 `(code, period, adjust)` 重复写是更新而不是追加。"""
+    conn.execute(
+        """INSERT INTO signal_trail (code, period, adjust, as_of, step, payload, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(code, period, adjust) DO UPDATE SET
+             as_of=excluded.as_of, step=excluded.step,
+             payload=excluded.payload, updated_at=excluded.updated_at""",
+        (code, period, adjust, as_of, int(step), payload,
+         dt.datetime.now().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+
+
+def get_signal_trail(
+    conn: sqlite3.Connection, code: str, period: str, adjust: str
+) -> dict[str, Any] | None:
+    """读留痕缓存。返回 `{as_of, step, payload}`；没有记录返回 `None`。"""
+    row = conn.execute(
+        "SELECT as_of, step, payload FROM signal_trail WHERE code=? AND period=? AND adjust=?",
+        (code, period, adjust),
+    ).fetchone()
+    if row is None:
+        return None
+    return {"as_of": row["as_of"], "step": int(row["step"]), "payload": row["payload"]}

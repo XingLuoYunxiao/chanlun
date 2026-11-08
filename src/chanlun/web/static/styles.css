@@ -294,7 +294,20 @@ button, input { font: inherit; color: inherit; }
 .adjust.is-loose { border-color: var(--amber); color: var(--amber); }
 /* 口径不一致时（例如请求前复权但该票没有除权记录）在这里说清，
    不能让按钮上的字替数据撒谎。 */
-.adjust-note { font-size: 11px; color: var(--mohui); }
+.adjust-note {
+  font-size: 11px; color: var(--mohui);
+  /* ★ **图注不许换行**。`.tools` 是 `flex-wrap: wrap` 的行，图注一长就折成第二行，
+     工具条变高、图区变矮 —— 表现是「图突然被压扁、只占屏幕中间一块」。
+     2026-10-17 实测：留痕图注有 50 多字（「已证伪 24 条（留痕分辨率：每 27 根检查
+     一次，约 1 个交易日；最近一条 三卖 @ 2026-03-24）」），窄一点的窗口必折行。
+     所以：单行 + 超长省略 + `title` 看全文。宁可截断，也不许挤图。 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  max-width: 38ch;
+  flex: 0 1 auto;
+}
 .adjust-note.is-warn { color: var(--amber); }
 
 /* 「加自选」按钮：**落在图上方的工具条里**，因为用户是在看某只票的过程中
@@ -635,6 +648,213 @@ button, input { font: inherit; color: inherit; }
 .watch-mv:hover:not(:disabled) { color: var(--indigo); }
 .watch-mv:disabled { color: var(--line); cursor: default; }
 .watch-empty { padding: 10px 12px; }
+/* 行业指数选择器：自选栏里的一块独立导航，不是自选池的一员（不加进 watchlist 表）。
+   放在 .watch-add 和 .watch-rows 之间，所以自带上下边框把它和两边分开。 */
+.ind-pick {
+  padding: 8px 14px 9px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.ind-label {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 10px;
+  color: var(--mohui);
+  letter-spacing: 0.18em;
+}
+/* 入口是按钮而不是 <select>：点它开一个大弹窗，155 个行业在里面挑。
+   长得像下拉框却不展开会一直让人困惑，所以外形也换成「按钮 + 当前值 + 角标」。 */
+.ind-open {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  color: var(--rice-dim);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.ind-open:hover { border-color: var(--indigo); }
+.ind-open-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ind-open.has-pick .ind-open-name { color: var(--rice); }
+.ind-open-caret { flex: none; color: var(--mohui); }
+.ind-note {
+  margin: 6px 0 0;
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--mohui);
+}
+/* ---------------- 行业指数选择器（弹窗） ----------------
+   原生 <dialog> + showModal()：遮罩、Esc、焦点圈禁、背景 inert 都由浏览器给。
+   `padding: 0` 是**有意的** —— 内边距全部交给 .ind-modal-inner，这样落在弹窗
+   盒子里的点击一定命中某个后代，`e.target === dialog` 就等价于「点了遮罩」，
+   点遮罩关闭因此不会误伤弹窗自己的边缘留白。 */
+#industry-modal {
+  width: min(1080px, 92vw);
+  max-width: 92vw;
+  height: min(760px, 88vh);
+  max-height: 88vh;
+  padding: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  color: var(--rice);
+  font-family: var(--cjk);
+  overflow: hidden;
+}
+#industry-modal::backdrop { background: color-mix(in srgb, var(--ink) 74%, transparent); }
+.ind-modal-inner { display: flex; flex-direction: column; height: 100%; }
+.ind-modal-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.ind-modal-title { flex: 1; min-width: 0; }
+.ind-modal-title h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 400;
+  letter-spacing: 0.1em;
+}
+.ind-modal-sub { margin: 4px 0 0; font-size: 11px; color: var(--mohui); }
+.ind-close {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  color: var(--rice-dim);
+  cursor: pointer;
+}
+.ind-close:hover { color: var(--rice); border-color: var(--indigo); }
+.ind-modal-controls { display: flex; align-items: center; gap: 10px; padding: 12px 18px; }
+.ind-search {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  color: var(--rice);
+  font-family: inherit;
+  font-size: 13px;
+}
+.ind-search::placeholder { color: var(--mohui); }
+/* tab 条复用顶栏 .periods 的语法：选中态 = panel-2 底 + 靛青下划线。 */
+.ind-tabs {
+  display: flex;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+.ind-tab {
+  flex: none;
+  white-space: nowrap;
+  padding: 7px 14px;
+  background: var(--ink);
+  border: 0;
+  border-right: 1px solid var(--line);
+  color: var(--rice-dim);
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.ind-tab:last-child { border-right: 0; }
+.ind-tab.is-on {
+  background: var(--panel-2);
+  color: var(--rice);
+  box-shadow: inset 0 -2px 0 var(--indigo);
+}
+.ind-tab:hover { color: var(--rice); }
+.ind-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 8px;
+  align-content: start;
+  padding: 4px 18px 18px;
+}
+.ind-group {
+  grid-column: 1 / -1;
+  margin: 10px 0 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 11px;
+  color: var(--mohui);
+  letter-spacing: 0.16em;
+}
+.ind-empty {
+  grid-column: 1 / -1;
+  margin: 24px 0;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--rice-dim);
+}
+/* 卡片：**有数据才亮**。待同步的降色 + 虚线边（沿用 .chip.capped 的语法：
+   虚线 = 还没完全到位）。**不用 opacity** —— 它会把 :focus-visible 的
+   outline 一起变淡，键盘用户就看不见焦点在哪了。 */
+.ind-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  color: var(--rice);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .12s;
+}
+.ind-card:hover { border-color: var(--indigo); }
+.ind-card[data-local="0"] {
+  background: var(--panel);
+  border-style: dotted;
+  color: var(--mohui);
+}
+.ind-card-name { font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; }
+.ind-card-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+.ind-card-code { font-family: var(--mono); font-size: 10px; color: var(--mohui); }
+.ind-card-flag { flex: none; font-size: 10px; letter-spacing: 0.08em; color: var(--bamboo); }
+.ind-card[data-local="0"] .ind-card-flag { color: var(--mohui); }
+/* 当前看的那一个。放在 [data-local="0"] 之后：同特异性下后写的赢，
+   所以即使当前选中的是个待同步的板块，边框也是实线。 */
+.ind-card.is-current { border-color: var(--indigo); border-style: solid; }
+.ind-card.is-current .ind-card-name::after {
+  content: "当前";
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--indigo);
+}
+.ind-modal-foot {
+  margin: 0;
+  padding: 10px 18px 12px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 10px;
+  line-height: 1.7;
+  color: var(--mohui);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ind-card { transition: none; }
+}
 .watch-foot {
   margin: 0;
   padding: 7px 14px 9px;
@@ -668,6 +888,7 @@ button, input { font: inherit; color: inherit; }
 .watch-rail.is-collapsed .watch-count,
 .watch-rail.is-collapsed .watch-add,
 .watch-rail.is-collapsed .watch-err,
+.watch-rail.is-collapsed .ind-pick,
 .watch-rail.is-collapsed .watch-rows,
 .watch-rail.is-collapsed .watch-foot { display: none; }
 
@@ -752,3 +973,54 @@ button, input { font: inherit; color: inherit; }
   font-size: 13px;
 }
 .sync-note.is-warn { color: #b23b2e; }
+
+/* ---------------- 按需补最新的浮标（D-49 / D-50） ----------------
+   它和 `#notice` 是两件事：notice 是 `inset: 56px 24px 24px` 盖满图表的面板，
+   说的是"这个周期没有数据"；这一条说的是"数据在这儿、新不新、要不要补"，
+   必须能**和图同时看见**。
+
+   绝对定位是硬要求：`.stage` 是 flex 列，占流的子元素会把 `.chart` 挤矮，
+   而顶栏"恒定 2 行 / 窄屏不跳高度"是既有硬约束（见本文件开头与 app.js 的注释）。
+   `bottom` 而不是 `top`：`.stage` 顶部 56px 是工具条，浮标放下面才不会压住按钮。
+
+   D-50 起它**常驻**（不再有事才出现、4 秒后消失）：所以整块继续
+   `pointer-events: none`（状态文字不许挡住图上的十字线/缩放），
+   可点的动作单独放进 `.sync-chip-go` 并显式 `auto` ——
+   子元素在 `pointer-events: none` 的父元素下**仍然可点**，正是这里要的。
+
+   也**不加** `white-space: nowrap` / 省略号：`sync_hint` 实测 70 字
+   （"sh.000001 是指数，baostock 不提供指数的分钟线……"），折行比截断好 ——
+   截掉的那半句往往正是"为什么补不了"。 */
+.sync-chip {
+  position: absolute;
+  right: 18px;
+  bottom: 12px;
+  z-index: 3;
+  max-width: min(420px, 60%);
+  padding: 6px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--r);
+  color: var(--rice-dim);
+  font-size: 12px;
+  line-height: 1.5;
+  pointer-events: none;   /* 状态文字不吃鼠标事件：图上的十字线/缩放照常 */
+}
+/* 可点的两态：本地落后（点这里补）与补失败（重试）。
+   名字从 D-49 的 `is-retry` 改成 `is-action` —— 它现在涵盖两种，不只是重试。 */
+.sync-chip.is-action {
+  border-left-color: var(--cinnabar);
+  color: var(--rice);
+}
+.sync-chip-go {
+  pointer-events: auto;   /* 只有这个按钮吃点击 */
+  cursor: pointer;
+  font: inherit;
+  padding: 0 6px;
+  margin-left: 6px;
+  background: none;
+  border: 1px solid var(--cinnabar);
+  border-radius: var(--r);
+  color: var(--cinnabar);
+}

@@ -13,6 +13,7 @@ import json
 import pytest
 
 from chanlun.data import meta
+from chanlun.scan import scanner
 from chanlun.scan.scanner import (
     LEVEL_WEIGHT,
     REQUIREMENTS,
@@ -385,3 +386,166 @@ def test_data_quality_note_survives_even_without_any_signal_row(env):
     assert report.errors == ()
     assert any("不一致" in note and "1999-11-10" in note for note in report.notes)
     assert "数据质量" in report.summary()
+
+
+# ---------------------------------------------------------------- 递归上下文（D-51）
+def _ls(depth, level, trends=(), pivots=()):
+    from chanlun.chan.recursion import LevelStructure
+    return LevelStructure(level=level, depth=depth, pivots=tuple(pivots), trends=tuple(trends))
+
+
+def _trend(direction, src_start, src_end, level="30"):
+    from chanlun.chan.trend import Trend, TrendType
+    kind = {1: TrendType.UP, -1: TrendType.DOWN}.get(direction, TrendType.CONSOLIDATION)
+    return Trend(
+        idx=0, kind=kind, start_idx=0, end_idx=0, start_ts="", end_ts="", level=level,
+        pivot_count=1, status=_confirmed(), confirmed_at="", high=0.0, low=0.0,
+        direction=direction, src_start=src_start, src_end=src_end,
+    )
+
+
+def _confirmed():
+    from chanlun.chan.types import Status
+    return Status.CONFIRMED
+
+
+def _bars(n=10):
+    import pandas as pd
+    return pd.DataFrame({"ts": [f"d{i:03d}" for i in range(n)]})
+
+
+def _sig(ts):
+    import types as _t
+    return _t.SimpleNamespace(ts=ts)
+
+
+def test_level_context_is_empty_without_recursion():
+    """没有更高级别就**不编** —— 早期 `Snapshot` 的 `levels` 是空元组。"""
+    import types as _t
+    snap = _t.SimpleNamespace(levels=())
+    assert scanner.level_context(snap, _bars(), _sig("d005")) == ()
+    snap1 = _t.SimpleNamespace(levels=(_ls(0, "5"),))
+    assert scanner.level_context(snap1, _bars(), _sig("d005")) == (), "只有 L0 时不该说话"
+
+
+def test_level_context_reports_the_containing_higher_level_trend():
+    import types as _t
+    snap = _t.SimpleNamespace(levels=(
+        _ls(0, "5"),
+        _ls(1, "30", trends=(_trend(1, 2, 7), _trend(-1, 8, 9))),
+        _ls(2, "day", trends=(_trend(0, 0, 9, level="day"),)),
+    ))
+    assert scanner.level_context(snap, _bars(), _sig("d005")) == (
+        "L1/30 上涨走势", "L2/day 盘整走势",
+    )
+    assert scanner.level_context(snap, _bars(), _sig("d008")) == (
+        "L1/30 下跌走势", "L2/day 盘整走势",
+    )
+
+
+def test_level_context_falls_back_to_a_pivot_when_no_trend_covers_the_bar():
+    import types as _t
+    class _P:
+        src_start, src_end = 3, 6
+    snap = _t.SimpleNamespace(levels=(_ls(0, "5"), _ls(1, "30", pivots=(_P(),))))
+    assert scanner.level_context(snap, _bars(), _sig("d004")) == ("L1/30 中枢内",)
+    assert scanner.level_context(snap, _bars(), _sig("d000")) == ()
+
+
+def test_level_context_says_nothing_when_the_ts_is_not_in_the_bars():
+    """对不上就**不报**，绝不猜一个级别出来。"""
+    import types as _t
+    snap = _t.SimpleNamespace(levels=(_ls(0, "5"), _ls(1, "30", trends=(_trend(1, 0, 9),))))
+    assert scanner.level_context(snap, _bars(), _sig("不存在")) == ()
+
+
+def test_level_context_never_changes_who_is_a_hit(env):
+    """**边界测试**：level_context 是纯上下文，不许动命中判定与强度。
+
+    让递归**参与**买卖点判定属于判据变更（要 theory 条目 + 测量 + MINOR 版本位），
+    不在本次范围内。这条用例就是那条边界的护栏：把 `levels` 抽掉，
+    命中的**种类、时间、强度、顺序**必须逐项不变。
+    """
+    import dataclasses as _dc
+
+    from chanlun.chan.engine import ChanEngine
+
+    bars = bars_from_path(PIVOT_PATH, day_step=2)
+    snap = ChanEngine("600000", "day").full(bars)
+    assert len(snap.levels) >= 1, "这条路径应当至少产出 L0"
+
+    got = scanner.analyze_snapshot(snap, bars, name="x")
+    stripped = scanner.analyze_snapshot(_dc.replace(snap, levels=()), bars, name="x")
+    key = lambda h: (h.signal_kind, h.ts, h.strength, h.outcome)   # noqa: E731
+    assert [key(h) for h in got] == [key(h) for h in stripped]
+    assert all(h.level_context == () for h in stripped)
+
+
+def test_scan_stats_expose_the_recursion(env):
+    """扫描摘要要看得见递归 —— 否则「只出 L0」和「出了 6 级」长得一模一样。"""
+    bars = bars_from_path(PIVOT_PATH, day_step=2)
+    env.write("600000", "day", bars)
+    env.sync("600000", "day", bars)
+    report = scan_report(["day"], ["600000"], conn=env.conn, max_workers=1, save=False)
+    assert report.structure["levels"] >= 1
+    assert report.structure["max_level_depth"] >= 0
+
+
+# ------------------------------------------------- 区间套（第 27 课，用户指令③）
+def test_quantao_participates_in_strength_but_never_zeroes():
+    """区间套**降权而不是归零** —— 第 27 课说它用于「确认」，没说「不嵌套就不是买点」。
+
+    做成硬门（×0）会强于原文：第一类买卖点的定义在第 17 课（趋势背驰），
+    区间套只是「大级别转折点的精确定位」。
+    """
+    base, _ = hit_strength("b1", "day", 0.6, "confirmed", None)
+    yes, p_yes = hit_strength("b1", "day", 0.6, "confirmed", True)
+    no, p_no = hit_strength("b1", "day", 0.6, "confirmed", False)
+    assert yes == pytest.approx(base)          # 确认 → 不打折
+    assert no == pytest.approx(base * 0.7)     # 未确认 → 降权
+    assert no > 0, "降权不许归零 —— 那会把判据强过原文"
+    assert dict(p_yes)["区间套权重"] == 1.0
+    assert dict(p_no)["区间套权重"] == 0.7
+
+
+def test_quantao_none_means_no_comparable_higher_level_and_is_not_penalised():
+    """★「**无从确认**」与「**确认失败**」是两回事。
+
+    `levels` 只有一级时没有「上一级别」这个东西可比（第 63 课：级别名只是相对基准的
+    递归深度标签）。把它当成「确认失败」去降权，是在惩罚一个**不存在**的判据。
+    """
+    base, parts = hit_strength("b1", "day", 0.6, "confirmed", None)
+    assert base == pytest.approx(3.0 * 2.0 * 1.0 * 1.0 * 1.6)
+    assert dict(parts)["区间套权重"] == 1.0
+
+
+def test_quantao_only_applies_to_first_kind():
+    """只有第一类买卖点带 `quantao`；其余类型传什么都是 1.0（调用方传 None）。"""
+    for kind in ("b2", "b3", "s2", "s3", "pb", "ps"):
+        base, _ = hit_strength(kind, "day", 0.3, "confirmed", None)
+        assert base == pytest.approx(hit_strength(kind, "day", 0.3, "confirmed")[0])
+
+
+# ------------------------------------------------- 1 分钟基准（用户指令②）
+def test_one_minute_period_is_registered():
+    """★ `"1"` 曾在**整个扫描器里缺席**，而 1 分钟数据已经能拉。
+
+    后果是 `scan --periods 1` 把每一只都判成「数据不足」——**数据到位了、生产却用不了**。
+    这是「只做了一半」最典型的形态：回填成功、`web/api.py` 的 `PERIODS` 也放行了，
+    但 `REQUIREMENTS.get("1")` 查不到就按 0 根算。
+    """
+    from chanlun.scan.scanner import LEVEL_RANK, LEVEL_WEIGHT, REQUIREMENTS
+
+    req = REQUIREMENTS["1"]
+    assert req.min_bars == 480
+    assert req.lookback_days == 3
+    assert req.reason, "推导理由必须写出来（与其它周期同构）"
+    assert "1" in LEVEL_WEIGHT and "1" in LEVEL_RANK
+
+
+def test_one_minute_sorts_below_five_minutes():
+    """级别权重与排序：1 分钟是**最小**的显微镜，权重不该高过 5 分钟。"""
+    from chanlun.scan.scanner import LEVEL_RANK, LEVEL_WEIGHT
+
+    assert LEVEL_WEIGHT["1"] < LEVEL_WEIGHT["5"]
+    assert LEVEL_RANK["1"] > LEVEL_RANK["5"]

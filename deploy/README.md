@@ -152,9 +152,29 @@ systemctl list-timers chanlun-daily.timer
 
 ## 看行情用的 Mac 客户端（计划外，2026-10-01 装好）
 
-通达信没有 Mac 版：`soft.tdx.com.cn` 只是论坛入口，安装包要注册 + 实名，所以本机用同花顺 /
-东方财富的原生 Mac 版看行情，**不引入 Wine、不引入虚拟机**。自建看盘页负责缠论结构，
-这两者负责分时、盘口、F10 —— 分工不重叠。
+> **2026-10-13 更正**：下面这句「通达信没有 Mac 版」**已经过时**。官网「个人版下载」
+> 第 6 节 **MAC 平台**有 **通达信 iMac 版 V3.61**（支持 OSX 10.15~26.3、Intel 与
+> M1–M4），直链 `https://data.tdx.com.cn/level2/tdx_macosx.dmg`，不需要注册。
+> **⚠️ 2026-10-13 晚更正：这条路已证伪。** iMac 版**没有 vipdoc** —— 把官方 `.dmg`
+> 只读挂载检查，包内没有任何 `vipdoc`/`fzline`/`minline`/`.lc5`/`.lc1`/`盘后数据`
+> 字面量（4 种编码 × 全部 >200KB 文件）。它是 Flutter + 原生混合、**x86_64 only**
+> （Apple Silicon 要先装 Rosetta）。它**有 `导出`（CSV/txt/Excel）**，所以 macOS 上
+> 要拿本地 K 线只能**导出文本再导入**，而不是等 vipdoc。详见 `ARCHITECTURE.md` D-09。
+>
+> 下面这段是当时的原推荐，保留以备查（**导入命令只对 Windows 版有效**）：
+>
+> ```bash
+> python -m chanlun tdx --period 5 --src <客户端的 vipdoc 目录>
+> ```
+>
+> 分钟解析已实现（`data/tdx.py::parse_minute_bytes`），**但日期编码仍是待核对假设**：
+> 落库前先跑 `verify_minute_against_day()` 用同代码的日线交叉验证，
+> 见 `ARCHITECTURE.md` §5。
+
+原记录（2026-10-01）：通达信当时没找到 Mac 版，`soft.tdx.com.cn` 只是论坛入口、
+安装包要注册 + 实名，所以本机用同花顺 / 东方财富的原生 Mac 版看行情，
+**不引入 Wine、不引入虚拟机**。自建看盘页负责缠论结构，这两者负责分时、盘口、F10
+—— 分工不重叠。
 
 | | 同花顺 | 东方财富 |
 | --- | --- | --- |

@@ -1198,7 +1198,7 @@ cd /Users/zzz/workspace/chanlun && ../.venv-chanlun/bin/pytest -q -p no:randomly
 | G6 | 所有结论依赖本机代理链路（§3 前提） | 代理变化后重跑 §3.3 的命令；`ARCHITECTURE.md` 里注明这一条 |
 | G7 | 美股个股符号形态不统一（`usAAPL` vs `us.AAPL` vs `usAAPL.OQ`） | 本期不做美股个股（§2.2）；将来要做必须重新探测 |
 | G8 | 交易日历用「周一~周五」，不含港美节假日 | 只影响取数冗余，不影响正确性；`end` 用宽松日历，宁多取不少取（§7.4） |
-| G9 | **`store.read` 的 `start`/`end` 只做字符串比较，不解析日期**（`src/chanlun/data/types.py:69-79`）：带 `:SS` 的分钟 `ts` 字典序大于裸 `YYYY-MM-DD` 上界会被静默丢掉；即使用 16 字符 `ts`、用日期做 `end` 也会丢掉当天分钟 bar（`'2026-10-05 09:30' <= '2026-10-05'` 为 `False`） | **先于本轮就存在，A 股同样成立**。今天的 `start=`/`end=` 调用点只有 A 股日线口径（`optimizer/agent.py:98`、`backtest/runner.py:127/182/217`），没有活调用者踩到 ⇒ **只登记不改**，见 `ARCHITECTURE.md` §5 |
+| G9 | **`store.read` 的 `start`/`end` 只做字符串比较，不解析日期**（`src/chanlun/data/types.py:106-116`）：带 `:SS` 的分钟 `ts` 字典序大于裸 `YYYY-MM-DD` 上界会被静默丢掉；即使用 16 字符 `ts`、用日期做 `end` 也会丢掉当天分钟 bar（`'2026-10-05 09:30' <= '2026-10-05'` 为 `False`） | **先于本轮就存在，A 股同样成立**。今天的 `start=`/`end=` 调用点只有 A 股日线口径（`optimizer/agent.py:98`、`backtest/runner.py:127/182/217`），没有活调用者踩到 ⇒ **只登记不改**，见 `ARCHITECTURE.md` §5 |
 
 > **★ 2026-10-05 实现后修正**：上表三行与实现不符，逐条订正 ——
 > **G5 撤销**：原写「~~港股无复权因子表~~ → 已解，见 §5.4，不再是空白」。

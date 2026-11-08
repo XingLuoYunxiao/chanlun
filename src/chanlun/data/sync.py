@@ -24,14 +24,20 @@ log = logging.getLogger("chanlun.sync")
 FULL_START = "1990-01-01"
 
 
-def adjust_for(code: str, cfg) -> str:  # noqa: ANN001 - cfg 是 Config，避免循环导入
-    """这只票该按哪个复权口径落库。
+def adjust_for(code: str, cfg, period: str | None = None) -> str:  # noqa: ANN001 - cfg 是 Config
+    """这只票**这个周期**该按哪个复权口径落库。
 
-    口径收敛只有一份实现（`sources.adjust_for`）：A 股原样用 `cfg.bs_adjust`，
-    指数强制 `3`（不复权，否则 `sync_state.adjust` 会写「前复权」而那个概念
-    对指数不成立），港股/美股强制 `3`（两个源都只有原始价，见 D-43）。
+    口径收敛只有一份实现（`sources.adjust_for`）：走 **pytdx** 的组合强制 `3`
+    （在线行情只有不复权）、A 股原样用 `cfg.bs_adjust`、指数强制 `3`（否则
+    `sync_state.adjust` 会写「前复权」而那个概念对指数不成立）、港股/美股强制 `3`
+    （两个源都只有原始价，见 D-43）。
+
+    **周期必须传**：pytdx 只覆盖 1 分钟与指数分钟，同一只票的 5 分钟可能仍走
+    baostock 的前复权 —— 两者口径不同。原先这个函数不带周期，于是无法区分：
+    `sh.600030` 的 1 分钟被按前复权送给 pytdx，源拒收，而用户只看到一只票「失败」，
+    看不出是口径问题（实测踩过）。
     """
-    return sources.adjust_for(sources.normalize_code(code), str(cfg.bs_adjust))
+    return sources.adjust_for(sources.normalize_code(code), str(cfg.bs_adjust), period)
 
 
 def start_for(
@@ -68,6 +74,51 @@ def _drop_open_tail(code: str, period: str) -> None:
     if len(df) == 0:
         return
     store.write(code, period, df.iloc[:-1])
+
+
+def _keep_watermark(
+    conn: sqlite3.Connection, key: str, period: str, adjust: str, *, error: str | None
+) -> None:
+    """取不到数据时守住已有水位 —— 绝不用空值覆盖它。
+
+    `sync_state` 只是本地 parquet 的**缓存**，真相在文件里。所以本地有数据就从
+    本地重建水位（`start_ts`/`end_ts`/`rows` 全部自愈），本地也没有才退回上一行记录。
+
+    2026-10-09 修正（D-48）：零行分支原先写的是 `None, None, 0`。那会把一条好水位
+    抹成"从未同步"，`check_sufficiency` 随即判「meta.sync_state 无该周期记录（尚未同步）」
+    跳过这只票 —— 于是它当天不进结构快照。触发条件毫不罕见：**在交易日开盘前跑同步**，
+    `start_for` 会算出"下一交易日就是今天"并去取今天，而源还没有今天的 K 线。
+    实测 2026-10-09 00:06 的补跑把 23 只（含 `000001` 平安银行、`000002` 万科A）
+    的水位抹成了 `NULL`，而它们的 parquet 是完整的。
+    """
+    stored = None
+    try:
+        stored = store.read(key, period)
+    except Exception as exc:  # noqa: BLE001 - 兜底路径自己再抛会把"单只失败不中断整批"打破
+        log.warning("读本地 parquet 失败 code=%s period=%s: %s", key, period, exc)
+    if stored is not None and len(stored):
+        meta.set_sync(
+            conn,
+            key,
+            period,
+            str(stored["ts"].iloc[0]),
+            str(stored["ts"].iloc[-1]),
+            len(stored),
+            adjust,
+            error=error,
+        )
+        return
+    prev = meta.get_sync(conn, key, period)
+    meta.set_sync(
+        conn,
+        key,
+        period,
+        prev["start_ts"] if prev else None,
+        prev["end_ts"] if prev else None,
+        int(prev["rows"]) if prev else 0,
+        adjust,
+        error=error,
+    )
 
 
 @dataclass(frozen=True)
@@ -119,7 +170,7 @@ def sync_one(
 
     try:
         key = sources.normalize_code(code)
-        adjust = sources.adjust_for(key, str(cfg.bs_adjust))
+        adjust = sources.adjust_for(key, str(cfg.bs_adjust), period)
         # 日历必须按市场选：A 股用交易日历，港股/美股用「周一到周五」。
         # 用 A 股日历算港股的 `next_trading_day` 会在国庆那周直接跳过 10-01~10-07，
         # 而港股那几天是开市的（spec §7.4 / D-43）。
@@ -146,7 +197,7 @@ def sync_one(
             return SyncOneResult(key, period, "skipped", adjust=adjust)
         df = fetch(key, period, start, end, adjust=adjust)
         if len(df) == 0:
-            meta.set_sync(conn, key, period, None, None, 0, adjust, error=None)
+            _keep_watermark(conn, key, period, adjust, error=None)
             return SyncOneResult(key, period, "skipped", adjust=adjust)
         if reopen:
             _drop_open_tail(key, period)
@@ -160,15 +211,5 @@ def sync_one(
         )
     except Exception as exc:  # noqa: BLE001 - 单只失败不许中断整批
         log.warning("同步失败 code=%s period=%s: %s", code, period, exc)
-        prev = meta.get_sync(conn, key, period)
-        meta.set_sync(
-            conn,
-            key,
-            period,
-            prev["start_ts"] if prev else None,
-            prev["end_ts"] if prev else None,
-            int(prev["rows"]) if prev else 0,
-            adjust,
-            error=str(exc),
-        )
+        _keep_watermark(conn, key, period, adjust, error=str(exc))
         return SyncOneResult(key, period, "failed", adjust=adjust, error=str(exc))

@@ -7,8 +7,12 @@
 2. 同一只票同一个周期在跑的时候连点，**不会**叠加第二个任务；
 3. `GET /api/sync/status` 如实汇报 `running/done/skipped/error`，失败原因必须带出来；
 4. 派生周期（周/月）映射到日线：周线是本地聚合出来的，同步 `week` 落不了库；
-5. 指数 + 分钟直接拒绝：baostock 对指数不返回分钟线（实测 `sh.000001`/`sh.000300`/
-   `sh.000688` 的 30 分都是 0 行），与其让用户等 30 秒看 0 根，不如立刻说清。
+5. **补不了的组合**（申万 + 分钟：腾讯/新浪/东财都没有）直接拒绝，不空转。
+   **指数 + 分钟从 2026-10-13 起可以同步了** —— 改走东财（D-52），
+   `sh.000300` / `sz.399001` / `sh.000688` 实测各能取到 1536 根 5 分钟。
+   原先那条「baostock 对指数不返回分钟线，所以一律拒绝」的护栏已删：
+   「哪个源给不给这个周期」只有 `sources.capabilities` 知道，
+   在这里再写一份正是本文件警告过的老毛病。
 """
 
 from __future__ import annotations
@@ -140,13 +144,31 @@ def test_sync_maps_a_derived_period_to_day(client, monkeypatch):
     assert seen == ["day"], "周线是本地聚合出来的，不能去同步 week"
 
 
-def test_sync_refuses_minute_periods_on_an_index(client, monkeypatch):
+def test_sync_accepts_minute_periods_on_an_index(client, monkeypatch):
+    """指数 + 分钟**从 2026-10-13 起可以同步**（改走东财，D-52）。
+
+    这条原先断言 400 —— 依据是「baostock 对指数不返回分钟线」。那个依据被推翻后
+    护栏还在挡，正是本文件警告过的「页面说能补、接口说补不了」。
+    """
     called: list[int] = []
     monkeypatch.setattr(sync_mod, "sync_one", lambda *a, **k: called.append(1))
     resp = client.post("/api/sync", json={"code": INDEX, "period": "30"})
+    assert resp.status_code == 202, resp.text
+    _wait(client, INDEX, "30")          # 取数在后台线程，要等它跑起来
+    assert called, "应当真的去取数，而不是像护栏在时那样根本没走到取数层"
+
+
+def test_sync_refuses_minute_periods_on_a_sw_board(client, monkeypatch):
+    """**申万 + 分钟**才是那个补不了的组合（腾讯/新浪/东财都没有），要立刻拒绝。
+
+    拒绝必须发生在取数之前，不能空转 30 秒。
+    """
+    called: list[int] = []
+    monkeypatch.setattr(sync_mod, "sync_one", lambda *a, **k: called.append(1))
+    resp = client.post("/api/sync", json={"code": "sw.801010", "period": "30"})
     assert resp.status_code == 400, resp.text
-    assert "指数" in resp.json()["detail"]
-    assert called == [], "拒绝要发生在取数之前，不能空转 30 秒"
+    assert "申万" in resp.json()["detail"]
+    assert called == [], "拒绝要发生在取数之前，不能空转"
 
 
 def test_sync_still_allows_daily_bars_on_an_index(client, monkeypatch):
@@ -159,7 +181,9 @@ def test_sync_still_allows_daily_bars_on_an_index(client, monkeypatch):
     assert _wait(client, INDEX, "day")["state"] == "done"
 
 
-@pytest.mark.parametrize("period", ["1", "d", "DAY", ""])
+# `"1"` 曾经在这里当「未知周期」用 —— 2026-10-13 起它是**已知**周期了
+# （`chan.pivot.LEVEL_UP` 补上 "1"→"5"，接口才把它放出来）。
+@pytest.mark.parametrize("period", ["d", "DAY", "", "2", "7"])
 def test_sync_rejects_an_unknown_period(client, period):
     resp = client.post("/api/sync", json={"code": "600000", "period": period})
     assert resp.status_code == 400, resp.text
@@ -179,8 +203,19 @@ def test_sync_status_is_idle_before_anything_ran(client):
 
 
 def test_sync_status_rejects_an_unknown_period(client):
-    resp = client.get("/api/sync/status", params={"code": "600000", "period": "1"})
+    resp = client.get("/api/sync/status", params={"code": "600000", "period": "2"})
     assert resp.status_code == 400
+
+
+@pytest.mark.parametrize("period", ["1", "5", "30"])
+def test_sync_accepts_every_minute_period_in_the_whitelist(client, period):
+    """白名单里的分钟周期都该被**接受**（接不接受是它的事，400 是接口不认）。
+
+    `"1"` 是新增的那个：级别表补齐后 1 分钟基准才递归得上去，
+    接口也必须能收 —— 否则页面上根本没有这条路。
+    """
+    resp = client.post("/api/sync", json={"code": "sh.000300", "period": period})
+    assert resp.status_code == 202, resp.text
 
 
 def test_sync_reports_a_failure(client, monkeypatch):
@@ -208,18 +243,18 @@ def test_sync_reports_an_empty_source_as_skipped(client, monkeypatch):
 
 
 # ---------------- 404 时要如实说「这个周期到底能不能补」 ----------------
-def test_structure_404_says_an_index_minute_period_can_never_be_synced(client, cfg):
-    """指数 + 分钟：404 里必须带 `syncable=false` 和原因。
+def test_structure_404_says_a_sw_minute_period_can_never_be_synced(client, cfg):
+    """**申万 + 分钟**：404 里必须带 `syncable=false` 和原因。
 
-    自选池现在全是指数，切到 30分/5分 必然 404。这时如果只回一句「请先同步」，
-    页面就会给出一个**注定失败**的「同步这个周期」按钮 —— 点下去 400，白等一次往返，
-    而且等于骗用户"能补"。
+    这时如果只回一句「请先同步」，页面就会给出一个**注定失败**的「同步这个周期」
+    按钮 —— 点下去 400，白等一次往返，而且等于骗用户"能补"。
+    （指数 + 分钟**不**属于这一类：它从 2026-10-13 起能走东财。）
     """
-    resp = client.get("/api/structure", params={"code": INDEX, "period": "30"})
+    resp = client.get("/api/structure", params={"code": "sw.801010", "period": "30"})
     assert resp.status_code == 404, resp.text
     body = resp.json()
     assert body["syncable"] is False
-    assert "指数" in body["sync_hint"]
+    assert "申万" in body["sync_hint"]
     # 不许再让用户去跑一条注定空跑的命令
     assert "请先同步" not in body["detail"]
 
@@ -243,8 +278,10 @@ def test_structure_404_on_an_index_daily_still_offers_a_sync(client, cfg):
 
 def test_the_404_hint_and_the_sync_rejection_are_the_same_sentence(client, cfg):
     """两处口径必须同源：否则页面说「可以补」，点下去接口说「补不了」。"""
-    hint = client.get("/api/structure", params={"code": INDEX, "period": "30"}).json()["sync_hint"]
-    post = client.post("/api/sync", json={"code": INDEX, "period": "30"})
+    hint = client.get(
+        "/api/structure", params={"code": "sw.801010", "period": "30"}
+    ).json()["sync_hint"]
+    post = client.post("/api/sync", json={"code": "sw.801010", "period": "30"})
     assert post.status_code == 400, post.text
     assert hint in post.json()["detail"]
 

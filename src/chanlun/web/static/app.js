@@ -36,7 +36,7 @@
   const BUY_KINDS = new Set(["b1", "b2", "b3", "pb"]);
   const isBuyKind = (kind) => BUY_KINDS.has(kind);
   const STATUS_CN = { confirmed: "确认", tentative: "未确认", invalidated: "已失效" };
-  const PERIOD_CN = { day: "日线", week: "周线", month: "月线", 30: "30分", 5: "5分", 60: "60分", 15: "15分" };
+  const PERIOD_CN = { day: "日线", week: "周线", month: "月线", 60: "60分", 30: "30分", 15: "15分", 5: "5分", 1: "1分" };
   // 派生周期（周/月）由**本地日线**聚合而来，不单独同步。这句话必须出现在图注里：
   // 用户看到"周线"会以为是从数据源拿的一份独立数据，实际它跟着日线的复权口径走。
   const DERIVED_CN = { week: "day", month: "day" };
@@ -120,6 +120,12 @@
 
   const state = {
     code: "600000",
+    // 屏幕上这一只的**落库键**。`state.code` 是用户输入的原样（书签里可能是
+    // `sz.600759`），服务端回的 `code` 才是落库键（`600759`；指数反过来必须带前缀，
+    // 否则和 `sz.000001` 平安银行撞号）。凡是"这是不是同一只"的比较一律用它 ——
+    // 拿 `state.code` 比会漏：实测 `?code=sz.002898` 时浮标一个字都不显示，
+    // 而且补完不重画（`finishAutoSync` 也会判成"用户已经换走了"）。
+    key: "600000",
     period: "day",
     limit: null,
     adjust: readChoice(LS_ADJUST, ADJUST_ORDER, "qfq"),
@@ -128,7 +134,11 @@
     ma: new Set(readMaChoice()),
     watch: [],
     data: null,
-    layers: { strokes: true, segments: true, pivots: true, signals: true, divergence: true, margin: true },
+    // 信号留痕（`/api/structure/trail`）：**当时标过、后来被走势证伪**的买卖点。
+    // 单独一条请求、单独一个 series —— 它慢（要按检查点回放），不能挡首屏；
+    // 而且必须能单独开关：它是「历史判断的审计」，不是当下的交易信号。
+    trail: null,
+    layers: { strokes: true, segments: true, pivots: true, signals: true, divergence: true, margin: true, falsified: true },
   };
 
   const chart = echarts.init($("#chart"), null, { renderer: "canvas" });
@@ -190,6 +200,10 @@
   let loadSeq = 0;
   async function load() {
     const seq = ++loadSeq;
+    // 换票/换周期第一件事就是收浮标：它讲的是**上一只**补最新的结论。
+    // 实测过：退市股 002898 的「点这里重试」会跟着你换到 600000，还照样可点，
+    // 点下去补的是 002898。收在这里（`await` 之前）才不会留下几百毫秒的错位窗口。
+    if (!chipIsAbout(chipJob)) dropChip();
     const qs = new URLSearchParams({ code: state.code, period: state.period });
     if (state.limit) qs.set("limit", String(state.limit)); // 未指定时用后端默认窗口（1200）
     qs.set("adjust", state.adjust);
@@ -218,6 +232,23 @@
       const action = canSync
         ? { label: "同步这个周期", run: syncThisPeriod }
         : null;
+      // 404 时"屏幕上是哪一只"只能按请求原样记：这一只没有落库键可回。
+      // 下面请求携带的也是 `state.code`，两边形态一致，守卫才比得中。
+      state.key = state.code;
+      if (canSync) {
+        // 「本地一条都没有」是最该自己去补的情形，不该只留给用户点按钮。
+        // 走 requestAutoSync 而不是 runAutoSync：同一只票本次会话只自动试一次，
+        // 反复进出这只票不该反复发请求（按钮还在，用户想手动再试随时可以）。
+        // `quiet: true`：这一态整条让位给 `#notice` —— 它更显眼、在流内、还带命令行。
+        // 显式写一个字段，而不是让下游靠"`local` 是不是 null"去猜。
+        requestAutoSync({
+          code: state.code,
+          period: state.period,
+          local: null,
+          expected: body.expected_as_of,
+          quiet: true,
+        });
+      }
       // 左栏高亮也要跟着走：404 时图表区不换，但"我正在看哪一只"已经变了。
       // 不挪的话输入框写着 399006、左栏还高亮着 sh.000001，高亮就成了一句假话。
       renderWatch();
@@ -225,10 +256,13 @@
         httpTitle(resp.status), body.detail || "接口返回了无法解析的内容。", null, action);
     }
     state.data = body;
+    state.trail = null;      // 换票/换周期先清掉上一只的留痕，免得叠错
+    state.key = body.code;   // 升级成落库键：后面所有"是不是同一只"都按它比
     applyAdjustUI(body);
     applyDivergenceBadge(body);
     hideNotice();
     draw();
+    loadTrail(seq);   // 不 await：图先出来，留痕随后叠上去
     renderLedger();
     renderWatch(); // 高亮"图上是哪一只"：换票后自选栏要跟着动
     const c = body.counts;
@@ -254,6 +288,9 @@
       : "";
     const head = [totals, derivedNote(body)].filter(Boolean).join(" · ");
     setStampDetail(head + "\n" + basisLine());
+    // 数据画完了，再把后端的"新不新"结论写到浮标上：**先把本地这一份给用户看**，
+    // 别让页面干等网络（要补的话补完会自己回来重画，见 runAutoSync）。
+    noteFreshness(body);
   }
 
   // 周期来源：周/月的最后一根**还没走完**时必须标出来 ——
@@ -455,9 +492,33 @@
 
   function syncButton() { return $("#notice .notice-action"); }
 
+  // POST 只负责排队：首次拉 5 分钟线实测 149 秒，等不起。
+  // **不抛异常** —— 调用方要的是"为什么没成"这个原因，不是一次栈回溯。
+  // `rejected` 区分两类失败，它们的处置**不一样**，别合并：
+  //   rejected=true  —— 后端明确拒绝（如"指数没有分钟线"），再点一百次结果一样 → 撤掉按钮；
+  //   rejected=false —— 连不上/超时这类**暂时**失败 → 留着按钮让用户重试。
+  async function postSync(code, period) {
+    let resp;
+    try {
+      resp = await fetch("/api/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, period }),
+      });
+    } catch (err) {
+      return { rejected: false, detail: `连不上本地服务：${err}` };
+    }
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      return { rejected: true, detail: body.detail || `HTTP ${resp.status}` };
+    }
+    return { rejected: false, detail: "", body };
+  }
+
   async function syncThisPeriod() {
     const btn = syncButton();
-    const cn = PERIOD_CN[state.period] || state.period;
+    const job = { code: state.code, period: state.period };
+    const cn = PERIOD_CN[job.period] || job.period;
     const started = Date.now();
     const tick = () => {
       if (!btn) return;
@@ -467,34 +528,30 @@
     tick();
     syncNote(`正在向行情源拉取${cn}数据，首次可能要一两分钟，请不要关掉页面。`, false);
 
-    let resp;
-    try {
-      resp = await fetch("/api/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: state.code, period: state.period }),
-      });
-    } catch (err) {
-      return finishSync(null, `连不上本地服务：${err}`);
-    }
-    const body = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
+    const r = await postSync(job.code, job.period);
+    if (r.rejected) {
       // 400 是**确定性拒绝**（例如"指数没有分钟线"）：再点一百次结果一样，
       // 所以把按钮撤掉，只留原因，不做"重试"这种假承诺。
       if (btn) btn.remove();
-      return syncNote(`无法同步：${body.detail || `HTTP ${resp.status}`}`, true);
+      return syncNote(`无法同步：${r.detail}`, true);
     }
+    if (r.detail) return finishSync(null, r.detail);   // 暂时失败：沿用原有的"重试"路径
 
     const timer = setInterval(tick, 500);
-    const status = await pollSync(started);
+    const status = await pollSync(started, job);
     clearInterval(timer);
     finishSync(status, null);
   }
 
-  async function pollSync(started) {
+  async function pollSync(started, job) {
     while (Date.now() - started < SYNC_MAX_MS) {
       await new Promise((r) => setTimeout(r, SYNC_POLL_MS));
-      const qs = new URLSearchParams({ code: state.code, period: state.period });
+      // ★ 必须问**发起时那一只**：这里原先读的是画面上的当前 code/period，
+      //   用户中途换票就会去问新票的状态，后端对未知任务回 `idle`（`state !== "running"`），
+      //   于是刚才那次还没跑完的同步被读成"成功、undefined 根"，还顺手 `load()` 重画。
+      //   （这条注释刻意不写那两个变量名 —— 契约测试用字符串断言咬住"函数体里不许
+      //   出现它们"，注释里写一遍也会把它咬红，而那种红是假红。）
+      const qs = new URLSearchParams({ code: job.code, period: job.period });
       let resp;
       try {
         resp = await fetch(`/api/sync/status?${qs}`);
@@ -523,10 +580,190 @@
         btn.disabled = false;
         btn.textContent = "重试";
       }
-      return syncNote("行情源没有返回这个周期的数据（可能是真空区间，也可能这只票没有分钟线）。", true);
+      return syncNote(
+        "行情源**连上了但没返回数据**（零行）。最常见的原因是**被行情源限流** —— "
+        + "短时间连点几次同步就会这样，等一两分钟再点「重试」通常就好了。"
+        + "其次是这个周期/标的真的没有数据（真空区间、或这只票没有分钟线）。",
+        true,
+      );
     }
     syncNote(`同步完成：${status.rows} 根（${status.start_ts || "?"} → ${status.end_ts || "?"}）。`, false);
     load(); // 数据到位了，图应该出来
+  }
+
+  // ------------------------------------------------- 按需补最新（D-49 / D-50）
+  // 进某只票/某个指数时，如果本地最后一根落在最新交易日之前，就自己去把它补回来 ——
+  // 用户不必等 17:30 的定时任务（它只覆盖 universe 里的 A 股、也不覆盖指数），
+  // 也不必先撞一个 404 才看见按钮。
+  //
+  // 判据**全部来自后端**（`/api/structure` 的 `stale` / `syncable` / `expected_as_of`）：
+  // 日历按市场分派，前端既拿不到也不能复制。前端只做后端做不了的两件事：
+  // **什么时候去问**、**问过几次**。
+  //
+  // D-50 起浮标**常驻**：不再"有事才冒出来、4 秒后消失"，而是恒定回答
+  // 「你正在看的这一只、这个周期，数据到哪儿了、能不能补」。所以
+  // `noteFreshness()` 是**唯一**把后端结论写进浮标的地方 ——
+  // 最新 / 落后可补 / 落后补不了 三种情形都在那里分派，判据一个都不许在前端新造。
+  const autoTried = new Set();   // key = `${code}|${period}`；进入即记，本次会话不再**自动**重试
+  let autoBusy = null;           // 正在飞的那一个 job
+  let autoPending = null;        // 待办槽：只留**最新**一只
+  let chipJob = null;            // 浮标此刻讲的是哪一只；换票/换周期即作废
+
+  // 浮标只讲**你正在看的这一只**。这条不是洁癖：实测（2026-10-10）在退市股
+  // `sz.002898` 上补不到、浮标变成可点的「点这里重试」，随后换到已经最新的
+  // `600000`，那行字仍然挂在图上、**仍然可点** —— 点下去补的还是 002898。
+  function chipIsAbout(job) {
+    return !job || (job.code === state.key && job.period === state.period);
+  }
+
+  function dropChip() {
+    const el = $("#sync-chip");
+    chipJob = null;
+    if (!el) return;
+    el.hidden = true;
+    el.classList.remove("is-action");
+    const text = $("#sync-chip-text");
+    if (text) text.textContent = "";
+    const btn = $("#sync-chip-go");
+    if (btn) {
+      btn.hidden = true;
+      btn.onclick = null;   // 句柄必须清：留着它点到的就是上一只票的 job
+    }
+  }
+
+  // 后端结论 → 浮标。`body` 是 `/api/structure` 的响应体，判据全是它给的。
+  function noteFreshness(body) {
+    if (!body) return;
+    const job = {
+      code: body.code,
+      period: body.period,
+      local: body.as_of,
+      expected: body.expected_as_of,
+    };
+    if (body.stale !== true) return chipState("fresh", job);       // 已是最新：一个请求都不发
+    if (body.syncable === false) return chipState("blocked", job, body.sync_hint);
+    requestAutoSync(job);                                          // 落后且能补：自己去补
+  }
+
+  // `manual` 只做一件事：绕过"本次会话只自动试一次"的闸门。
+  // 两条路（自动 / 点浮标）共用 runAutoSync，所以轮询、超时、失败文案、重画只有一份。
+  function requestAutoSync(job, manual) {
+    const key = `${job.code}|${job.period}`;
+    if (!manual && autoTried.has(key)) {
+      // 自动路径已经试过：**不**再发请求。但也不能就这么静默走掉 ——
+      // 图明明落后，画面上却什么都没有。所以按"它现在到底在干嘛"如实回一句，
+      // 并且留着可点的「点这里补」（点下去补的是**这一只**，不是上一只）。
+      const busy = autoBusy && `${autoBusy.code}|${autoBusy.period}` === key;
+      const pend = autoPending && `${autoPending.code}|${autoPending.period}` === key;
+      if (busy) return chipState("syncing", autoBusy);
+      if (pend) return chipState("queued", autoPending);
+      return chipState("stale", job, "本次会话已经自动补过一次");
+    }
+    if (autoBusy) {                             // 同时只飞一个；后来者挤掉待办槽
+      autoPending = job;
+      return chipState("queued", job);
+    }
+    runAutoSync(job);
+  }
+
+  function runAutoSync(job) {
+    // ★ 先记再飞：成功后 finishAutoSync 会 load() 回来，不先记就会自己触发自己。
+    autoTried.add(`${job.code}|${job.period}`);
+    autoBusy = job;
+    chipState("syncing", job);
+    const started = Date.now();
+    (async () => {
+      let status = null;
+      let error = null;
+      try {
+        const r = await postSync(job.code, job.period);
+        if (r.detail) error = r.detail;              // 两类失败在这里都不继续轮询
+        else status = await pollSync(started, job);
+      } catch (err) {
+        // 兜底：`autoBusy` 若永远卡住，后面的自动同步就全被堵死 —— 那等于把功能焊死。
+        error = String(err);
+      } finally {
+        autoBusy = null;
+      }
+      finishAutoSync(job, status, error);
+      const next = autoPending;
+      autoPending = null;
+      if (next) runAutoSync(next);
+    })();
+  }
+
+  function finishAutoSync(job, status, error) {
+    if (error || !status || status.state === "error") {
+      return chipState("failed", job, error || status.error || "同步失败");
+    }
+    if (status.state === "skipped") {
+      // 走到这里说明后端判定"水位已是最新"（`sync_one` 的短路，压根没联网），
+      // 而前端刚才是按 parquet 末根判它落后的 —— 两者不一致只可能是水位与文件不同步。
+      // **不许**照抄手动路径那句"行情源没有返回数据"：这次源根本没被问到。
+      // D-50 起也**不算失败**：parquet 确实落后（所以照样给可点的按钮），
+      // 只是水位说源那边没有新数据。写成失败会得到
+      // 「没补到新数据：本地记录已是最新，文件里还没有新数据」——一句话自己否定自己。
+      return chipState("stale", job, "本地记录已是最新，文件里还没有新数据");
+    }
+    chipState("done", job, null, status.end_ts);
+    // 只在"还看着这一只"时才重画：后台补完的是别人，重画会把当前这只覆盖掉。
+    // 比的是落库键（`state.key`），不是 `state.code` —— 书签写成 `?code=sz.600759`
+    // 时两者不同形态，拿 `state.code` 比会把"还看着"误判成"已经换走"，补完不重画。
+    if (state.key === job.code && state.period === job.period) load();
+  }
+
+  // 浮标唯一的写入点。`mode`：
+  //   fresh   —— 已是最新（常驻，不可点）
+  //   stale   —— 本地落后、可以补（常驻，**可点**）
+  //   syncing —— 正在补（不可点）
+  //   queued  —— 排队等补（不可点）
+  //   done    —— 刚补完的一句确认（紧接着 load() 会用后端的真结论覆盖它）
+  //   blocked —— 本地落后、后端说补不了（常驻，不可点，附 sync_hint 说明为什么）
+  //   failed  —— 补失败（常驻，**可点**重试）
+  function chipState(mode, job, msg, endTs) {
+    // `quiet` 的 job（404：本地一根都没有）整条让位给 `#notice`：那一处更显眼、
+    // 在流内、还带完整解释与命令行。两处同时说同一件事只会更乱 ——
+    // 实测 2026-10-11 `?code=000033&period=30` 两处都在说话，浮标那行还漏出一个 `?`。
+    if (job && job.quiet) return dropChip();
+    const el = $("#sync-chip");
+    if (!el) return;
+    // 讲的不是当前这只票：一个字都不写。后台补完的是别人，写到这张图上就是谎报。
+    if (!chipIsAbout(job)) return;
+    const text = $("#sync-chip-text");
+    const btn = $("#sync-chip-go");
+    if (!text || !btn) return;
+    const actionable = mode === "stale" || mode === "failed";
+    const label = job.local || "无本地数据";
+    el.hidden = false;
+    chipJob = job;
+    el.classList.toggle("is-action", actionable);
+    if (mode === "fresh") {
+      text.textContent = `已是最新 · ${job.local || job.expected || "最新交易日"}`;
+    } else if (mode === "syncing") {
+      text.textContent = `正在补最新数据：本地截至 ${label} · 最新 ${job.expected || "?"}…`;
+    } else if (mode === "queued") {
+      text.textContent = "排队等补最新数据…";
+    } else if (mode === "done") {
+      text.textContent = `已补到 ${endTs || job.expected || "最新交易日"}`;
+    } else if (mode === "blocked") {
+      text.textContent = `本地截至 ${label} · 最新 ${job.expected || "?"}`
+        + ` · 补不了：${msg || "这个周期补不了"}`;
+    } else if (mode === "stale") {
+      text.textContent = `本地截至 ${label} · 最新 ${job.expected || "?"}`
+        + (msg ? ` · ${msg}` : "");
+    } else {
+      text.textContent = `补数据没成功：${msg || "未知原因"}`;
+    }
+    btn.hidden = !actionable;
+    btn.onclick = null;   // 先清：别让上一态（或上一只票）的句柄活过这一帧
+    if (!actionable) return;
+    btn.textContent = mode === "failed" ? "重试" : "点这里补";
+    btn.onclick = () => {
+      btn.onclick = null;
+      // 手动路径：只绕过"本次会话自动试过一次"这一道闸门，其余一条都不绕 ——
+      // 仍然走 requestAutoSync，所以"同时只飞一个"和浮标自己的反馈通道都在。
+      requestAutoSync(job, true);
+    };
   }
 
   // 顶栏那格只放恒定 2 行的短信息。顺带清掉详情行：加载中/出错时若不清，
@@ -558,6 +795,122 @@
     return null;
   }
 
+  // 图注文案。**分辨率必须说出来**：`step` 是「每多少根检查一次」，
+  // 检查得越稀、能看见的短命信号越少 —— 不说的话「只证伪了 2 条」会被读成
+  // 「历史上只错了 2 次」，那是假话。
+  function trailNoteText(tr) {
+    if (!tr) return "";
+    const list = tr.falsified || [];
+    if (!list.length) {
+      return `已证伪 0 条（留痕分辨率：每 ${tr.step} 根检查一次）`;
+    }
+    // 带上**最近一条**的时间与类型：否则用户只知道「有 6 条」，
+    // 却不知道把视野拖到哪里才看得见 —— 图上没标记会被当成功能坏了。
+    const last = list[list.length - 1];
+    // 文案压短：工具条是单行，太长会挤掉右侧的「口径」按钮。
+    // 「分辨率」仍然要说 —— 它是这张图最容易被误读的东西。
+    const bars = Math.round(tr.step / 240) || 1;
+    return `已证伪 ${list.length} 条（每 ${tr.step} 根/约 ${bars} 日；`
+      + `最近 ${KIND_CN[last.kind] || last.kind} ${last.ts}）`;
+  }
+
+  function setTrailNote(text) {
+    const el = $("#trail-note");
+    if (!el) return;
+    el.textContent = text;
+    // CSS 里已 `nowrap + ellipsis`：长文案会被截断，`title` 让 hover 仍能看全文。
+    el.title = text;
+    el.hidden = !text;
+  }
+
+  // ------------------------------------------------------------- 信号留痕
+  // **当时标过、后来被走势证伪**的买卖点。买卖点是需要后续走势确认的**当下判断**，
+  // 被证伪是正常现象 —— 悄悄从图上消失才是错的（用户明确要求「要在图上能看到」）。
+  //
+  // 单独一条请求的理由：它要按检查点回放（每 step 根算一次全量结构），实测 1 分钟的
+  // 2.2 万根序列要 1~5 秒。放进 `/api/structure` 会把首屏拖垮。
+  async function loadTrail(seq) {
+    const qs = new URLSearchParams({ code: state.code, period: state.period });
+    qs.set("adjust", state.adjust);
+    // 首次要回放几十遍全量结构（实测 1 分钟的 2.3 万根约 3~4 秒），
+    // **必须说出来** —— 否则用户看到图上迟迟没有 ✕，会以为功能坏了。
+    setTrailNote("留痕计算中…（首次较慢，之后有缓存）");
+    try {
+      const resp = await fetch(`/api/structure/trail?${qs}`);
+      // 过期的响应不许落进 state：用户可能已经换票了（与 load() 的 seq 同一套约定）
+      if (seq !== loadSeq) return;
+      if (!resp.ok) { state.trail = null; setTrailNote(""); return; }
+      state.trail = await resp.json();
+      if (seq === loadSeq) { draw(); setTrailNote(trailNoteText(state.trail)); }
+    } catch (err) {
+      // 留痕是**附加信息**：拿不到就不画，不许因此弹错误、更不许挡住图。
+      if (seq === loadSeq) state.trail = null;
+    }
+  }
+
+  // ------------------------------------------------------- 纵轴只认当前窗口
+  // 用户的要求：**窗口之外的数据不许影响当前视野**。
+  //
+  // 为什么必须显式做：ECharts 的纵轴 `scale: true` 会把**该 grid 上所有 series**
+  // 的数据一起算进范围 —— 散点、markLine、折线都算。而图上有几类东西天然覆盖全史：
+  // 买卖点、背驰、留痕（「已证伪」）、线段/中枢的 markLine。只要有**一条**落在
+  // 窗口外、价格又离得远，纵轴就被它拉走，K 线被压成一条窄带。
+  //
+  // 实测（`sh.000001` 日线，1600×1000）：窗口 2021-11 起、价格 3,674~4,258，
+  // 而留痕里有一条 `s3 @ 2002-06-25 price=1748.89` ⇒ 纵轴 1,500~4,500，
+  // K 线只剩最上面一条窄带、下面全空。用户报的就是这个。
+  //
+  // 所以：**窗口边界从 dataZoom 取，上下界只由窗口内 bar 的 low/high 决定**。
+  // 这样不管以后再加什么系列，纵轴都不会被窗口外的数据带跑。
+  function visibleRange() {
+    const d = state.data;
+    if (!d || !Array.isArray(d.bars) || !d.bars.length) return null;
+    const n = d.bars.length;
+    const z = ((chart.getOption() || {}).dataZoom || [])[0] || {};
+    let i0 = null;
+    let i1 = null;
+    if (z.startValue != null && z.endValue != null) {
+      // 用 `String()` 比：ECharts 有时把类目值存成数字，`===` 会一个都匹配不上，
+      // 那时若没有回退就会退成「全量范围」——纵轴被整个窗口的数据拉宽，
+      // 表现就是「K 线只占上半截」。实测踩过（下界 2,537 而不是 3,674）。
+      const a = d.bars.findIndex((b) => String(b.ts) === String(z.startValue));
+      const b = d.bars.findIndex((x) => String(x.ts) === String(z.endValue));
+      if (a >= 0 && b >= 0) { i0 = a; i1 = b; }
+    }
+    if (i0 === null && typeof z.start === "number" && typeof z.end === "number") {
+      // **必须有这个回退**：`startValue` 拿不到时按百分比算，而不是退成全量。
+      i0 = Math.floor((z.start / 100) * (n - 1));
+      i1 = Math.ceil((z.end / 100) * (n - 1));
+    }
+    if (i0 === null) { i0 = 0; i1 = n - 1; }
+    i0 = Math.max(0, Math.min(i0, n - 1));
+    i1 = Math.max(i0, Math.min(i1, n - 1));
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = i0; i <= i1; i++) {
+      const b = d.bars[i];
+      if (b.low < lo) lo = b.low;
+      if (b.high > hi) hi = b.high;
+    }
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return null;
+    const pad = (hi - lo) * 0.06;
+    return { min: Number((lo - pad).toFixed(2)), max: Number((hi + pad).toFixed(2)) };
+  }
+
+  let fitPending = false;
+  function fitPriceAxis() {
+    // 拖滑块时 `dataZoom` 每帧都触发，节流到一个动画帧，别让 setOption 拖慢拖动。
+    if (fitPending) return;
+    fitPending = true;
+    requestAnimationFrame(() => {
+      fitPending = false;
+      const r = visibleRange();
+      if (r) chart.setOption({ yAxis: [{ min: r.min, max: r.max }] });
+    });
+  }
+
+  chart.on("dataZoom", fitPriceAxis);
+
   function draw() {
     const d = state.data;
     const bars = d.bars;
@@ -568,6 +921,9 @@
     const idxOf = new Map(ts.map((t, i) => [t, i]));
     const up = cssVar("--cinnabar"), down = cssVar("--bamboo");
     const indigo = cssVar("--indigo"), mohui = cssVar("--mohui"), amber = cssVar("--amber");
+    // 「已证伪」的标记色：用 `--mohui`（最暗的墨），**刻意不用红绿** ——
+    // 红/绿在这个页面上是「涨/跌」，拿它们画证伪标记会被读成「这是个买卖点」。
+    const faded = mohui;
     const rice = cssVar("--rice"), dim = cssVar("--rice-dim"), line = cssVar("--line");
     const keepZoom = currentZoom();
 
@@ -714,6 +1070,48 @@
       }
     }
 
+    // --- 已证伪的买卖点（信号留痕）
+    // **与 `tentative` 必须一眼分得开**：tentative 是「现在还没确认」，空心+实线边；
+    // 已证伪是「曾经标过、后来重算不再成立」，空心+**虚线**边+去饱和。
+    // 它不代表「当时标错了」——当时只能那样标。它说的是「那之后走势没有兑现它」。
+    const falsified = [];
+    if (state.layers.falsified && state.trail && Array.isArray(state.trail.falsified)) {
+      // ★ **只画落在当前这几根 K 线上的标记**。
+      //
+      // 这不只是省事：ECharts 的纵轴会把该 grid 上**所有** series 的数据一起算进
+      // 范围，而留痕覆盖全史。实测 `sh.000001` 日线：图上只有 2021-11 起的 1200 根
+      // （价格 3,674~4,258），但留痕里有一条 `s3 @ 2002-06-25 price=1748.89` ——
+      // 纵轴被它拉到 1,500~4,500，**K 线被压成最上面一条窄带，下面全空**。
+      // 用户报的「图突然被压得很扁」就是这个。
+      //
+      // 窗口外的标记本来也看不见，滤掉之后既修好了纵轴，也没有信息损失。
+      const onChart = new Set(ts);
+      for (const e of state.trail.falsified) {
+        if (!onChart.has(e.ts)) continue;
+        const buy = isBuyKind(e.kind);
+        falsified.push({
+          value: [e.ts, e.price],
+          label: {
+            show: true,
+            formatter: "✕",
+            position: buy ? "bottom" : "top",
+            color: faded,
+            fontSize: 10,
+          },
+          itemStyle: {
+            color: "transparent",
+            borderColor: faded,
+            borderWidth: 1.4,
+            borderType: "dashed",
+          },
+          // 供 `valueFormatter` 反查（键与背驰同款：`(ts, price)` 二元组）
+          kind: e.kind,
+          first_seen: e.first_seen,
+          falsified_at: e.falsified_at,
+        });
+      }
+    }
+
     // --- 背驰标注
     // 两种口径下**都**标注背驰：口径的差别是"非严格把盘整背驰另算作买卖点"（后端算），
     // 不是"只有非严格才画背驰"。趋势/盘整**形状与颜色都不同**，见 DIV_COLOR 的注释。
@@ -837,7 +1235,12 @@
           gridIndex: 0, scale: true, position: "left",
           axisLine: { lineStyle: { color: line } },
           splitLine: { lineStyle: { color: line, opacity: 0.35 } },
-          axisLabel: { color: dim, fontSize: 10, fontFamily: cssVar("--mono") },
+          // `hideOverlap`：窗口矮的时候（或浏览器窗口被拖矮），价格刻度会叠成一团
+          // （实测 520px 高的窗口里 2800/2400/2200 挤在同一处）。让它自动少画几个，
+          // 而不是让它们互相压住 —— 图上看得见的刻度必须是能读的。
+          axisLabel: {
+            color: dim, fontSize: 10, fontFamily: cssVar("--mono"), hideOverlap: true,
+          },
         },
         {
           gridIndex: 1, splitNumber: 2, min: 0, axisLine: { lineStyle: { color: line } },
@@ -885,6 +1288,25 @@
         {
           name: "买卖点", type: "scatter", xAxisIndex: 0, yAxisIndex: 0, data: signals,
           symbol: "circle", symbolSize: 9, z: 10,
+        },
+        {
+          // **被证伪的买卖点**。与 `tentative`（空心+实线边）要一眼分得开：
+          // 这里用**空心 + 虚线边 + 去饱和**，标签打 ✕。
+          // 它不代表「当时标错了」——当时只能那样标；它说的是「后来重算不再成立」。
+          name: "已证伪", type: "scatter", xAxisIndex: 0, yAxisIndex: 0, data: falsified,
+          symbol: "emptyCircle", symbolSize: 10, z: 8,
+          tooltip: {
+            // 与背驰 series 同一套：轴路径**不给数据项**，只能拿 `value` 反查。
+            // 键必须是 `(ts, price)` 两元组 —— 只按 price 反查时，两个同价的点会串台。
+            valueFormatter: (value) => {
+              const e = falsified.find((x) => x.value[1] === value && x.value[0] === axisTs);
+              const text = f2(value);
+              if (!e) return text;
+              return `${text}｜**已证伪** ${KIND_CN[e.kind] || e.kind}`
+                + `｜标注于 ${e.first_seen}`
+                + `｜证伪于 ${e.falsified_at || "—"}`;
+            },
+          },
         },
         {
           name: "背驰", type: "scatter", xAxisIndex: 0, yAxisIndex: 0, data: divergences,
@@ -944,6 +1366,8 @@
 
     chart.setOption(option, { notMerge: true });
     chart.resize();
+    // `notMerge` 之后 dataZoom 已回到本次的取值，纵轴按它重定一次。
+    fitPriceAxis();
   }
 
   // ------------------------------------------------------------------ 结构清单
@@ -1119,7 +1543,12 @@
     // 旧响应必须整段丢弃。
     if (seq !== watchSeq) return;
     if (!body.items) {
-      box.innerHTML = `<div class="watch-empty">自选股读取失败：${body.detail || "接口返回了无法解析的内容。"}</div>`;
+      // `body.detail` 是响应体里的文本，不是本文件的常量 —— 只能走 textContent。
+      // 交给 `innerHTML` 就等于让后端决定页面解析并执行什么标记（`tests/web/test_frontend_xss.py`）。
+      const fail = document.createElement("div");
+      fail.className = "watch-empty";
+      fail.textContent = `自选股读取失败：${body.detail || "接口返回了无法解析的内容。"}`;
+      box.replaceChildren(fail);
       return;
     }
     state.watch = body.items;
@@ -1129,7 +1558,7 @@
     if (!initialCodePinned) {
       initialCodePinned = true;
       const first = (body.items || [])[0];
-      if (first && first.code !== state.code) {
+      if (first && first.code !== state.key) {
         setCode(first.code);
         load();
       }
@@ -1199,7 +1628,7 @@
     row.dataset.code = it.code;
     row.tabIndex = 0;
     row.setAttribute("role", "button");
-    if (it.code === state.code) row.classList.add("is-current");
+    if (it.code === state.key) row.classList.add("is-current");
 
     const top = document.createElement("div");
     top.className = "watch-row-top";
@@ -1437,6 +1866,323 @@
     fillOptions($(selector), body.items || []);
   }
 
+  // ------------------------------------------------------------------ 行业指数
+  // 用户 2026-10-05 要求「A 股要有那个一级行业、二级行业的那个行业指数」，
+  // 2026-10-06 要求「可以弹出一个弹窗，就是一个比较大的弹窗，在里面进行选」。
+  // 清单在后端 `data/industry.py`（内置，不落库、不联网；`GET /api/industries`），
+  // 这里只把它铺成弹窗里的网格。**不写死任何行业名**：申万几年调一次分类，
+  // 写死在 JS 里没人会去改；后端 `--check` 才能把「清单过期了」变成一句话。
+  //
+  // 选中的行业走和顶栏输入框**同一条路**（`setCode` + `load`）—— 板块不是一条
+  // 特殊分支，所以加自选按钮、复权口径、周期按钮、书签全都照常工作。
+
+  //: `/api/industries` 的 items，原样存着（155 条，不值得再建一份索引）。
+  let industryRows = [];
+  //: 弹窗当前显示哪一级（"1" / "2"）。搜索非空时忽略它。
+  let industryLevel = "1";
+
+  async function loadIndustries() {
+    const btn = $("#industry");
+    if (!btn) return;
+    const note = $("#industry-note");
+    // 清单取不到**不能**只是静默留白：那看起来就像「这个功能不存在」。
+    // 说清楚是网络断了还是后端没重启，才知道下一步做什么。
+    const fail = (text) => {
+      if (note) { note.textContent = text; note.hidden = false; }
+      btn.disabled = true;
+    };
+    let res;
+    try {
+      res = await fetch("/api/industries");
+    } catch (err) {
+      fail("行业清单取不到：网络请求失败。检查看盘页后端是否在跑，然后刷新。");
+      return;
+    }
+    // `fetch` **只在网络层失败时 reject**，404/500 都是正常 resolve。
+    // 旧进程上没有 `/api/industries`，拿 `{"detail":"Not Found"}` 去读 `items`
+    // 会得到「一张卡片都没有」的空弹窗 —— 这条曾经真的发生过（D-44 收尾）。
+    if (!res.ok) {
+      fail(`行业清单取不到：HTTP ${res.status}。看盘页后端可能没重启（改过 src 必须重启）。`);
+      return;
+    }
+    let body;
+    try {
+      body = await res.json();
+    } catch (err) {
+      fail("行业清单取不到：返回的不是合法 JSON。");
+      return;
+    }
+    const items = body.items || [];
+    // 第三种静默故障：后端进程**认识** `/api/industries`、却**不认识** `local`
+    // （路由比字段老）。这时 `it.local === true` 恒为假，卡片会**全都暗着**、
+    // 页脚会印出「本地已有 0 / N」—— 那是一句**错话**。状态码是 200，
+    // `res.ok` 拦不住；后端测试测的是新代码，也拦不住。所以在这里显式认出来。
+    const stale = items.length > 0
+      && !items.some((it) => it && typeof it === "object" && "local" in it);
+    industryRows = items.map((it) => ({
+      code: String(it.code || ""),
+      name: String(it.name || ""),
+      level: String(it.level || ""),
+      // 本机有没有这个板块的日线，后端算好给的。前端**不猜** ——
+      // 猜错就是「卡片亮着，点进去是空图」，那比一直暗着更坏。
+      local: it.local === true,
+    }));
+    btn.disabled = false;
+    buildIndustryTabs(body.levels || []);
+    renderIndustryGrid();
+    syncIndustryButton();
+    // 核对日期必须露出来：悄悄过期比过期本身更坏（D-44）。
+    // 键名是 `as_of`（`web/api.py` 的返回契约），**不是** `checked_on` ——
+    // 曾经这里读错键，于是这行提示从来没显示过，而没有任何测试拦得住。
+    if (note && body.as_of) {
+      note.textContent = `清单核对于 ${body.as_of}；板块只有日线，周 / 月由日线聚合。`;
+      note.hidden = false;
+    }
+    const foot = $("#ind-modal-foot");
+    if (foot) {
+      if (stale) {
+        // 宁可说「我不知道」，也不说一句算出来的假话：`have` 在这里恒为 0，
+        // 印出去就成了「本机一个板块的日线都没有」，而真相是**这个进程不知道**。
+        foot.textContent =
+          "后端进程比页面旧：/api/industries 没返回 local，所以卡片会全按" +
+          "「待同步」显示 —— 这不代表本机真的没有板块日线。" +
+          "重启看盘页后端（改过 src 必须重启）再刷新。";
+      } else {
+        const have = industryRows.filter((r) => r.local).length;
+        foot.textContent =
+          `本地已有 ${have} / ${industryRows.length} 个板块的日线。` +
+          "标「本地」的选中就能看；其余选中后是空图，要先同步它的日线" +
+          "（python -m chanlun sync --period day --codes 代码）。";
+      }
+    }
+  }
+
+  // tab 条：名字与计数**全部来自后端**（`body.levels` 给名字，items 给计数）。
+  // 不写死「一级 31 / 二级 124」—— 申万调分类时那两个数字会变。
+  function buildIndustryTabs(levels) {
+    const box = $("#ind-tabs");
+    if (!box) return;
+    const keys = levels.map((lv) => String(lv.level || ""));
+    if (!keys.includes(industryLevel)) industryLevel = keys[0] || "1";
+    box.textContent = "";
+    for (const lv of levels) {
+      const key = String(lv.level || "");
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "ind-tab";
+      b.dataset.level = key;
+      b.setAttribute("role", "tab");
+      b.textContent = `${lv.name}（${industryRows.filter((r) => r.level === key).length}）`;
+      b.addEventListener("click", () => {
+        industryLevel = key;
+        const q = $("#ind-search");
+        if (q) q.value = "";
+        renderIndustryGrid();
+        // 必须跟着刷 tab 的选中态：只换网格不换高亮的话，点「二级行业」会看到
+        // 124 张卡配着「一级行业」的靛青下划线（2026-10-06 真实浏览器实测到的）。
+        syncIndustryTabs();
+      });
+      box.append(b);
+    }
+    syncIndustryTabs();
+  }
+
+  function syncIndustryTabs() {
+    for (const b of document.querySelectorAll(".ind-tab")) {
+      const on = b.dataset.level === industryLevel;
+      b.classList.toggle("is-on", on);
+      b.setAttribute("aria-selected", on ? "true" : "false");
+    }
+  }
+
+  //: 搜索词非空时**跨两级**过滤（名称或代码包含，忽略大小写）。
+  //: 打「银行」时用户想的是那个行业，不是「一级行业里的那个银行」——
+  //: 只在当前级别里搜，停在二级 tab 上会得到空结果。
+  function industryHits(q) {
+    const text = String(q || "").trim().toLowerCase();
+    if (!text) return null;
+    return industryRows.filter(
+      (r) => r.name.toLowerCase().includes(text) || r.code.toLowerCase().includes(text)
+    );
+  }
+
+  function industryGroupTitle(level, n) {
+    const p = document.createElement("p");
+    p.className = "ind-group";
+    p.textContent = `${level === "1" ? "一级行业" : "二级行业"}（${n}）`;
+    return p;
+  }
+
+  function industryEmpty(text) {
+    const p = document.createElement("p");
+    p.className = "ind-empty";
+    p.textContent = text;
+    return p;
+  }
+
+  function industryCard(row) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "ind-card";
+    b.dataset.code = row.code;
+    b.dataset.local = row.local ? "1" : "0";
+    // roving tabindex：整张网格只占一个 Tab 位，↑↓←→ 在格内走。
+    // 155 个按钮各占一个 Tab 位的话，键盘用户根本走不出去。
+    b.tabIndex = -1;
+    if (row.code === state.key) b.classList.add("is-current");
+
+    const name = document.createElement("span");
+    name.className = "ind-card-name";
+    name.textContent = row.name;
+
+    const meta = document.createElement("span");
+    meta.className = "ind-card-meta";
+    const code = document.createElement("span");
+    code.className = "ind-card-code";
+    code.textContent = row.code;
+    const flag = document.createElement("span");
+    flag.className = "ind-card-flag";
+    // 明暗**同时**有文字兜底：只靠颜色区分的话，色觉障碍的人读不出来。
+    flag.textContent = row.local ? "本地" : "待同步";
+    meta.append(code, flag);
+
+    b.append(name, meta);
+    b.addEventListener("click", () => pickIndustry(row.code));
+    return b;
+  }
+
+  function renderIndustryGrid() {
+    const grid = $("#ind-grid");
+    if (!grid) return;
+    const box = $("#ind-search");
+    const hits = industryHits(box ? box.value : "");
+    const tabs = $("#ind-tabs");
+    if (tabs) tabs.hidden = hits !== null;
+
+    grid.textContent = "";
+    if (hits === null) {
+      const rows = industryRows.filter((r) => r.level === industryLevel);
+      for (const r of rows) grid.append(industryCard(r));
+      if (!rows.length) grid.append(industryEmpty("这个级别暂时没有行业。"));
+    } else {
+      // 跨两级搜索：结果按级别分组，用**跨列的组标题**标出级别，
+      // 而不是给每张卡片加小标 —— 155 个级别小标只会变成噪点。
+      for (const lv of ["1", "2"]) {
+        const rows = hits.filter((r) => r.level === lv);
+        if (!rows.length) continue;
+        grid.append(industryGroupTitle(lv, rows.length));
+        for (const r of rows) grid.append(industryCard(r));
+      }
+      if (!hits.length) {
+        grid.append(
+          industryEmpty("没有匹配的行业。换个词试试，或者直接输代码 801120。")
+        );
+      }
+    }
+    const cards = grid.querySelectorAll(".ind-card");
+    if (cards.length) {
+      const cur = [...cards].find((c) => c.classList.contains("is-current"));
+      (cur || cards[0]).tabIndex = 0;
+    }
+  }
+
+  function openIndustryModal() {
+    const dlg = $("#industry-modal");
+    if (!dlg || typeof dlg.showModal !== "function") return;
+    const box = $("#ind-search");
+    // 每次打开都从「浏览」开始：上次搜的词还留着，会让人以为清单变短了。
+    if (box) box.value = "";
+    renderIndustryGrid();
+    if (!dlg.open) dlg.showModal();
+    if (box) box.focus();
+  }
+
+  function pickIndustry(code) {
+    const dlg = $("#industry-modal");
+    if (dlg && dlg.open) dlg.close();
+    // 板块只有日线（D-44）：停在 30 分 / 5 分上选行业会直接撞到「这个周期补不了」。
+    // 实测腾讯 `mkline` 对 `pt01…` 回 `param error`，对照 `sh600000,m30` 正常；
+    // 日 / 周 / 月都照旧。
+    if (!["day", "week", "month"].includes(state.period)) {
+      state.period = "day";
+      setPeriodUI("day");
+    }
+    setCode(code);
+    load();
+    loadWatch();
+  }
+
+  //: 把 `.period` 那排按钮的选中态对齐到某个周期。三处都要做同一件事
+  //: （周期按钮自己的 click、`?period=` 的首屏对齐、选行业时强制回日线），
+  //: 抽出来免得三份各写各的 —— 少改一处就是「按钮亮着但图是别的周期」。
+  function setPeriodUI(period) {
+    for (const b of document.querySelectorAll(".period")) {
+      const on = b.dataset.period === period;
+      b.classList.toggle("is-on", on);
+      b.setAttribute("aria-selected", on ? "true" : "false");
+    }
+  }
+
+  function industryGridColumns(grid) {
+    const cards = grid.querySelectorAll(".ind-card");
+    if (!cards.length) return 1;
+    const top = cards[0].offsetTop;
+    let n = 0;
+    for (const c of cards) {
+      if (c.offsetTop !== top) break;
+      n += 1;
+    }
+    return Math.max(1, n);
+  }
+
+  function moveIndustryFocus(grid, step) {
+    const cards = [...grid.querySelectorAll(".ind-card")];
+    if (!cards.length) return;
+    let i = cards.findIndex((c) => c.tabIndex === 0);
+    if (i < 0) i = 0;
+    const next = Math.min(cards.length - 1, Math.max(0, i + step));
+    cards.forEach((c, k) => { c.tabIndex = k === next ? 0 : -1; });
+    cards[next].focus();
+  }
+
+  //: 弹窗的所有事件只在这里绑一次。启动时调一次（见文件末尾）。
+  function wireIndustryModal() {
+    const dlg = $("#industry-modal");
+    const btn = $("#industry");
+    if (!dlg || !btn) return;
+    btn.addEventListener("click", openIndustryModal);
+    const close = $("#ind-close");
+    if (close) close.addEventListener("click", () => dlg.close());
+    // 点遮罩关闭。`<dialog>` 自己 `padding: 0`、内边距全在 .ind-modal-inner 上，
+    // 所以落在弹窗盒子里的点击一定命中某个后代 —— `e.target === dlg` 就是「点了遮罩」。
+    dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
+    // Esc 由浏览器关（`cancel` 事件），这里只负责把焦点还给入口按钮。
+    dlg.addEventListener("close", () => btn.focus());
+    const box = $("#ind-search");
+    if (box) box.addEventListener("input", renderIndustryGrid);
+    const grid = $("#ind-grid");
+    if (grid) {
+      grid.addEventListener("keydown", (e) => {
+        const cols = industryGridColumns(grid);
+        const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: cols, ArrowUp: -cols }[e.key];
+        if (step === undefined) return;
+        e.preventDefault();
+        moveIndustryFocus(grid, step);
+      });
+    }
+  }
+
+  // 入口按钮显示**当前**看的是哪个行业。真正的「换票时同步」在 Task 4 挂进 `setCode`，
+  // 这里先在清单到货后刷一次。
+  function syncIndustryButton() {
+    const name = $("#industry-name");
+    const btn = $("#industry");
+    if (!name || !btn) return;
+    const hit = industryRows.find((r) => r.code === state.key);
+    name.textContent = hit ? hit.name : "选一个行业…";
+    btn.classList.toggle("has-pick", Boolean(hit));
+  }
+
   // ------------------------------------------------------------------ 加自选按钮
   // 用户 2026-10-05 要求：**在股票界面上**就能加自选，而不是先跑去自选栏搜一遍代码。
   // 按钮状态直接由 `state.watch` 派生（不另存一份「已加」标记）：自选栏是唯一真相，
@@ -1455,7 +2201,7 @@
   function renderFav() {
     const btn = $("#fav-btn");
     if (!btn) return;
-    const code = state.code;
+    const code = state.key;   // 落库键：服务端归一会把 sz.000858 收成 000858
     const has = inWatchlist(code);
     btn.textContent = has ? "★ 已在自选" : "☆ 加自选";
     btn.setAttribute("aria-pressed", has ? "true" : "false");
@@ -1466,7 +2212,7 @@
   }
 
   $("#fav-btn").addEventListener("click", async () => {
-    const code = state.code;
+    const code = state.key;   // 落库键：服务端归一会把 sz.000858 收成 000858
     if (!code) return;
     favError("");
     const has = inWatchlist(code);
@@ -1505,8 +2251,11 @@
   // ------------------------------------------------------------------ 交互绑定
   function setCode(code) {
     state.code = code;
+    state.key = code;   // 先按用户写的形态占位；响应到了升级成服务端回的落库键
     $("#code").value = code;
     renderFav();
+    // 行业选择器的入口按钮跟着当前代码走：换票之后它不能还留着上一个行业名。
+    syncIndustryButton();
   }
 
   $("#query").addEventListener("submit", async (ev) => {
@@ -1528,11 +2277,8 @@
 
   for (const btn of document.querySelectorAll(".period")) {
     btn.addEventListener("click", () => {
-      for (const b of document.querySelectorAll(".period")) {
-        b.classList.toggle("is-on", b === btn);
-        b.setAttribute("aria-selected", b === btn ? "true" : "false");
-      }
       state.period = btn.dataset.period;
+      setPeriodUI(state.period);
       load();
       loadWatch();
     });
@@ -1615,11 +2361,7 @@
   if (MODE_ORDER.includes(sp.get("mode"))) state.mode = sp.get("mode");
   if (sp.get("period") && PERIOD_CN[sp.get("period")]) {
     state.period = sp.get("period");
-    for (const b of document.querySelectorAll(".period")) {
-      const on = b.dataset.period === state.period;
-      b.classList.toggle("is-on", on);
-      b.setAttribute("aria-selected", on ? "true" : "false");
-    }
+    setPeriodUI(state.period);
   }
   // 图层按钮的 is-on 与 state.layers 对齐（HTML 里写死的 is-on 只是首屏兜底，
   // 状态以 state 为准 —— 照上面 period 按钮的写法）。
@@ -1643,6 +2385,8 @@
   // 亦同），把它放在加载路径上会导致页面永远停在"尚未加载"。尺寸校准另走兜底回调。
   load();
   loadWatch();
+  wireIndustryModal();
+  loadIndustries();
   const remeasure = () => chart.resize();
   requestAnimationFrame(remeasure);
   setTimeout(remeasure, 0);

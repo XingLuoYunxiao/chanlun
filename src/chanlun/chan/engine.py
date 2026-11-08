@@ -41,6 +41,7 @@ from ..data.types import normalize
 from .fractal import find_fractals
 from .include import merge_bars
 from .pivot import Pivot, find_pivots
+from .recursion import LevelStructure, build_levels
 from .segment import SegmentPolicy, build_segments
 from .state import reconcile
 from .stroke import build_strokes
@@ -76,6 +77,19 @@ class Snapshot:
     #: 背驰（趋势背驰 / 盘整背驰）。**派生数据**：由 `segments` + `macd` 决定，
     #: 不进 `state.py::_FIELDS`，不参与 reconcile 调和。
     divergences: tuple[Any, ...] = ()
+    #: **级别递归**（第 84 课的 `f2(an)=an+1`）。
+    #:
+    #: `levels[0]` 是**线段直接构成的最低级别**（`level == self.level`），再往上是
+    #: 逐级上推出来的中枢与走势类型：`走势类型(n) → 中枢(n+1) → 走势类型(n+1)`。
+    #: 它回答的是「这个结构是哪个级别的」，而 `pivots` 只回答「本级别的中枢」——
+    #: 第 63 课「什么级别的图和什么级别的中枢没有任何必然关系」说的就是这两者
+    #: 不能混。**派生数据**：由 `segments` + `bars` 决定，不进
+    #: `state.py::_FIELDS`，不参与 reconcile 调和（与 `divergences` 同一类）。
+    #:
+    #: **不随 `clipped_to` 裁剪**（唯一这样的字段）：递归的高级别天然跨越数年，
+    #: 拿显示窗口去裁必然全空（实测 `limit=200` 时三级都是 0 中枢）。它是
+    #: 「窗口里的结构处在哪个更高级别里」这个**上下文**问题的答案，必须看全史。
+    levels: tuple[LevelStructure, ...] = ()
     version: int = 1
 
     @property
@@ -102,6 +116,14 @@ class Snapshot:
 
         对象的 `idx` 保持全量编号：同一段线段换个窗口仍是同一个号，这也是
         「窗口无关」的一部分。`merged` 默认不出口，一起裁只为口径自洽。
+
+        **`levels` 是唯一不裁的字段**，理由是它根本不是显示对象：递归的高级别
+        天然跨越数年（`day` 级基准下 `week` 级中枢可能覆盖 8 年），拿一个
+        200 根的窗口去裁，三级必然全裁空 —— 实测 `limit=200` 时
+        `L0/L1/L2` 的中枢数全是 0。它的用途是回答「这个窗口里的结构处在哪个
+        更高级别里」，那是个**上下文**问题，必须看全史。窗口内的可见对象数与
+        全史对象数已经由 `counts` / `counts_total` 这一对分开表达，同一个
+        约定用在这里。
         """
 
         def kept(start: str, end: str) -> bool:
@@ -181,6 +203,10 @@ class ChanEngine:
         strokes = build_strokes(fractals)
         segments = build_segments(strokes, self.policy)
         pivots = find_pivots(segments, self.level)
+        # 级别递归：第 0 层就是上面那个 `pivots`（线段直接构成），往上是 f2 上推。
+        # 由**新鲜算出的** segments 决定（不是 reconcile 之后的），这样
+        # `step()` 与 `full()` 的 `levels` 逐字段相等，见 D-51。
+        levels = tuple(build_levels(segments, bars=bars, base_level=self.level))
         signals: Sequence[Any] = ()
         if self.signal_fn is not None:
             signals = self.signal_fn(bars, segments, pivots, self.level)
@@ -199,5 +225,6 @@ class ChanEngine:
             pivots=tuple(pivots),
             signals=tuple(signals),
             divergences=divergences,
+            levels=levels,
             version=version,
         )

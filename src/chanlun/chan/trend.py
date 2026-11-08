@@ -35,7 +35,13 @@ class TrendType(str, Enum):
 
 @dataclass(frozen=True)
 class Trend:
-    """一段走势类型。`start_idx`/`end_idx` 是中枢下标（闭区间）。"""
+    """一段走势类型。`start_idx`/`end_idx` 是中枢下标（闭区间）。
+
+    `high`/`low`/`direction`/`src_start`/`src_end` 让它满足 `LevelSegment`
+    协议，从而可以作为「次级别走势类型」喂给 `pivot.find_pivots` 去构造上一
+    级别的中枢 —— 这就是第 84 课的 `f2(an)=an+1`。这几个字段在 D-51 之前
+    不存在；加它们是**纯增量**，没有任何既有判据读它们。
+    """
 
     idx: int
     kind: TrendType
@@ -47,6 +53,22 @@ class Trend:
     pivot_count: int
     status: Status = Status.CONFIRMED
     confirmed_at: str | None = None
+    #: 该走势类型自身的价格区间。有 bar 帧时是**原始 bar 的高低极值**，
+    #: 否则退化为成分中枢的 `gg`/`dd` 并集（会低估：`gg`/`dd` 不含离开段，
+    #: 见 D-37/D-38）。上一级中枢的 ZG/ZD 直接由这个区间算，低估会让上一级
+    #: 中枢被撑大，所以生产链路必须传 `bars`。
+    high: float = 0.0
+    low: float = 0.0
+    #: 1 向上 / -1 向下 / **0 无方向**。第 17 课只给趋势分上涨与下跌，盘整
+    #: 自身没有方向 —— 所以这里如实记 0，不发明一个。`find_pivots` 会显式
+    #: 处理「段没有方向」的情形（D-51）；给盘整硬编一个 ±1 被实测否决：
+    #: 走势类型序列的相邻同向率 51%，硬编出来的方向等于掷骰子。
+    direction: int = 0
+    #: 覆盖的原始 bar 区间（含）。为了让上一级的 `find_pivots` 看到一段**连续
+    #: 铺满时间轴**的段序列（线段的性质），这里的 `src_end` 会延伸到下一段走势
+    #: 类型的起点之前，把两段之间那段「离开 + 回试」的连接走势也吃进来。
+    src_start: int = 0
+    src_end: int = 0
 
 
 def _direction(a: Pivot, b: Pivot) -> int:
@@ -80,14 +102,32 @@ def _status_of(pivots: list[Pivot]) -> tuple[Status, str | None]:
     return Status.CONFIRMED, max(stamps)  # type: ignore[arg-type]
 
 
-def classify_trends(pivots, level: str = "day") -> list[Trend]:
+def classify_trends(pivots, level: str = "day", bars=None) -> list[Trend]:
     """把中枢序列切成走势类型。返回值按时间序完整覆盖入参中枢。
 
     只有 `CONFIRMED` 中枢参与；未被确认的中枢直接跳过（它们多半是窗口右端
     那一个，走势类型要等它定下来）。
+
+    `bars` 是可选的原行情帧（`high`/`low` 两列、按原始 bar 顺序）。**传了它**
+    才能算出走势类型的真实价格区间；不传就退化为成分中枢的 `gg`/`dd` 并集。
+    既有调用方（`signal.py` / `divergence.py`）不传，行为与本函数引入这些
+    字段之前逐字段相同 —— 分类与分组逻辑一个字没改。
+
+    第 35 课给了这个分类的原文口径：
+
+        有一个最低级别中枢的走势，就是最低级别的盘整走势类型；有两个最低级别
+        中枢的走势，就是最低级别的趋势走势类型，如果第二个中枢比第一个高，那
+        就是上涨走势类型，反之就是下跌走势类型。
+
+    实测（`optimizer/tools/explore_recursion.py`，12 只沪市日线）这个分类的
+    产物**方向并不交替**：`consolidation` 34 / `up` 8 / `down` 1，相邻对里
+    `0->0` 有 20 对。所以「盘整」不能留 `direction=0`，否则把它喂给
+    `find_pivots` 时 `zn` 会为空。这里按下面这条规则补方向（D-51 的口径选择）：
     """
     confirmed = [p for p in pivots if p.status is Status.CONFIRMED]
-    out: list[Trend] = []
+
+    # ---- 第一遍：分组（与引入方向/区间字段之前逐字相同）----
+    groups: list[tuple[TrendType, list]] = []
     i = 0
     n = len(confirmed)
     while i < n:
@@ -96,41 +136,76 @@ def classify_trends(pivots, level: str = "day") -> list[Trend]:
             j = i + 1
             while j + 1 < n and _direction(confirmed[j], confirmed[j + 1]) == want:
                 j += 1
-            group = confirmed[i : j + 1]
-            status, confirmed_at = _status_of(group)
-            out.append(
-                Trend(
-                    idx=len(out),
-                    kind=TrendType.UP if want == 1 else TrendType.DOWN,
-                    start_idx=group[0].idx,
-                    end_idx=group[-1].idx,
-                    start_ts=group[0].start_ts,
-                    end_ts=group[-1].end_ts,
-                    level=level,
-                    pivot_count=len(group),
-                    status=status,
-                    confirmed_at=confirmed_at,
-                )
+            groups.append(
+                (TrendType.UP if want == 1 else TrendType.DOWN, confirmed[i : j + 1])
             )
             i = j + 1
         else:
-            p = confirmed[i]
-            status, confirmed_at = _status_of([p])
-            out.append(
-                Trend(
-                    idx=len(out),
-                    kind=TrendType.CONSOLIDATION,
-                    start_idx=p.idx,
-                    end_idx=p.idx,
-                    start_ts=p.start_ts,
-                    end_ts=p.end_ts,
-                    level=level,
-                    pivot_count=1,
-                    status=status,
-                    confirmed_at=confirmed_at,
-                )
-            )
+            groups.append((TrendType.CONSOLIDATION, [confirmed[i]]))
             i += 1
+
+    # ---- 第二遍：原始 bar 跨度 + 价格区间 ----
+    # 跨度刻意**连续**：一段走势类型铺到下一段起点之前，把两段中枢之间那段
+    # 「离开 + 回试」的连接走势吃进来。中枢自身的 `src_start`/`src_end` 只盖住
+    # 构成它的段，中间会留洞；上一级的 `find_pivots` 需要的是「连续铺满时间轴」
+    # 的段序列（线段就具备这个性质），留洞会让重叠判断失去意义。
+    last_bar = None
+    if bars is not None and len(bars):
+        last_bar = len(bars) - 1
+    spans: list[tuple[int, int]] = []
+    for k, (_, group) in enumerate(groups):
+        start = group[0].src_start
+        end = group[-1].src_end
+        if k + 1 < len(groups):
+            nxt = groups[k + 1][1][0].src_start
+            end = max(end, nxt - 1)
+        if last_bar is not None:
+            end = min(end, last_bar)
+        spans.append((start, end))
+
+    def _range(group, span):
+        start, end = span
+        if bars is not None and end >= start:
+            seg = bars.iloc[start : end + 1]
+            return float(seg["high"].max()), float(seg["low"].min())
+        # 退化口径：中枢的 gg/dd 不含离开段（D-37/D-38），会低估区间。
+        return (max(p.gg for p in group), min(p.dd for p in group))
+
+    # ---- 第三遍：价格区间与方向 ----
+    # 方向**不发明**：第 17 课只把走势分成趋势（上涨/下跌）与盘整，只有趋势有
+    # 方向。盘整留 0，由 `find_pivots` 显式处理「段没有方向」的情形（D-51）。
+    #
+    # 早先试过「给盘整按区间中点漂移补一个 ±1」，被否决：实测走势类型序列的
+    # 相邻同向率只有 51%（`optimizer/tools/measure_recursion.py`），
+    # `find_pivots` 那句「相邻确认段方向必然交替」对走势类型根本不成立，硬编
+    # 一个方向只会让 Z 走势段的挑选变成掷骰子，还不如如实说「它没有方向」。
+    highs = [0.0] * len(groups)
+    lows = [0.0] * len(groups)
+    for k, (_, group) in enumerate(groups):
+        highs[k], lows[k] = _range(group, spans[k])
+
+    out: list[Trend] = []
+    for k, (kind, group) in enumerate(groups):
+        status, confirmed_at = _status_of(group)
+        out.append(
+            Trend(
+                idx=k,
+                kind=kind,
+                start_idx=group[0].idx,
+                end_idx=group[-1].idx,
+                start_ts=group[0].start_ts,
+                end_ts=group[-1].end_ts,
+                level=level,
+                pivot_count=len(group),
+                status=status,
+                confirmed_at=confirmed_at,
+                high=highs[k],
+                low=lows[k],
+                direction={TrendType.UP: 1, TrendType.DOWN: -1}.get(kind, 0),
+                src_start=spans[k][0],
+                src_end=spans[k][1],
+            )
+        )
     return out
 
 

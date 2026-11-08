@@ -130,8 +130,8 @@ INDEX_CODES: dict[str, frozenset[str]] = {
     "us": frozenset({"dji", "ixic"}),
 }
 
-#: 本系统支持的市场前缀。A 股三个（沪深北）+ 港股 + 美股。
-MARKETS: tuple[str, ...] = ("sh", "sz", "bj", "hk", "us")
+#: 本系统支持的市场前缀。A 股三个（沪深北）+ 港股 + 美股 + 申万行业板块。
+MARKETS: tuple[str, ...] = ("sh", "sz", "bj", "hk", "us", "sw")
 
 #: 美股取数符号的形态：字母开头，后跟字母/数字/点/连字符（`brk.b`、`aapl`）。
 #: 腾讯美股符号带交易所后缀（`aapl.oq`），所以点必须允许。
@@ -139,6 +139,14 @@ US_SYMBOL_RE = re.compile(r"^[a-z][a-z0-9.\-]{0,9}$")
 
 #: 港股取数符号的形态：5 位数字（个股）或纯字母（指数，`hsi`/`hstech`）。
 HK_SYMBOL_RE = re.compile(r"^(?:\d{5}|[a-z]{1,10})$")
+
+#: 申万行业板块的形态：`801` + 3 位（一级 `801120` 食品饮料、二级 `801125` 白酒Ⅱ）。
+#:
+#: **必须带 `sw.` 前缀**：裸 `801120` 会被 `HEAD2` 的 `81` 判成北交所板块指数
+#: （`needs_prefix` 因此恒为真，落库键保留前缀）。一级与二级共用这个号段，
+#: 但**不撞车**（实测一级 31 个码全部以 `0` 结尾、二级 124 个全部不以 `0` 结尾，
+#: 交集为空）—— 级别不参与身份，只影响分组显示，见 `industry.py`。
+SW_SYMBOL_RE = re.compile(r"^801\d{3}$")
 
 
 def is_hk(code: str) -> bool:
@@ -149,6 +157,13 @@ def is_hk(code: str) -> bool:
 def is_us(code: str) -> bool:
     """是不是美股代码（`us.dji` / `us.aapl`）。"""
     return _market_prefix(code) == "us"
+
+
+def is_sw(code: str) -> bool:
+    """是不是申万行业板块代码（`sw.801120`）。**必须带 `sw.` 前缀**（见 `SW_SYMBOL_RE`）。"""
+    if _market_prefix(code) != "sw":
+        return False
+    return bool(SW_SYMBOL_RE.match(str(code).strip().lower().partition(".")[2]))
 
 
 def is_a_share(code: str) -> bool:
@@ -182,6 +197,7 @@ def is_index(code: str) -> bool:
     A 股：必须带市场前缀，按号段判（裸码 `000001` 是平安银行，判不出来）。
     港股/美股：按 `INDEX_CODES` 白名单判（字母代码无号段可言），
     **输入大小写不敏感**（`hk.HSI` 与 `hk.hsi` 同键，见 D-43）。
+    申万行业板块：按 `SW_SYMBOL_RE` 判形态（`801xxx` 就是行业指数，不需要白名单）。
 
     用途是同步时的复权口径 —— 指数没有除权除息，必须按 `adjustflag=3`（不复权）
     落库，否则 `sync_state.adjust` 会写成前复权，页面在指数上显示「前复权」，
@@ -191,6 +207,8 @@ def is_index(code: str) -> bool:
     market, _, digits = text.partition(".")
     if not digits:
         return False
+    if market == "sw":
+        return bool(SW_SYMBOL_RE.match(digits))
     if market in INDEX_CODES:
         return digits in INDEX_CODES[market]
     return digits.startswith(INDEX_PREFIXES.get(market, ()))

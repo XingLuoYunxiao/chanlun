@@ -74,10 +74,13 @@ def test_404_offer_a_sync_button():
 
 
 def test_sync_button_posts_then_polls_instead_of_waiting():
-    body = _fn_body(_js(), "async function syncThisPeriod()")
     js = _js()
-    assert '"/api/sync"' in body and 'method: "POST"' in body
-    assert "/api/sync/status" in js, "POST 只负责排队，结果靠轮询拿"
+    post = _fn_body(js, "async function postSync(")
+    assert '"/api/sync"' in post and 'method: "POST"' in post
+    assert "rejected" in post, "要区分'后端拒绝'与'连不上' —— 后者必须留重试按钮"
+    body = _fn_body(js, "async function syncThisPeriod()")
+    assert "pollSync(" in body, "POST 只负责排队，结果靠轮询拿"
+    assert "/api/sync/status" in js
     assert re.search(r"SYNC_POLL_MS\s*=\s*\d+", js), "轮询间隔必须是显式常量"
     assert re.search(r"SYNC_MAX_MS\s*=\s*\d+", js), "轮询必须有上限"
 

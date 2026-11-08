@@ -306,10 +306,23 @@ def test_leading_tentative_segment_does_not_shift_a_later_pivot():
 
 # ---------------------------------------------------------------- 扩展
 def test_next_level_upgrades_periods():
+    assert next_level("1") == "5"
     assert next_level("5") == "30"
     assert next_level("30") == "day"
     assert next_level("day") == "week"
     assert LEVEL_UP["5"] == "30"
+
+
+def test_one_minute_is_in_the_level_table():
+    """**`"1"` 必须在表里** —— 缺了它「1 分钟基准」会**无声地**退化成只出 L0。
+
+    机制：`next_level("1")` 走未知级别分支返回 `"1+"`，而 `level_chain` 见到 `+`
+    就 break，于是 `level_chain("1") == ["1"]`。**不抛错**，只是永远没有上一级 ——
+    这是用户明确要的「以 1 分钟为基准往上递归」在此之前的真实状态。
+    """
+    assert "1" in LEVEL_UP
+    assert next_level("1") == "5", "1 分钟的上一级是 5 分钟"
+    assert next_level("1").endswith("+") is False, "退化分支会让链当场截断"
 
 
 def test_merge_overlapping_same_level_pivots():

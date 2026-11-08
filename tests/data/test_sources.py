@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 from chanlun.data import sources
+from chanlun.data.sources import fallback_for
 from chanlun.data.types import DataSourceError
 
 
@@ -237,3 +238,159 @@ def test_fetch_bars_passes_the_converged_adjust_to_the_source(monkeypatch):
     assert seen["src"] == "tencent"
     assert seen["symbol"] == "hk00700"
     assert seen["eff"] == "3", "港股只有原始价，调用方要前复权也要收敛成不复权"
+
+
+# ---------------- 按时段分流：分钟线的源按**标的**不同（D-52） ----------------
+@pytest.mark.parametrize("key, period, expected_src, expected_symbol", [
+    # 股票 5 分钟：baostock 有 6.5 年，pytdx 只有 2 年 —— 不为「统一」把好的换差的
+    ("sh.600030", "5", "baostock", "sh.600030"),
+    ("sh.600030", "day", "baostock", "sh.600030"),
+    # **1 分钟：只有 pytdx 有**（baostock 报 10004012、腾讯 320 根、新浪 1023 根、
+    # 东财只留 1 个交易日）。这是本项目此前最大的数据空白。
+    ("sh.600030", "1", "pytdx", "600030"),
+    ("sh.000300", "1", "pytdx", "sh.000300"),
+    # A 股指数分钟：baostock 一律 0 行；pytdx 比东财深得多（5 分钟 2 年 vs 2 个月）
+    ("sh.000001", "5", "pytdx", "sh.000001"),
+    ("sh.000300", "5", "pytdx", "sh.000300"),
+    ("sz.399001", "5", "pytdx", "399001"),
+    ("399001", "5", "pytdx", "399001"),              # 深市指数的落库键是裸码
+    ("sh.000300", "day", "baostock", "sh.000300"),   # ★ 日线不动：baostock 有全历史
+    # 申万行业板块：日线走腾讯板块接口；**分钟线没有源**，不参与分流
+    # （东财的 `90.` 前缀不是申万，同号不同物 —— 见 D-52 的否决方案）
+    ("sw.801010", "day", "sw", "pt01801010"),
+    ("sw.801010", "5", "sw", "pt01801010"),
+    # 北交所股票与港美不受影响
+    ("bj.430017", "5", "baostock", "bj.430017"),
+    ("hk.hsi", "5", "tencent", "hkHSI"),
+    ("us.dji", "5", "sina", ".DJI"),
+])
+def test_source_for_routes_by_symbol_not_just_market(
+    key, period, expected_src, expected_symbol
+):
+    assert sources.source_for(key, period) == expected_src
+    # `vendor_symbol_for` 对 pytdx 返回**落库键**（`sh.600030` 归一后就是裸码 `600030`）——
+    # pytdx 源内部按 `store.market_of` + `store.bare_code` 自己拆，不需要外部拼。
+    assert sources.vendor_symbol_for(key, sources.source_for(key, period)) == expected_symbol
+
+
+def test_bare_index_key_is_detected():
+    """`sz.399001` 归一后是**裸码**，而 `markets.is_index` 对裸码一律 False ——
+    漏了这一步深市指数会被判成股票、继续走 baostock 拿 0 行。"""
+    from chanlun.data import markets
+    assert markets.is_index("399001") is False, "前提：裸码判不出来"
+    assert sources._is_index_key("399001") is True
+    assert sources._is_index_key("000001") is False, "sz.000001 是平安银行，不是指数"
+
+
+def test_sw_minutes_are_still_unsupported():
+    """**申万的分钟线仍然没有源**，而且原因要写清「东财那个 90. 前缀不是申万」。
+
+    这条曾经被写成 `supported=True, source="eastmoney"` —— 那是基于一个错映射
+    （`sw.801010` → `90.801010`）。实测东财回的是「磷化工」而不是「农林牧渔」，
+    按那个映射导进去的是张冠李戴的行情。护栏：`eastmoney_source.secid("sw.*")` 直接抛错。
+    """
+    cap = sources.capabilities("sw.801010", "5")
+    assert cap["supported"] is False and cap["source"] == "sw"
+    assert "90." in cap["reason"] and "不是申万" in cap["reason"]
+    # 日线仍归腾讯板块接口
+    assert sources.capabilities("sw.801010", "day")["source"] == "sw"
+
+
+def test_eastmoney_never_gets_a_sw_code():
+    """分流表里 `sw` 的分钟**不能**落到 eastmoney —— 落了就会去要一个错的 secid。"""
+    from chanlun.data import eastmoney_source
+    for period in ("1", "5", "15", "30", "60"):
+        assert sources.source_for("sw.801010", period) != "eastmoney"
+        with pytest.raises(Exception):
+            eastmoney_source.secid("sw.801010")
+
+
+def test_index_minutes_report_pytdx():
+    """指数分钟从东财改判给 pytdx —— 深度差一个量级（2 年 vs 2 个月）。"""
+    cap = sources.capabilities("sh.000300", "5")
+    assert cap["supported"] is True and cap["source"] == "pytdx"
+    assert sources.capabilities("sz.399001", "1")["source"] == "pytdx"
+
+
+def test_stock_one_minute_goes_to_pytdx():
+    """**1 分钟只有 pytdx 有** —— 这条曾经断言「不支持」，2026-10-13 反转。
+
+    背景：此前 baostock 的分钟只有 60/30/15/5（传 `1` 报 `10004012`）、腾讯 320 根、
+    新浪 1023 根、东财只留 1 个交易日，所以 1 分钟真的没有源。
+    pytdx 实测能给股票 23520 根（约 4.5 个月）、指数 22320 根。
+    """
+    cap = sources.capabilities("600030", "1")
+    assert cap["supported"] is True
+    assert cap["source"] == "pytdx"
+    assert "不复权" in cap["note"], "口径必须说清：在线行情只有不复权"
+
+
+def test_capabilities_has_a_pytdx_branch():
+    """★ 漏了这个分支时，港股/美股那两条兜底会把它当成美股，
+    报出「美股不支持周期 1」这种驴唇不对马嘴的理由（实测踩过）。"""
+    for key, period in (("sh.000300", "1"), ("sh.600030", "1"), ("sh.000300", "5")):
+        cap = sources.capabilities(key, period)
+        assert cap["source"] == "pytdx"
+        assert "美股" not in str(cap.get("reason", ""))
+
+
+@pytest.mark.parametrize("period", ["5", "15", "30", "60", "day", "week", "month"])
+def test_stock_minute_periods_other_than_one_are_supported(period):
+    """反向对照：别把「没有 1 分钟」误伤成「没有分钟」。"""
+    assert sources.capabilities("600030", period)["supported"] is True
+
+
+def test_index_one_minute_goes_to_pytdx():
+    """指数 + 1 分钟**有**源，与股票同一个源（都只有 pytdx 有）。"""
+    cap = sources.capabilities("sh.000300", "1")
+    assert cap["supported"] is True and cap["source"] == "pytdx"
+
+
+# ------------------------------------------- 主源零行时回退（2026-10-15）
+def test_fallback_only_for_index_minutes_above_one_minute():
+    """★ 回退**只在指数 5/15/30/60 分钟**上成立，别的一律 `None`。
+
+    这不是保守，是三条实测事实：
+    - **1 分钟的股票不回退**：东财的 1 分钟只留 1 个交易日（240 根），
+      回退过去等于拿一天的数据冒充「1 分钟历史」；
+    - **日线不回退**：各市场既有源都更好，pytdx 只有 8000 来根；
+    - **股票分钟不回退**：它本来就走的 baostock（6.5 年 > pytdx 的 2 年）。
+    """
+    assert fallback_for("sh.000300", "5", "pytdx") == "eastmoney"
+    assert fallback_for("sh.000300", "30", "pytdx") == "eastmoney"
+    assert fallback_for("399001", "5", "pytdx") == "eastmoney"     # 深市指数（裸码）
+    assert fallback_for("sh.000300", "1", "pytdx") is None
+    assert fallback_for("600030", "5", "pytdx") is None
+    assert fallback_for("sh.000300", "day", "pytdx") is None
+    assert fallback_for("sh.000300", "5", "eastmoney") is None
+
+
+def test_zero_rows_from_primary_falls_back_and_says_so(monkeypatch, caplog):
+    """主源「**连得上但零行**」时必须回退，且**把回退说出来**。
+
+    触发这个的真事：pytdx 的行情服务器会接受连接却返回零行（限流）。
+    `source_for` 的判据是 `pytdx_source.available()` —— **只判连不连得上** ——
+    所以不会回退；于是页面上的同步按钮 202 running、跑完 0 行、看起来「点了没反应」。
+    """
+    seen: list[str] = []
+
+    def fake(key, src, symbol, period, start, end, eff):
+        seen.append(src)
+        return pd.DataFrame() if src == "pytdx" else pd.DataFrame(
+            {"ts": ["2026-01-05"], "open": [1.0], "high": [1.0], "low": [1.0],
+             "close": [1.0], "volume": [1.0], "amount": [1.0]}
+        )
+
+    monkeypatch.setattr(sources, "_fetch_one", fake)
+    with caplog.at_level("WARNING"):
+        df = sources.fetch_bars("sh.000300", "30", "2026-01-01", "2026-12-31")
+    assert seen == ["pytdx", "eastmoney"], seen
+    assert len(df) == 1
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("回退到 eastmoney" in m for m in msgs), msgs
+
+
+def test_zero_rows_without_a_fallback_stays_zero(monkeypatch):
+    """没有备选源时**保持零行**，不假装拿到了东西。"""
+    monkeypatch.setattr(sources, "_fetch_one", lambda *a, **k: pd.DataFrame())
+    assert len(sources.fetch_bars("600030", "1", "2026-01-01", "2026-12-31")) == 0

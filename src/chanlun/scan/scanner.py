@@ -88,6 +88,19 @@ REQUIREMENTS: dict[str, Requirement] = {
         "480 根 = 10 个交易日 ≈ 2 周，只够日内级别的中枢与背驰；"
         "回看自然日 10×7/5 ≈ 14 天。",
     ),
+    # ★ `"1"` 曾在**整个扫描器里缺席**（2026-10-16 补）：1 分钟数据已经能拉、
+    #   `web/api.py` 的 `PERIODS` 也放行了，但 `scan --periods 1` 会把每一只都
+    #   判成「数据不足」—— 因为 `REQUIREMENTS.get(period)` 查不到就按 0 根算。
+    #   **数据到位了、生产却用不了**，这是 ② 那种「只做了一半」的典型形态。
+    "1": Requirement(
+        "1", 480, 3,
+        "MACD 预热 35 根；一个中枢 45 根；1 分钟一天 240 根 bar，"
+        "480 根 = 2 个交易日，只够日内级别的中枢与背驰；"
+        "回看自然日 2×7/5 ≈ 3 天。"
+        "**这是下限不是目标**：1 分钟基准的级别递归要到 L1/L2 需要长历史"
+        "（实测 4.5 个月、2.2 万根才稳定出到 30 分钟一级），"
+        "本地有多少就吃多少，`min_bars` 只用来挡掉明显不够的票。",
+    ),
 }
 
 
@@ -193,11 +206,24 @@ KIND_WEIGHT: dict[str, float] = {
     "b3": 1.5, "s3": 1.5,
 }
 #: 级别权重：大级别的买卖点更可靠、更值得关注（日线 > 60/30 分钟 > 5 分钟）。
-LEVEL_WEIGHT: dict[str, float] = {"day": 2.0, "60": 1.5, "30": 1.5, "15": 1.0, "5": 1.0}
+LEVEL_WEIGHT: dict[str, float] = {"day": 2.0, "60": 1.5, "30": 1.5, "15": 1.0, "5": 1.0, "1": 0.8}
 #: 状态权重：只有确认过的结构才允许被当作可交易信号（未确认打折，失效归零）。
 STATUS_WEIGHT: dict[str, float] = {"confirmed": 1.0, "tentative": 0.6, "invalidated": 0.0}
 
-LEVEL_RANK: dict[str, int] = {"day": 0, "60": 1, "30": 2, "15": 3, "5": 4}
+#: **区间套权重**（第 27 课，见 `optimizer/theory/L27-QUANTAO-NESTING.md`）：
+#: 第一类买卖点的背驰段是否落在**上一级别背驰段**的区间内。
+#:
+#: - `True`（落在里面）＝ 原文说的「大级别转折点的精确定位」→ `1.0`；
+#: - `False`（能查、但没落在里面）→ `0.7`，**降权而不是归零** —— 第 27 课说区间套
+#:   用于「**确认**一个十分精确的历史底部区间」，并没有说「不嵌套就不是买点」；
+#:   做成硬门会强于原文（第一类买卖点的定义在第 17 课，是趋势背驰，不是区间套）；
+#: - `None`（**没有上一级别可比**，`levels` 只有一级）→ `1.0`，**不罚**：
+#:   「无从确认」与「确认失败」是两回事，前者不是这个信号的缺陷。
+#:
+#: 只有第一类买卖点带这个值（`Signal.quantao`），其余类型恒 `None` → 恒 `1.0`。
+QUANTAO_WEIGHT: dict[object, float] = {True: 1.0, False: 0.7, None: 1.0}
+
+LEVEL_RANK: dict[str, int] = {"day": 0, "60": 1, "30": 2, "15": 3, "5": 4, "1": 5}
 
 SIGNAL_LABEL: dict[str, str] = {
     "b1": "第一类买点", "b2": "第二类买点", "b3": "第三类买点",
@@ -218,23 +244,28 @@ def _status_value(status: Any) -> str:
 
 
 def hit_strength(kind: Any, level: Any, divergence: float,
-                 status: Any) -> tuple[float, tuple[tuple[str, Any], ...]]:
-    """强度 = 类型权重 × 级别权重 × 状态权重 × (1 + 背驰强度)。
+                 status: Any, quantao: Any = None) -> tuple[float, tuple[tuple[str, Any], ...]]:
+    """强度 = 类型权重 × 级别权重 × 状态权重 × **区间套权重** × (1 + 背驰强度)。
 
-    为什么乘而不加：三者是**独立**的确认维度——信号类型决定「结构含义」，
-    级别决定「影响范围」，背驰面积决定「力度衰竭程度」。加法会让「5 分钟
+    为什么乘而不加：它们是**独立**的确认维度——信号类型决定「结构含义」，
+    级别决定「影响范围」，状态决定「结构是否已确认」，背驰面积决定「力度衰竭程度」，
+    区间套决定「是不是大级别转折点的精确定位」（第 27 课）。加法会让「5 分钟
     第一类买点」和「日线第三类买点」难以区分；乘法保证任一项为 0（未确认）
     时整体归零，且每项都能在 `strength_parts` 里单独核对。
+
+    `quantao` 只有第一类买卖点带值（`Signal.quantao`），其余传 `None` → 权重 1.0。
     """
     kw = KIND_WEIGHT.get(str(kind), 1.0)
     lw = LEVEL_WEIGHT.get(str(level), 1.0)
     sw = STATUS_WEIGHT.get(_status_value(status), 1.0)
+    qw = QUANTAO_WEIGHT.get(quantao, 1.0)
     div = max(0.0, min(float(divergence or 0.0), 1.0))
-    strength = kw * lw * sw * (1.0 + div)
+    strength = kw * lw * sw * qw * (1.0 + div)
     parts = (
         ("类型权重", kw),
         ("级别权重", lw),
         ("状态权重", sw),
+        ("区间套权重", qw),
         ("背驰强度", div),
         ("强度", round(strength, 4)),
     )
@@ -271,6 +302,9 @@ class ScanHit:
     reason: str = ""
     strength_parts: tuple[tuple[str, Any], ...] = ()
     warning: str = ""
+    #: 这个信号**同时**处在哪些更高级别的走势/中枢里（D-51 的 `Snapshot.levels`）。
+    #: **纯上下文**：不参与命中判定、强度排序、去重 —— 只让生产出口看得见递归。
+    level_context: tuple[str, ...] = ()
 
     @property
     def signal_label(self) -> str:
@@ -293,6 +327,9 @@ class ScanHit:
             "detail": self.detail,
             "strength_parts": [[k, v] for k, v in self.strength_parts],
             "warning": self.warning,
+            # 递归上下文（D-51 的 `Snapshot.levels`）：这个信号**同时**处在
+            # 哪些更高级别的走势/中枢里。**纯上下文**，不参与命中判定与强度排序。
+            "level_context": list(self.level_context),
         }, ensure_ascii=False)
 
 
@@ -395,6 +432,50 @@ def divergence_of(snap: Snapshot, sig: Any, macd_df: pd.DataFrame | None) -> tup
     return segment_divergence(snap, seg, macd_df)
 
 
+#: `Trend.direction` → 中文。`+1` 上涨 / `-1` 下跌 / `0` 盘整（见 `chan/trend.py`）。
+_DIRECTION_CN: dict[int, str] = {1: "上涨", -1: "下跌", 0: "盘整"}
+
+
+def level_context(snap: Snapshot, bars: pd.DataFrame, sig: Any) -> tuple[str, ...]:
+    """这个信号**同时**处在哪些更高级别的走势/中枢里。**只读，不改判定。**
+
+    为什么要有它：D-51 让 `Snapshot.levels` 成了引擎的正式产出，但**生产出口
+    （`scan`）此前完全看不见递归** —— 落库的 `detail` 里只有本级别那个中枢。
+    而缠论的「级别」本来就是一个东西同时属于多级（第 63 课：级别是自生长出来的
+    分类，不是行情周期），只报本级别等于把这句话丢了。
+
+    **它绝不参与命中判定、强度排序或去重**：不满足条件的照样不命中，命中了的
+    强度一分不变。这条边界是有意的 —— 让递归**参与**买卖点判定属于判据变更
+    （要 theory 条目 + 测量 + MINOR 版本位），不在本次范围内。
+
+    从 `depth>=1` 开始（`depth=0` 就是信号自己所属的那一级，不用重复说）。
+    取**第一个**包含该 bar 的走势类型；那一级没有走势落在这个 bar 上时退而报中枢。
+    """
+    levels = getattr(snap, "levels", ()) or ()
+    if len(levels) <= 1 or bars is None or bars.empty:
+        return ()
+    ts = str(getattr(sig, "ts", "") or "")
+    try:
+        idx = bars["ts"].tolist().index(ts)      # 位置下标，与 `src_start/src_end` 同口径
+    except (ValueError, KeyError):
+        return ()                                 # 对不上就不报，绝不猜一个级别出来
+
+    out: list[str] = []
+    for lv in levels[1:]:
+        for tr in lv.trends:
+            if int(tr.src_start) <= idx <= int(tr.src_end):
+                out.append(
+                    f"L{lv.depth}/{lv.level} {_DIRECTION_CN.get(int(tr.direction), '盘整')}走势"
+                )
+                break
+        else:
+            for p in lv.pivots:
+                if int(p.src_start) <= idx <= int(p.src_end):
+                    out.append(f"L{lv.depth}/{lv.level} 中枢内")
+                    break
+    return tuple(out)
+
+
 def analyze_snapshot(snap: Snapshot, bars: pd.DataFrame, *, name: str = "",
                      macd_df: pd.DataFrame | None = None,
                      warning: str = "") -> list[ScanHit]:
@@ -417,7 +498,10 @@ def analyze_snapshot(snap: Snapshot, bars: pd.DataFrame, *, name: str = "",
             pivot_text = f"中枢 {pivot_range[0]:.2f}-{pivot_range[1]:.2f}（{seg_count} 段）"
         div, div_text = divergence_of(snap, sig, macd_df)
         status = _status_value(getattr(sig, "status", None))
-        strength, parts = hit_strength(kind, level, div, status)
+        strength, parts = hit_strength(kind, level, div, status,
+                                       getattr(sig, "quantao", None))
+        ctx = level_context(snap, bars, sig)
+        ctx_text = ("；级别上下文：" + "、".join(ctx)) if ctx else ""
         hit = ScanHit(
             code=snap.code, name=name, period=snap.period, signal_kind=kind, level=level,
             ts=str(getattr(sig, "ts", "")), price=round(float(getattr(sig, "price", 0.0)), 4),
@@ -425,8 +509,9 @@ def analyze_snapshot(snap: Snapshot, bars: pd.DataFrame, *, name: str = "",
             status=status,
             detail=(f"{signal_label(kind)} @ {getattr(sig, 'ts', '')} 价 "
                     f"{float(getattr(sig, 'price', 0.0)):.2f}；{pivot_text}；"
-                    f"{div_text}；{getattr(sig, 'reason', '') or '无补充说明'}"),
+                    f"{div_text}；{getattr(sig, 'reason', '') or '无补充说明'}{ctx_text}"),
             outcome=Outcome.HIT, strength_parts=parts, warning=warning,
+            level_context=ctx,
         )
         hits.append(hit)
     hits.sort(key=lambda h: (-h.strength, LEVEL_RANK.get(h.level, 9), h.ts, h.code, h.period))
@@ -504,6 +589,14 @@ def _execute(task: ScanTask, snapshot_source: Callable[..., Snapshot] | None,
         "segments": len(snap.segments),
         "pivots": len(snap.pivots),
         "signals": len(snap.signals),
+        # 递归产出（D-51）。**加进 stats 是为了让「递归到底有没有产出」在扫描摘要里
+        # 一眼可见** —— 否则「只出 L0」和「出了 6 级」在摘要上长得一模一样。
+        # 这里只放**数值**：`stats` 的汇总契约是逐键 `int()` 相加（见 `scan_report`），
+        # 塞字符串进去会把整轮扫描打断。级别名链不在这里，它在每行的 `level_context` 里。
+        "levels": len(getattr(snap, "levels", ()) or ()),
+        "max_level_depth": max(
+            (int(lv.depth) for lv in (getattr(snap, "levels", ()) or ())), default=-1
+        ),
     }
     notes: tuple[str, ...] = ()
     if warning and not hits:
@@ -607,7 +700,13 @@ def scan_report(
                 else:
                     errors.append(row)
             for key, value in res.stats.items():
-                stats[key] = stats.get(key, 0) + int(value)
+                # 汇总契约是**数值相加**。加个 try 是因为这里踩过一次：给 stats 塞了一个
+                # 字符串字段（级别名链），`int()` 直接 ValueError 把整轮扫描打断 ——
+                # 一个描述性字段不该有这种能力。非数值的一律跳过（它们各自另有出口）。
+                try:
+                    stats[key] = stats.get(key, 0) + int(value)
+                except (TypeError, ValueError):
+                    continue
 
         note_texts: dict[str, int] = {}
         note_order: list[str] = []

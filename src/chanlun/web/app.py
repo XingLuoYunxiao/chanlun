@@ -16,7 +16,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ..config import Config, load_config
@@ -29,6 +29,30 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 class PortInUseError(RuntimeError):
     """目标端口已被占用（按约定不自动换端口）。"""
+
+
+class RevalidatingStaticFiles(StaticFiles):
+    """静态资源每次都要回服务端校验一次（`cache-control: no-cache`）。
+
+    2026-10-11 实测：只带 `last-modified` + `etag` 时，Chrome 可以按
+    `(now - last_modified) * 0.1` 自己算一个新鲜度窗口直接拿缓存 —— 于是
+    "前端改了、用户看的是旧页面"。这正是 D-49 上线后用户报
+    「也没有自动拉取，也没有手动拉取的按钮」的成因之一。
+
+    `no-cache` 不是"不缓存"：浏览器仍存，但每次带 `If-None-Match` 回来问一句，
+    没变还是 304（省流量），变了立刻拿到新的。
+
+    **必须在这里补、不能在 `FileResponse(headers=…)` 里给**：Starlette 命中
+    etag 时走的是 `NotModifiedResponse`，它只白名单保留
+    `cache-control / content-location / date / etag / expires / vary` ——
+    在 `FileResponse` 上给的头会被过滤掉，于是"200 带 no-cache、304 不带"，
+    缓存策略变得两副面孔。
+    """
+
+    async def get_response(self, path: str, scope) -> Response:
+        resp = await super().get_response(path, scope)
+        resp.headers["cache-control"] = "no-cache"
+        return resp
 
 
 def ensure_port_free(host: str, port: int) -> None:
@@ -61,11 +85,16 @@ def create_app(cfg: Config | None = None, port: int | None = None) -> FastAPI:
 
     if not (STATIC_DIR / "index.html").exists():  # pragma: no cover - 打包缺失时才发生
         raise RuntimeError(f"静态目录缺少 index.html: {STATIC_DIR}")
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    app.mount("/static", RevalidatingStaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
-        return FileResponse(STATIC_DIR / "index.html")
+        # 同上：index.html 也必须每次校验，否则书签打开的还是旧页面。
+        # 这一处**没有 304 通路**：路由直接返回 `FileResponse`，不经过
+        # `StaticFiles.is_not_modified` 那道校验，所以带 `If-None-Match` 也照样
+        # 整份重发（实测 2026-10-11：200 + content-length 10546，不是 304）。
+        # 代价是每次开页面多传 10.5 KB —— 换来的是"改了前端立刻生效"，划算。
+        return FileResponse(STATIC_DIR / "index.html", headers={"cache-control": "no-cache"})
 
     return app
 

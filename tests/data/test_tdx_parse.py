@@ -42,10 +42,23 @@ def test_parse_day_bytes_rejects_illegal_date():
         tdx.parse_day_bytes(_day_record(date=0))
 
 
-def test_parse_file_rejects_minute_suffix_until_verified(tmp_path):
+def test_parse_file_now_accepts_minute_suffix(tmp_path):
+    """**D-09 已被推翻（2026-10-13）**：分钟解析实现了，`parse_file` 按扩展名分派。
+
+    原先这条断言的是「非 `.day` 一律抛错」。现在钉住**新的**契约：分钟后缀能解析，
+    但**内容必须经得起逐条校验** —— 全零的 32 字节解出来月/日都是 0，
+    必须当场炸，而不是产出一份日期错位的行情。
+    """
     p = tmp_path / "600000.lc5"
     p.write_bytes(b"\x00" * 32)
-    with pytest.raises(tdx.TdxFormatError, match="只支持"):
+    with pytest.raises(tdx.TdxFormatError, match="月"):
+        tdx.parse_file(p, "5")
+
+
+def test_parse_file_rejects_unknown_suffix(tmp_path):
+    p = tmp_path / "600000.txt"
+    p.write_bytes(b"\x00" * 32)
+    with pytest.raises(tdx.TdxFormatError, match="未知扩展名"):
         tdx.parse_file(p)
 
 

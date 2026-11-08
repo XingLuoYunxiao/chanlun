@@ -438,3 +438,78 @@ def test_real_data_must_produce_signals():
             assert s.status is Status.TENTATIVE or s.confirmed_at is not None
     assert set(total) == set(GOLDEN)
     assert all(n >= 1 for n in total.values()), total
+
+
+# ------------------------------------------------- 区间套（第 27 课，用户指令③）
+def _bars(n=400):
+    import pandas as pd
+    return pd.DataFrame({
+        "ts": [f"2026-01-01 09:{i % 60:02d}" for i in range(n)],
+        "open": [10.0] * n, "high": [10.1] * n, "low": [9.9] * n,
+        "close": [10.0] * n, "volume": [1.0] * n, "amount": [1.0] * n,
+    })
+
+
+class _Seg:
+    def __init__(self, a, b, d):
+        self.src_start, self.src_end, self.direction = a, b, d
+
+
+class _Div:
+    def __init__(self, a, b, d):
+        self.src_start, self.src_end, self.direction = a, b, d
+
+
+def test_quantao_is_none_when_there_is_no_higher_level(monkeypatch):
+    """★ 只有一级 → `None`（**无从确认**），不是 `False`（确认失败）。
+
+    第 63 课：级别名只是相对基准的递归深度标签。只有一级时根本没有「上一级别」
+    这个东西可比 —— 报 `False` 会是在陈述一个不存在的判据。
+    """
+    from chanlun.chan import recursion as REC
+    from chanlun.chan import signal as SIG
+    from chanlun.chan.recursion import LevelStructure
+    # `quantao_confirm` 里是**函数内 import**（避免 signal↔recursion 顶层耦合），
+    # 所以要 patch **源模块**，patch `SIG.build_levels` 会 AttributeError。
+    monkeypatch.setattr(REC, "build_levels",
+                        lambda *a, **k: [LevelStructure(level="1", depth=0, pivots=(), trends=())])
+    got, why = SIG.quantao_confirm(_bars(), [], "1", _Seg(0, 10, -1))
+    assert got is None and "只有一级" in why
+
+
+def test_quantao_true_when_the_higher_divergence_covers_the_segment(monkeypatch):
+    """落在上一级背驰段内 → `True`（第 27 课「这背驰段，一定在……里，而且区间比之小」）。"""
+    from chanlun.chan import recursion as REC
+    from chanlun.chan import signal as SIG
+    from chanlun.chan.recursion import LevelStructure
+    # `quantao_confirm` 里是**函数内 import**（避免 signal↔recursion 顶层耦合），
+    # 所以要 patch **源模块**，patch `SIG.build_levels` 会 AttributeError。
+    monkeypatch.setattr(REC, "build_levels", lambda *a, **k: [
+        LevelStructure(level="1", depth=0, pivots=(), trends=()),
+        LevelStructure(level="5", depth=1, pivots=(), trends=()),
+    ])
+    monkeypatch.setattr(SIG, "find_divergences", lambda *a, **k: [_Div(0, 100, -1)])
+    got, why = SIG.quantao_confirm(_bars(), [], "1", _Seg(20, 40, -1))
+    assert got is True and "5 级背驰段" in why
+
+
+def test_quantao_false_when_direction_or_range_does_not_cover(monkeypatch):
+    """**方向或区间对不上就是没确认** —— 两个条件都要满足。"""
+    from chanlun.chan import recursion as REC
+    from chanlun.chan import signal as SIG
+    from chanlun.chan.recursion import LevelStructure
+    # `quantao_confirm` 里是**函数内 import**（避免 signal↔recursion 顶层耦合），
+    # 所以要 patch **源模块**，patch `SIG.build_levels` 会 AttributeError。
+    monkeypatch.setattr(REC, "build_levels", lambda *a, **k: [
+        LevelStructure(level="1", depth=0, pivots=(), trends=()),
+        LevelStructure(level="5", depth=1, pivots=(), trends=()),
+    ])
+    # 方向相反（顶背驰 vs 买点）
+    monkeypatch.setattr(SIG, "find_divergences", lambda *a, **k: [_Div(0, 100, 1)])
+    assert SIG.quantao_confirm(_bars(), [], "1", _Seg(20, 40, -1))[0] is False
+    # 方向对但区间不覆盖
+    monkeypatch.setattr(SIG, "find_divergences", lambda *a, **k: [_Div(60, 100, -1)])
+    assert SIG.quantao_confirm(_bars(), [], "1", _Seg(20, 40, -1))[0] is False
+    # 一个背驰段都没有
+    monkeypatch.setattr(SIG, "find_divergences", lambda *a, **k: [])
+    assert SIG.quantao_confirm(_bars(), [], "1", _Seg(20, 40, -1))[0] is False

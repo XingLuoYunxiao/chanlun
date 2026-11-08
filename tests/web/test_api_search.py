@@ -1,12 +1,15 @@
 """`GET /api/search` 的接口契约（用户 2026-10-05 要的「按名称搜」）。
 
-页面上的「搜索」有**两种来源**，这个端点把它们合成一个答案：
+页面上的「搜索」有**三种来源**，这个端点把它们合成一个答案：
 
 - `universe` —— 本地品种表。A 股的**全量**名单在这里，离线可用。
+- `industry` —— 申万一级 / 二级行业指数的**内置清单**（`data/industry.py`，
+  155 条，离线）。板块代码是 `sw.801120` 这种形状，数据商联想词里**没有**
+  它们（`smartbox` 不认 `pt01…`），所以只能由本地喂进去。
 - `smartbox` —— 腾讯联想词。港股/美股**只有**这条路 —— 本系统不落它们的品种表，
   香港几千只、美股上万只，落不起。
 
-三条契约值得单独钉住：
+四条契约值得单独钉住：
 
 1. **返回的是落库键**（`hk.00700` / `us.dji` / `600000`），页面拿它直接取数 ——
    所以每一条都必须能过 `sources.normalize_code`。
@@ -14,8 +17,12 @@
    说出来；安静地丢掉会让用户以为搜索坏了。
 3. **联想词不通不许让端点挂掉。** 本地结果照常返回，失败原因放 `error`。
    搜索是增强功能，不该让整个页面用不了。
+4. **行业指数排在本地品种表前面。** `local()` 数够 `limit` 就收手，
+   「银行」能命中一屏银行股；行业行要是排在后面，`sw.801780` 会被挤掉 ——
+   而「按名字找到那个行业指数」正是用户要的东西。
 
 测试**不联网**：`search._get_text` 是唯一的取数缝合点，全部挡在那里。
+行业清单是**纯静态表**，不联网。
 """
 
 from __future__ import annotations
@@ -188,3 +195,142 @@ def test_the_route_does_not_disturb_the_universe_route(client, feed):
     feed({})
     uni = client.get("/api/universe?q=浦发").json()
     assert set(uni) == {"count", "items"}
+
+
+# ---------------------------------------------------------------- 行业指数
+def test_an_industry_name_is_found_by_name(client, feed):
+    """★ 用户要的「搜行业指数」：`银行` 必须命中 `sw.801780`。
+
+    数据商联想词里**没有**申万板块（`smartbox` 不认 `pt01…`），所以这条
+    命中只能来自内置清单 —— 也顺带钉住了「清单确实接进了搜索」。
+    """
+    feed({})
+    items = client.get("/api/search?q=银行").json()["items"]
+    codes = [i["code"] for i in items]
+    assert "sw.801780" in codes, codes
+    hit = items[codes.index("sw.801780")]
+    assert hit["name"] == "银行"
+    assert hit["source"] == "industry"
+    assert hit["kind"] == "ZS"
+    assert hit["market"] == "sw"
+
+
+def test_industry_rows_come_before_the_local_universe(client, feed):
+    """★ 排序契约：`local()` 数够 `limit` 就收手，行业行排后面会被同名股票挤掉。
+
+    负控也在里面：同样的 `limit`，`浦发` 的结果里一个行业都没有（没有重名）。
+    """
+    feed({})
+    items = client.get("/api/search?q=银行&limit=3").json()["items"]
+    assert len(items) == 3
+    assert items[0]["source"] == "industry", "行业行必须排在最前"
+
+    only_stock = client.get("/api/search?q=浦发&limit=3").json()["items"]
+    assert [i["source"] for i in only_stock] == ["universe"]
+
+
+def test_every_industry_code_is_one_the_data_layer_accepts(client, feed):
+    """页面点一下建议就直接取数 —— `sw.801780` 必须过 `normalize_code`。
+
+    两条路都测：搜索里带 `source=="industry"` 的那几条，以及 `/api/industries`
+    的全量清单（后者与 `limit` 无关，155 条一条不漏）。
+    """
+    feed({})
+    hits = client.get("/api/search?q=银行&limit=100").json()["items"]
+    assert any(i["source"] == "industry" for i in hits), "这条查询得真有行业命中，否则测了个空"
+    for item in hits:
+        assert sources.normalize_code(item["code"]) == item["code"]
+
+    for item in client.get("/api/industries").json()["items"]:
+        assert sources.normalize_code(item["code"]) == item["code"]
+
+
+def test_a_blank_query_does_not_return_the_whole_industry_list(client, feed):
+    """空查询是「什么都没问」，不是「列出全部 155 个行业」。"""
+    feed({})
+    assert client.get("/api/search?q=").json()["count"] == 0
+
+
+# ---------------------------------------------------------------- /api/industries
+def test_the_industry_route_lists_both_levels(client):
+    body = client.get("/api/industries").json()
+    assert body["count"] == 155
+    assert body["level"] == ""
+    assert {i["level"] for i in body["items"]} == {"1", "2"}
+    assert {lv["level"] for lv in body["levels"]} == {"1", "2"}
+    assert body["as_of"] == "2026-10-05"
+
+
+def test_the_industry_route_can_be_filtered_by_level(client):
+    l1 = client.get("/api/industries?level=1").json()
+    l2 = client.get("/api/industries?level=2").json()
+    assert (l1["count"], l2["count"]) == (31, 124)
+    assert l1["count"] + l2["count"] == client.get("/api/industries").json()["count"]
+    assert all(i["level"] == "1" for i in l1["items"])
+    assert all(i["level"] == "2" for i in l2["items"])
+
+
+def test_an_illegal_industry_level_is_an_empty_list_not_an_error(client):
+    """非法 `level` 回空列表 —— 与 `/api/universe?q=` 的「空就是空」一致。"""
+    body = client.get("/api/industries?level=3").json()
+    assert body["count"] == 0 and body["items"] == []
+    assert body["levels"], "级别名照常回，页面还要用它拼下拉框"
+
+
+def test_industry_items_carry_what_the_picker_needs(client):
+    """前端只认这四个键：`code` 当 value、`name` 当文案、`level` 分组、
+    `local` 决定卡片亮还是暗。
+
+    `market` 不在这里 —— `as_dict()` 只回三个键（`market` 是 `search_rows()`
+    给搜索路径加的，两条路各带各的）。
+    """
+    for item in client.get("/api/industries?level=1").json()["items"]:
+        assert set(item) == {"code", "name", "level", "local"}
+        assert item["code"].startswith("sw.801")
+        assert item["name"]
+        assert isinstance(item["local"], bool)
+
+
+def test_the_industry_route_does_not_touch_the_vendor(client, monkeypatch):
+    """页面一加载就调它 —— 不许联网（清单是内置的，D-44）。"""
+    def boom(*a, **kw):
+        raise AssertionError("行业清单是纯静态表，不该联网")
+
+    monkeypatch.setattr(search, "_get_text", boom)
+    monkeypatch.setattr("urllib.request.urlopen", boom, raising=False)
+    assert client.get("/api/industries").json()["count"] == 155
+
+
+def test_industry_items_say_whether_the_board_has_local_day_bars(cfg):
+    """`local` 就是「本机 `sync_state` 里有这个板块的日线」。
+
+    `conftest` 的临时库里一只 `sw.%` 都没有 ⇒ 155 项全 `False`；
+    插一行 `sw.801120` 之后**只有它**翻成 `True`。
+    """
+    with TestClient(create_app(cfg)) as c:
+        before = c.get("/api/industries").json()["items"]
+    assert len(before) == 155
+    assert not any(i["local"] for i in before), "临时库里不该有板块日线"
+
+    conn = meta.init(cfg.data.meta_db)
+    meta.set_sync(conn, "sw.801120", "day", "2026-09-01", "2026-09-30", 21, "3")
+    conn.close()
+
+    with TestClient(create_app(cfg)) as c:
+        after = c.get("/api/industries").json()["items"]
+    on = {i["code"] for i in after if i["local"]}
+    assert on == {"sw.801120"}, "只有同步过的那一个板块该亮"
+
+
+def test_a_failed_sync_does_not_count_as_local_data(cfg):
+    """同步失败的行（`error` 非空 / `rows` 为 0）**不算**有数据。
+
+    算成有数据的话，卡片会亮起来、点进去却是空图 —— 那比一直暗着更坏。
+    """
+    conn = meta.init(cfg.data.meta_db)
+    meta.set_sync(conn, "sw.801120", "day", None, None, 0, "3", error="connect timeout")
+    conn.close()
+
+    with TestClient(create_app(cfg)) as c:
+        items = c.get("/api/industries").json()["items"]
+    assert not any(i["local"] for i in items), "失败的行不许把卡片点亮"

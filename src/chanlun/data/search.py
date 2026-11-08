@@ -241,6 +241,10 @@ def local(rows: list[dict], query: str, limit: int = 20) -> list[Hit]:
 
     先比代码前缀再比名称包含：搜「600」时用户要的是 `600000`/`600519` 这一串，
     而不是名字里恰好有「600」的票（实测没有，但顺序必须定下来）。
+
+    `kind`/`source` 逐行可覆盖（默认 `GP`/`universe`）：申万行业清单
+    （`industry.search_rows()`）与品种表同形状混进来，但它是指数（`kind="ZS"`）、
+    出处也不同（`source="industry"`）。默认值不变，所以品种表那条路**逐字节不变**。
     """
     q = str(query or "").strip().lower()
     if not q:
@@ -251,10 +255,12 @@ def local(rows: list[dict], query: str, limit: int = 20) -> list[Hit]:
         code = str(r.get("code", ""))
         name = str(r.get("name", "") or "")
         market = str(r.get("market", "") or "") or code.split(".", 1)[0]
+        kind = str(r.get("kind", "") or "GP")
+        source = str(r.get("source", "") or "universe")
         if code.lower().startswith(q):
-            prefix.append(Hit(code=code, name=name, market=market, kind="GP", source="universe"))
+            prefix.append(Hit(code=code, name=name, market=market, kind=kind, source=source))
         elif q in name.lower():
-            contains.append(Hit(code=code, name=name, market=market, kind="GP", source="universe"))
+            contains.append(Hit(code=code, name=name, market=market, kind=kind, source=source))
         if len(prefix) + len(contains) >= limit:
             break
     return (prefix + contains)[:limit]

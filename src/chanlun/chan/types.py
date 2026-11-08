@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 
 class Status(str, Enum):
@@ -122,6 +122,19 @@ class Segment:
     def src_end(self) -> int:
         return self.end.src_end
 
+    # 下面两个属性是 `LevelSegment` 协议的一部分（见本文件末尾）：线段与
+    # 走势类型（`trend.py` 的 `Trend`）都要能当「段」喂给 `pivot.find_pivots`，
+    # 而后者只认 `start_ts` / `end_ts` 这一对名字。把它们写成属性而不是改
+    # `find_pivots` 去走 `start.start.ts`，是为了让 f2 递归那一层不必假装
+    # 自己是线段。
+    @property
+    def start_ts(self) -> str:
+        return self.start.start.ts
+
+    @property
+    def end_ts(self) -> str:
+        return self.end.end.ts
+
 
 def to_jsonable(obj: Any) -> Any:
     """把 dataclass / Enum 结构转成可 JSON 序列化的原生对象。"""
@@ -144,3 +157,30 @@ class ChanJSONEncoder(json.JSONEncoder):
         if is_dataclass(o) and not isinstance(o, type):
             return to_jsonable(o)
         return super().default(o)
+
+
+@runtime_checkable
+class LevelSegment(Protocol):
+    """能当「段」喂给 `pivot.find_pivots` 的最小接口。
+
+    第 84 课把中枢定义拆成两半：`f1(a0)=a1` 与 `f2(an)=an+1`，并写明
+
+        「关于第二条的中枢过程规则，是一直没有任何改变的」
+
+    也就是说，**找中枢的那套过程规则对每一级都是同一个函数**，变的只是喂进去
+    的「段」是什么：最低级别喂线段（f1），更高级别喂次级别走势类型（f2）。
+    这个协议就是把「段」抽象出来，让同一份 `find_pivots` 两处复用，而不是抄一份
+    平行的实现 —— 抄一份就迟早会分叉。
+
+    `Segment`（线段）与 `Trend`（走势类型）都满足本协议。
+    """
+
+    direction: int        # 1 向上, -1 向下
+    high: float
+    low: float
+    src_start: int        # 覆盖的原始 bar 起点（含）
+    src_end: int          # 覆盖的原始 bar 终点（含）
+    start_ts: str
+    end_ts: str
+    status: Status
+    confirmed_at: str | None

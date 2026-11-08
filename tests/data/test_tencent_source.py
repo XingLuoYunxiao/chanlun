@@ -75,14 +75,21 @@ def test_rows_to_frame_reads_close_before_high_and_low():
 
     按 `open,high,low,close` 读会把 high 当 low，**且不会报任何错** ——
     画出来的 K 线上下影线反了。
+
+    取值刻意选成**合法且四值互异**（`low 1 ≤ open 2 ≤ close 3 ≤ high 4`）：
+    `normalize` 现在会剔除倒挂行（`high < low`，见 D-46），拿倒挂值当探针会
+    让整个帧被剔空、`iloc[0]` 直接越界。而错位读法（按 `open,high,low,close`
+    取这四位数）拿到的是 `high=3 < low=4`，仍然是被测出来的。
     """
-    df = ts._rows_to_frame([_row("2026-10-05", open="1", close="2", high="3", low="4", volume="5")])
+    df = ts._rows_to_frame(
+        [_row("2026-10-05", open="2", close="3", high="4", low="1", volume="5")]
+    )
     r = df.iloc[0]
     assert (float(r["open"]), float(r["close"]), float(r["high"]), float(r["low"])) == (
-        1.0,
         2.0,
         3.0,
         4.0,
+        1.0,
     )
 
 

@@ -19,8 +19,13 @@ from pathlib import Path
 
 import pytest
 
-# 不会产生盒子的标签：它们即使出现在 body 里也不占 grid 轨道。
-NO_BOX_TAGS = frozenset({"script", "style", "link", "template"})
+#: 不产生盒子、因此**不占** `body` 的 grid 轨道的标签。
+#: `<dialog>` 在这里成立**只因为本页只对 `#industry-modal` 用 `showModal()`**：
+#: `showModal()` 之后进 top layer 且 `position: fixed`，不在流内。
+#: 注意**不能**推广成「`<dialog>` 永远不在流内」—— 非模态的 `<dialog open>` 是
+#: 在流内的，UA 的 `display: none` 只作用于 `dialog:not([open])`。
+#: 所以这个常量配的是「行业指数选择器直接挂在 `body` 上」这个具体事实。
+NO_BOX_TAGS = frozenset({"script", "style", "link", "template", "dialog"})
 VOID_TAGS = frozenset(
     {
         "area", "base", "br", "col", "embed", "hr", "img", "input",

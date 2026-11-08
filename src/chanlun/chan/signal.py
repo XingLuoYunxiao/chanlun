@@ -128,6 +128,11 @@ class Signal:
     confirmed_at: str | None = None
     src_start: int = 0
     src_end: int = 0
+    #: **区间套确认**（第 27 课，`True`/`False`）。只对第一类买卖点有值，其余恒为 `None`。
+    #: `True` = 这个背驰段落在**上一级别背驰段**的 bar 区间内，即「大级别转折点的
+    #: 精确定位」；`False` = 不在；`None` = 没有上一级别可比（只有一级）。
+    #: 见 `quantao_confirm` 与 `optimizer/theory/L27-QUANTAO-NESTING.md`。
+    quantao: bool | None = None
 
     @property
     def is_buy(self) -> bool:
@@ -162,7 +167,8 @@ def _seal(sig: Signal, seg: Segment) -> Signal:
 
 
 def _sig(kind: SignalKind, seg: Segment, level: str, pivot_idx: int | None,
-         reason: str, bars: "pd.DataFrame | None" = None) -> Signal:
+         reason: str, bars: "pd.DataFrame | None" = None,
+         quantao: bool | None = None) -> Signal:
     buy = SignalKind(kind).is_buy
     price = seg.low if buy else seg.high
     return _seal(
@@ -171,6 +177,7 @@ def _sig(kind: SignalKind, seg: Segment, level: str, pivot_idx: int | None,
             price=price, level=level,
             pivot_idx=pivot_idx, reason=reason,
             src_start=seg.src_start, src_end=seg.src_end,
+            quantao=quantao,
         ),
         seg,
     )
@@ -322,6 +329,50 @@ def _entering_and_leaving(segs: list[Segment], pivots: Sequence[Pivot],
     return out
 
 
+def quantao_confirm(bars: pd.DataFrame, segments: Sequence[Segment],
+                    level: str, seg: Segment) -> tuple[bool | None, str]:
+    """**第 27 课的区间套确认**：这个背驰段落在上一级别背驰段的区间内吗？
+
+    原文（第 27 课《盘整背驰与历史性底部》）：
+
+    > 某大级别的转折点，先找到其背驰段，然后在次级别图里，找出相应背驰段在次级别里
+    > 的背驰段，将该过程反复进行下去，直到最低级别……
+
+    > 而这背驰段，**一定在**季度线的背驰段里，**而且区间比之小**
+
+    可执行的形式就是**嵌套包含**：`seg` 的 bar 区间 ⊆ 上一级别背驰段的 bar 区间。
+
+    **上一级别的「线段」＝ 下一级别的走势类型**（`Trend` 满足 `types.LevelSegment`），
+    所以 `find_divergences` 在高一级别上**原样复用**，不需要第二套背驰实现。
+
+    返回 `(是否确认, 说明)`。`None` 表示**没有上一级别可比**（`levels` 只有一级）——
+    那是「无从确认」，不是「确认失败」，两者不能混（第 63 课：级别名是相对基准的
+    递归深度标签，只有一级时根本没有「上一级」这个东西）。
+
+    **成本**：这里会自己算一次 `build_levels`。`SignalFn` 的契约是
+    `(bars, segments, pivots, level)`、**拿不到引擎已算好的 `levels`**（引擎刻意
+    不内置买卖点规则），所以只能自己算 —— 代价是全市场每日多算一遍递归
+    （实测 5471 只约 33 秒）。要省掉它得改 `SignalFn` 契约，属独立接口变更。
+    """
+    from .recursion import build_levels
+
+    levels = build_levels(segments, bars=bars, base_level=level, max_depth=2)
+    if len(levels) < 2:
+        return None, "只有一级，没有上一级别可比（区间套无从确认）"
+    lower, higher = levels[0], levels[1]
+    divs = find_divergences(bars, list(lower.trends), higher.pivots, higher.level)
+    # 方向要对上：底背驰配买点、顶背驰配卖点（第 27 课的区间套是逐级找**同向**的背驰段）
+    want = -1 if seg.direction == -1 else 1
+    cands = [d for d in divs if d.direction == want and d.src_start <= seg.src_start
+             and seg.src_end <= d.src_end]
+    if not cands:
+        return False, (f"未落在 {higher.level} 级背驰段内（那级没有覆盖 "
+                       f"bar {seg.src_start}..{seg.src_end} 的同向背驰段）")
+    d = min(cands, key=lambda x: x.src_end - x.src_start)
+    return True, (f"落在 {higher.level} 级背驰段 bar {d.src_start}..{d.src_end} 内"
+                  f"（第 27 课区间套）")
+
+
 def _first_kind(segs: list[Segment], pivots: Sequence[Pivot], level: str,
                 macd_df: pd.DataFrame | None,
                 bars: "pd.DataFrame | None" = None) -> list[Signal]:
@@ -348,11 +399,20 @@ def _first_kind(segs: list[Segment], pivots: Sequence[Pivot], level: str,
             if a_now is None or a_prev is None or not a_now < a_prev:
                 continue
             where = "新低" if want == -1 else "新高"
+            text = (
+                f"趋势背驰：{extreme_ts(bars, leave, want)} 创{where} "
+                f"{leave.low if want == -1 else leave.high:.3f}，"
+                f"MACD 面积 {a_now:.4f} < 前一同向走势 {a_prev:.4f}"
+            )
+            # 第 27 课区间套：这个背驰段落在上一级别背驰段的区间内吗？
+            # **只标注 + 参与强度，不做过滤** —— 原文说区间套用于「确认一个十分精确的
+            # 历史底部区间」，没有说「不嵌套就不是买点」；把它做成硬门会强于原文。
+            q, qnote = (quantao_confirm(bars, segs, level, leave)
+                        if bars is not None and len(bars) else (None, ""))
             out.append(_sig(
                 kind, leave, level, p.idx,
-                f"趋势背驰：{extreme_ts(bars, leave, want)} 创{where} {leave.low if want == -1 else leave.high:.3f}，"
-                f"MACD 面积 {a_now:.4f} < 前一同向走势 {a_prev:.4f}",
-                bars=bars,
+                f"{text}；{qnote}" if qnote else text,
+                bars=bars, quantao=q,
             ))
     return out
 

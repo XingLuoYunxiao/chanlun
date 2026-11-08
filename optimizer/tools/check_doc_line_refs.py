@@ -30,11 +30,20 @@
    在 ``segment.py`` 头部插入 15 行后，本工具输出逐字节不变、退出码仍是 0。
    原因很直接：它们只问「行号在不在范围内」「符号定义行在不在范围内」，
    整体平移后两个问题的答案都还是「在」。要让平移可见，必须记住**被引行当时
-   的内容**。口径：只覆盖 ``.py`` 桶里通过硬判据的那些引用；指纹 = 被引全部行
-   （含续段）逐行喂 sha256 取前 16 位；键 = ``文件名:范围文本#文档内出现序号``，
-   **键里不含文档行号** —— 否则在文档里插一段话就会让下面所有引用假失配。
+   的内容**。口径：覆盖**全部**通过硬判据的引用（2026-10-06 起含非 ``.py`` 桶，
+   见下）；指纹 = 被引全部行（含续段）逐行喂 sha256 取前 16 位；
+   键 = ``文件名:范围文本#文档内出现序号``，**键里不含文档行号** ——
+   否则在文档里插一段话就会让下面所有引用假失配。
    基线文件 ``optimizer/tools/doc_refs_baseline.json`` **随仓库提交**；
    改动任何被引代码行后必须重跑 ``--update-baseline``。
+   > **2026-10-06 起指纹扩到非 ``.py`` 桶**（基线 version 1 → 2）。
+   > 原先只覆盖 ``.py``，理由是「非 ``.py`` 桶只枚举、不判硬绿」；但那个桶
+   > **没有任何自动护栏**，于是它静默腐烂了：D-44 在 ``index.html`` 插了 13 行、
+   > 在 ``app.js`` 插了 65 行之后，5 条非 ``.py`` 引用集体指向了别的函数/元素，
+   > 而**全套测试仍然全绿**（D-41 段里另有 6 条早已漂了一位到十几行）。
+   > 指纹只回答「被引行的内容还是不是基线记的那几行」，不需要解析散文里的
+   > 符号名，所以它对非 ``.py`` 桶同样成立 —— 这条口径与本文件上面
+   > 「改动任何被引代码行后必须重跑 ``--update-baseline``」原本就是一致的。
 
 用法::
 
@@ -751,7 +760,7 @@ def main(argv: list[str] | None = None) -> int:
 #     但被引代码行没变 —— 那种情况必须是绿，否则每次改文档都假警报。
 #   * 「指纹不符」是**硬判据**（影响退出码）。「未入基线」「基线残留」只披露：
 #     前者是新增引用、后者是引用被删或范围被改，都不是「行号指到了别的内容上」。
-FINGERPRINT_BASELINE_VERSION = 1
+FINGERPRINT_BASELINE_VERSION = 2
 DEFAULT_BASELINE_REL = "optimizer/tools/doc_refs_baseline.json"
 
 
@@ -775,11 +784,15 @@ def cited_lines(ref: Ref, res: Resolved) -> tuple[str, ...]:
 def collect_fingerprints(
     report: Report, root: Path
 ) -> tuple[dict[str, str], dict[str, tuple[int, Ref]]]:
-    """返回 (键 → 指纹, 键 → (文档行号, 引用))。遍历顺序 = 文档顺序，故序号稳定。"""
+    """返回 (键 → 指纹, 键 → (文档行号, 引用))。遍历顺序 = 文档顺序，故序号稳定。
+
+    **含非 ``.py`` 桶**（2026-10-06 起）：那个桶没有硬判据，指纹是它唯一的护栏。
+    键里的文件名区分了桶，故两类引用不会撞键。
+    """
     refs: dict[str, str] = {}
     index: dict[str, tuple[int, Ref]] = {}
     seen: dict[tuple[str, str], int] = {}
-    for ref in report.py_refs():
+    for ref in report.refs:
         res = report.results[(ref.doc_line, ref.span[0])]
         if res.status != "ok" or failure_kind(ref, res) != "ok":
             continue

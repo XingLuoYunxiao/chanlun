@@ -118,6 +118,62 @@ def test_sync_all_failed_returns_nonzero(env, monkeypatch):
     assert rc != 0
 
 
+# ------------------------------------------------- 连续失败停批（2026-10-08 事故）
+# 单只失败不中断整批是对的（收盘数据不可再生）；但**整批都在失败**说明数据源
+# 或会话出了系统性问题。没有这道闸门时，一次「服务端挂掉」会把全市场同步
+# 变成 100 小时级的空转 —— 每只票都要先把重试预算烧完。
+
+
+def test_sync_stops_batch_after_consecutive_failures(env, monkeypatch):
+    calls: list[str] = []
+
+    def fake_fetch(code, period, start, end, adjust="2"):
+        calls.append(code)
+        raise DataSourceError("网络接收错误。")
+
+    monkeypatch.setattr(cli, "fetch_bars", fake_fetch)
+    monkeypatch.setattr(cli, "MAX_CONSECUTIVE_FAILURES", 3)
+
+    codes = ",".join(f"60000{i}" for i in range(6))
+    rc = cli.main(["sync", "--period", "day", "--codes", codes])
+
+    assert rc != 0
+    assert len(calls) == 3, f"应在第 3 只后停批，实际打了 {len(calls)} 只"
+
+
+def test_consecutive_failure_limit_is_a_small_finite_budget():
+    """停批阈值必须是个**小正整数**：它是「停批」这件事唯一的口径。
+
+    上面两条测的是**机制**（数到第 N 只就停、成功一次就清零），它们
+    `monkeypatch` 掉了常量，所以**钉不住这个值**。少了这一条，把
+    `MAX_CONSECUTIVE_FAILURES` 改成 `10**9` 等于把停批悄悄关掉，而全套测试
+    照旧全绿 —— 2026-10-09 用变异实测确认过。上界取 100：20 只 × 93 秒
+    ≈ 31 分钟，真跑起来再往上调就没有「早点停」的意义了。
+    """
+    assert cli.MAX_CONSECUTIVE_FAILURES >= 1
+    assert cli.MAX_CONSECUTIVE_FAILURES <= 100
+
+
+def test_sync_consecutive_counter_resets_on_success(env, monkeypatch):
+    """零星失败不该被误判成系统性问题：成功一次就把计数清零。"""
+    plan = ["ok", "fail", "fail", "ok", "fail", "fail"]
+    seen: list[str] = []
+
+    def fake_fetch(code, period, start, end, adjust="2"):
+        seen.append(code)
+        if plan[len(seen) - 1] == "fail":
+            raise DataSourceError("boom")
+        return _df()
+
+    monkeypatch.setattr(cli, "fetch_bars", fake_fetch)
+    monkeypatch.setattr(cli, "MAX_CONSECUTIVE_FAILURES", 3)
+
+    codes = ",".join(f"60000{i}" for i in range(6))
+    cli.main(["sync", "--period", "day", "--codes", codes])
+
+    assert len(seen) == 6, "成功一次后计数应清零，不该停批"
+
+
 def test_sync_incremental_starts_after_last_ts(env, monkeypatch):
     store.upsert("600000", "day", _df(3, "2024-01-02"))  # 末行 2024-01-04
     seen: dict[str, str] = {}
@@ -159,10 +215,16 @@ def test_sync_without_codes_uses_universe(env, monkeypatch):
 
     monkeypatch.setattr(cli, "fetch_bars", fake_fetch)
     assert cli.main(["sync", "--period", "day"]) == 0
-    assert set(calls) == {"600000", "000001"}, (
+    got = set(calls)
+    assert {"600000", "000001"} <= got, (
         "注入的取数函数收到的是**落库键**（D-43 起）：市场前缀与数据商写法"
         "由 sources.vendor_symbol 在取数层内部映射，调用方不再自己拼"
     )
+    # 2026-10-13：`universe` 只收 A 股股票，**指数与申万行业板块不在里面**，
+    # 所以范围必须由 `_market_scope` 显式补上 —— 否则 `daily` 一天都不会碰它们，
+    # 实测申万 155 个里 144 个停在 2026-09-30（D-49 登记的空白，本次修）。
+    assert any(str(c).endswith("000300") for c in got), "指数必须进范围"
+    assert any(str(c).startswith("sw.") for c in got), "申万行业板块必须进范围"
 
 
 def test_minute_sync_without_codes_uses_watchlist(env, monkeypatch):

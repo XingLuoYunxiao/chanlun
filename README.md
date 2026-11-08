@@ -69,7 +69,7 @@ python -m chanlun serve
 ```
 
 - **数据源**：缺省 `baostock`（`[data].source`），复权口径 `bs_adjust = "2"`（前复权）。另一条
-  路是 `tdx` —— 通达信 vipdoc 整包，不复权，官方只公开日线。换源是**换口径**（同一个
+  三种复权格式（**不复权 / 前复权 / 后复权**）在页面的复权按钮、接口的 `?adjust=` 与命令行的 `bars --adjust` / `levels --adjust` 上都能取到；因子表按 `(code, ts)` 存，与周期无关，一张表服务所有周期。**1 分钟**由**通达信在线行情（pytdx）**提供（约 4.5 个月，唯一来源）；**指数分钟**也走它（5 分钟约 2 年，远深于东财）。另有一条离线路是 `tdx` —— 通达信 vipdoc 整包，不复权，官方只公开日线。换源是**换口径**（同一个
   `(code, "day")` 文件被原子替换），切换前必须先 `python -m chanlun factors` 把除权因子反推
   落库，否则前复权副本被覆盖后再也反推不出来。
 - **存储**：`[data].root`（缺省 `data/`）下，`data/<周期>/<市场>/<裸码>.parquet` 存行情；
@@ -84,19 +84,39 @@ python -m chanlun serve
 
 ## 命令行
 
-`python -m chanlun [-h] [--version] {universe,sync,daily,tdx,factors,backtest,scan,serve,seed-watchlist} ...`
+`python -m chanlun [-h] [--version] {universe,sync,daily,tdx,import-text,bars,factors,industry,levels,backtest,scan,serve,seed-watchlist} ...`
 
 | 子命令 | 作用与主要参数 |
 |---|---|
 | `universe` | 重建品种表并打印数量；`--enrich` 逐只补全上市/退市信息（慢） |
-| `sync` | 同步 K 线到 Parquet；`--period`（必填，`day/60/30/15/5`）、`--codes`、`--full`、`--since`、`--workers` |
+| `sync` | 同步 K 线到 Parquet；`--period`（必填，`1/5/15/30/60/day`）、`--codes`、`--full`、`--since`、`--workers` |
 | `daily` | 收盘后一键流水线；`--dry-run`、`--periods`、`--codes`、`--source baostock\|tdx`、`--tdx-src`、`--no-download`、`--since`、`--workers`、`--notify console\|file\|null`、`--notify-path` |
 | `tdx` | 导入通达信 vipdoc 整包；`--download`、`--src`、`--period`、`--markets`、`--kinds`、`--codes`、`--dry-run` |
+| `import-text` | 从**文本导出**（CSV/TSV/txt）导入 K 线；`--src`（必填）、`--code`（必填）、`--period`（**带时刻的数据必填**）、`--adjust`、`--encoding`、`--dry-run`、`--replace`。**默认按 ts 合并，绝不销毁已有数据**；要整份替换才加 `--replace`。存在的理由：通达信 macOS 版没有 vipdoc（D-09），而它有导出 |
+| `signal-trail` | **信号留痕**：列出买卖点的存亡履历（存活 / **被证伪**，带「证伪于」那一刻）。`--code`（必填）、`--period`、`--step`（留痕分辨率，缺省 200 根）、`--all`、`--json`。买卖点是当下的判断，未确认的后来被证伪是**正常现象**，不许悄悄消失 |
+| `bars` | 导出行情，**三种复权格式任选**：`--code`（必填）、`--period`、`--adjust raw\|qfq\|hfq`（缺省 qfq，与页面一致）、`--limit`、`--csv`、`--out`。复权逻辑复用页面那一份实现（`web.api._period_frame`），不在命令行再写一遍 |
 | `factors` | 反推除权因子并入库；`--codes`、`--all`、`--source infer`、`--src`、`--period`、`--min-overlap`、`--dry-run` |
 | `backtest` | point-in-time 回测；`--codes`（必填）、`--start`、`--end`、`--period`、`--mode strict\|loose`、`--cash`、`--strategy`、`--benchmark` |
 | `scan` | 全市场扫描 / 自选池跟踪；`--periods`、`--codes`、`--workers`、`--top`、`--watch`、`--notify-file`、`--no-save`、`--run-date` |
 | `serve` | 启动盘后看盘页；`--host`、`--port` |
 | `seed-watchlist` | 把自选池重置成 7 个大盘指数；`--keep`、`--no-sync`、`--since` |
+| `industry` | 列出申万一级/二级行业指数；`--level`、`--check`（联网核对）、`--json` |
+| `levels` | 打印一只票的**级别递归**结构（线段 → 各级中枢 / 走势类型，D-51）；`--codes`（必填）、`--period`、`--max-depth`、`--verbose`、`--json`。只读本地数据，不联网、不落库 |
+
+`levels` 是核对「中枢到底怎么来的」最直接的出口：
+
+```bash
+python -m chanlun levels --codes sh.600030 --period 5 --verbose
+# sh.600030   基准显微镜=5   bar=78240 根（2020-01-02 09:35 ~ 2026-09-30 15:00）
+#   L0 输入：675 根线段（已确认 673 根）
+#   级别        深度    中枢     走势类型   来源
+#   5          0   115       83   线段直接构成（f1）
+#   30         1    16       14   由 83 个 5 级走势类型上推（f2）
+#   day        2     2        1   由 14 个 30 级走势类型上推（f2）
+```
+
+注意 `--period` 是**基准显微镜**，不是「这张图对应的中枢级别」：级别名只表示
+相对于基准的递归深度（第 63 课「什么级别的图和什么级别的中枢没有任何必然关系」）。
 
 `--version` 挂在顶层，`python -m chanlun --version` 直接答出版本号。完整参数以
 `python -m chanlun <子命令> --help` 为准。
@@ -178,6 +198,18 @@ optimizer/         优化器的提案、日志、理论条目与测量脚本
 下面每一条都能在代码或证据文件里查到 —— **请按「本系统与缠论原文有已知差距」来理解它，
 而不是「严格遵循缠论」**。
 
+- **级别递归（f2）已实现，但只到 `chan/recursion.py`，没接进快照 / API / 扫描 / 回测；
+  而且「级别」目前仍等于行情周期。** 第 84 课把中枢递归拆成 `f1(a0)=a1` 与
+  `f2(an)=an+1`。D-51 起 f2 已落地：**上一级中枢由三个连续次级别走势类型构造**，
+  逐级上推，`python -m chanlun levels --codes sh.600030 --period 5` 可以直接看
+  （实测 5 分钟基准：L0 115 中枢 → L1(30) 16 → L2(day) 2）。第 0 层与旧的
+  「线段直接构中枢」**逐字段相等**，所以这不是判据变更。但 `Snapshot` 没有 `levels`
+  字段、`/api/structure` 不返回它，`scan` / `backtest` 仍走旧口径；
+  `ChanEngine` 的 `self.level = level or period` 也保持原样 —— 而第 63 课
+  「什么级别的图和什么级别的中枢没有任何必然关系」与第 84 课「级别，本质上与时间
+  无关」都否掉这个等式。纠正它要动落库口径，属独立变更。另：走势类型路径上的
+  `GG/DD` 取「组内第一个有方向的段」来定 Z 走势段，是**确定但非原文直推**的选择
+  （原文的 A、C 同向假设以「相邻方向交替」为前提，实测相邻同向率 53%，不成立）。
 - **线段划分用的是全局择优，不是原文的当下程序；D-40 只修掉了「向后借用数据」那两处。**
   第 71 课讲的是「假设某转折点是分界点 → 用划分的两种情况考察 → 不满足则原线段延续」，
   是单遍左到右的局部判定；代码仍用记忆化搜索取「还能确认的线段数最多」的划分

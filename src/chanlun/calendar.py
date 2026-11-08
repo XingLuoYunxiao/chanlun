@@ -164,7 +164,11 @@ def _write_csv(path: Path, days: set[str]) -> None:
 def _fetch_from_baostock() -> set[str]:
     import baostock as bs
 
-    lg = bs.login()
+    # 走数据源那层的带超时登录：裸 `bs.login()` 的 socket 没有超时，
+    # 服务端不回包时会永久阻塞（2026-10-08 的事故形状）。
+    from .data.baostock_source import bounded_login
+
+    lg = bounded_login()
     if lg.error_code != "0":
         raise RuntimeError(f"baostock 登录失败: {lg.error_code} {lg.error_msg}")
     try:

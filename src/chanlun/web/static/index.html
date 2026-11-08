@@ -27,6 +27,7 @@
       <button type="button" class="period" role="tab" aria-selected="false" data-period="month">月线</button>
       <button type="button" class="period" role="tab" aria-selected="false" data-period="30">30分</button>
       <button type="button" class="period" role="tab" aria-selected="false" data-period="5">5分</button>
+      <button type="button" class="period" role="tab" aria-selected="false" data-period="1">1分</button>
     </div>
     <label class="field field-narrow">
       <span class="field-label">根数</span>
@@ -73,11 +74,29 @@
     </form>
     <p class="watch-err" id="watch-add-error" role="alert" hidden></p>
 
+    <!-- 行业指数：用户 2026-10-05 要求「A 股要有那个一级行业、二级行业的那个行业指数」。
+         清单内置在后端 `data/industry.py`（一级 31 / 二级 124，`GET /api/industries`），
+         所以这里**不写死任何行业名** —— 申万几年调一次分类，写死在 HTML 里没人会去改。
+         2026-10-06 用户要求「可以弹出一个弹窗，就是一个比较大的弹窗，在里面进行选」，
+         于是入口从 `<select>` 换成一个按钮，点它开 `#industry-modal`（见 body 末尾）。
+         放在自选栏而不是顶栏：顶栏那一条是 flex 不换行的，再加一格会把整行挤爆
+         （`.stamp` 的 min-width 380px 就是这么定的）。 -->
+    <div class="ind-pick">
+      <span class="ind-label" id="ind-label">行业指数 · 申万</span>
+      <button type="button" class="ind-open" id="industry"
+              aria-haspopup="dialog" aria-labelledby="ind-label industry-name"
+              title="打开行业指数选择器">
+        <span class="ind-open-name" id="industry-name">选一个行业…</span>
+        <span class="ind-open-caret" aria-hidden="true">▾</span>
+      </button>
+      <p class="ind-note" id="industry-note" hidden></p>
+    </div>
+
     <div class="watch-rows" id="watch-rows">
       <div class="watch-empty">自选股是空的。把常看的票加进来，点一下就能看它的笔、线段、中枢和买卖点。</div>
     </div>
 
-    <p class="watch-foot">默认是 11 个大盘指数（含恒生 / 恒生科技 / 道琼斯 / 纳斯达克）；日线在本地，周线/月线由日线聚合。缺数据的票会标出来，↑↓ 调顺序。</p>
+    <p class="watch-foot">默认是 11 个大盘指数（含恒生 / 恒生科技 / 道琼斯 / 纳斯达克）；日线在本地，周线/月线由日线聚合。缺数据的票会标出来，↑↓ 调顺序。上面的「行业指数 · 申万」是一级 / 二级行业指数（板块只有日线，周 / 月由日线聚合）。</p>
   </aside>
 
   <main class="stage">
@@ -89,6 +108,10 @@
               title="点击切换复权口径：前复权 → 后复权 → 不复权"
               aria-label="复权口径，点击切换">复权 · 前复权</button>
       <span class="adjust-note" id="adjust-note" hidden></span>
+      <!-- 信号留痕的图注。**必须是真的 DOM 文本**：ECharts 画在 canvas 上，
+           图上的「✕」不可检索、也不可读；而「留痕分辨率」是这张图最容易被
+           误读的东西（每 N 根才检查一次，更短的信号看不见），必须写出来。 -->
+      <span class="adjust-note" id="trail-note" hidden></span>
       <button type="button" class="adjust" id="mode-btn"
               title="点击切换买卖点口径：严格 → 非严格"
               aria-label="买卖点口径，点击切换">口径：严格</button>
@@ -117,12 +140,47 @@
 
     <div id="chart" class="chart" role="img" aria-label="K线、成交量和 MACD，叠加均线、笔、线段、中枢与买卖点"></div>
     <div id="notice" class="notice" hidden></div>
+    <!-- 按需补最新的浮标（D-49 / D-50）：和图**同时**可见，且绝对定位不占格 ——
+         它不许进 body 网格（styles.css 开头那 4 行的硬约束）。
+         D-50 起它**常驻**，恒定回答「你正在看的这一只、这个周期，数据到哪儿了」；
+         可点的两态（落后可补 / 失败重试）把动作放进一个**真 button**，
+         而不是让整块状态文字可点 —— 状态文字与动作是两件事。 -->
+    <div id="sync-chip" class="sync-chip" hidden role="status" aria-live="polite">
+      <span id="sync-chip-text"></span>
+      <button id="sync-chip-go" class="sync-chip-go" type="button" hidden></button>
+    </div>
   </main>
 
   <aside class="ledger" id="ledger">
     <div class="ledger-empty">输入代码后，这里列出该级别的线段、中枢与买卖点，以及每个结构的确认时间。</div>
   </aside>
 </div>
+
+  <!-- 行业指数选择器。用原生 <dialog> + showModal()：遮罩、Esc 关闭、焦点圈禁、
+       背景 inert 全部由浏览器给 —— 手写这四件事是无障碍 bug 的高发区。
+       **它不占 body 的 grid 轨道**：未打开是 display:none，showModal() 后进 top layer
+       且 position:fixed，两种状态都不在流内（`test_frontend_watchlist.py` 的
+       `NO_BOX_TAGS` 因此放行 dialog，理由写在那个常量的注释里）。
+       tab 与卡片全部由 app.js 从 `/api/industries` 的响应里铺，这里一个行业名都没有。 -->
+  <dialog id="industry-modal" aria-labelledby="ind-modal-title">
+    <div class="ind-modal-inner">
+      <header class="ind-modal-head">
+        <div class="ind-modal-title">
+          <h2 id="ind-modal-title">选行业指数</h2>
+          <p class="ind-modal-sub">申万行业分类 · 一级 / 二级</p>
+        </div>
+        <button type="button" class="ind-close" id="ind-close" aria-label="关闭">✕</button>
+      </header>
+      <div class="ind-modal-controls">
+        <input type="search" id="ind-search" class="ind-search"
+               placeholder="搜行业名或代码，例如「801120」"
+               autocomplete="off" spellcheck="false" aria-label="搜索行业">
+        <div class="ind-tabs" id="ind-tabs" role="tablist" aria-label="行业级别"></div>
+      </div>
+      <div class="ind-grid" id="ind-grid"></div>
+      <p class="ind-modal-foot" id="ind-modal-foot"></p>
+    </div>
+  </dialog>
 
 <script src="/static/vendor/echarts.min.js"></script>
 <script src="/static/app.js"></script>

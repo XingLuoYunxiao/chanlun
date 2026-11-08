@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import socket as _socket
 import time as _time
 
 import baostock as bs
@@ -30,14 +31,53 @@ DAY_PERIODS = {"day", "d", "week", "w", "month", "m"}
 RETRIES = 3
 RETRY_SLEEP = 1.5
 
+#: baostock 那个**常驻 socket** 的收发超时（秒）。
+#:
+#: baostock 的 socket 是裸创建的：`baostock/util/socketutil.py` 里直接
+#: `socket.socket(socket.AF_INET, socket.SOCK_STREAM)` + `.connect(...)`，
+#: **从不 `settimeout`**；`send_msg()` 又在 `while True` 里 `recv(8192)` 直到收到
+#: 结束标记。于是服务端一旦接受连接却不回包，`recv` 就**永久**阻塞 ——
+#: `RETRIES` 只在「拿到响应之后」才生效，对静默挂死毫无办法。
+#:
+#: 实测代价：2026-10-08 的定时任务卡了 **6 小时 14 分**（主线程栈停在 `sock_recv`，
+#: 累计 CPU 仅 2.8 秒，落库停在 17:36:32 的第 26 只票），而且会一路卡到
+#: 第二天开盘 —— 没有任何东西会把它叫醒。
+#:
+#: 30 秒对单只票的一次日线请求足够宽裕（全市场实测约 1.5 秒/只），
+#: 同时把最坏情况的单只代价钉在 `3 × 30s + 2 × 1.5s ≈ 93s`。
+SOCKET_TIMEOUT = 30.0
+
 _LOGGED_IN = False
+
+
+def bounded_login():
+    """`bs.login()`，但让 baostock 新建的 socket **带上超时**。
+
+    `socket.setdefaulttimeout()` 只作用于**之后创建**的 socket，而 socket 会把
+    创建时的默认值记在自己身上 —— 所以登录返回后恢复进程默认值，那个常驻 socket
+    仍然是带超时的。这样既不把超时泄漏给同进程的其它 socket（看盘页的 uvicorn），
+    也不用去猴子补丁第三方库。
+
+    超时抛出后 baostock 自己的 `send_msg()` 会吞掉异常返回 `None`，
+    `history.py` 把它翻成 `BSERR_RECVSOCK_FAIL 网络接收错误。` —— 于是走的是
+    `fetch_bars` **既有的**重试 / 重登路径，不需要额外判据。
+
+    所有 baostock 会话都必须从这里登录（`_ensure_login` 与
+    `calendar._fetch_from_baostock`）；直接调 `bs.login()` 就绕过了这道防护。
+    """
+    prev = _socket.getdefaulttimeout()
+    _socket.setdefaulttimeout(SOCKET_TIMEOUT)
+    try:
+        return bs.login()
+    finally:
+        _socket.setdefaulttimeout(prev)
 
 
 def _ensure_login() -> None:
     global _LOGGED_IN
     if _LOGGED_IN:
         return
-    lg = bs.login()
+    lg = bounded_login()
     if lg.error_code != "0":
         raise DataSourceError(f"baostock 登录失败: {lg.error_code} {lg.error_msg}")
     _LOGGED_IN = True

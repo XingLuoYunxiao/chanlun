@@ -55,13 +55,20 @@ def test_parse_jsonp_rejects_a_non_array_payload():
 
 # ---------------- 行解析 ----------------
 def test_rows_to_frame_maps_the_short_field_names():
-    df = ss._rows_to_frame([_row("2026-10-05", o=1.0, h=3.0, low=4.0, c=2.0)])
+    """`{d,o,h,l,c,v,a}` 的四个价格字段必须各就各位。
+
+    取值刻意选成**合法且四值互异**（`low 1 ≤ open 2 ≤ close 3 ≤ high 4`）：
+    `normalize` 现在会剔除倒挂行（`high < low`，见 D-46），拿倒挂值当探针会
+    让整个帧被剔空、`iloc[0]` 直接越界，测的就不再是字段映射了。
+    四个值互异 + 逐列断言仍然钉死任何错位。
+    """
+    df = ss._rows_to_frame([_row("2026-10-05", o=2.0, h=4.0, low=1.0, c=3.0)])
     r = df.iloc[0]
     assert (float(r["open"]), float(r["close"]), float(r["high"]), float(r["low"])) == (
-        1.0,
         2.0,
         3.0,
         4.0,
+        1.0,
     )
     assert float(r["volume"]) == 1234.0
     assert float(r["amount"]) == 5678.0

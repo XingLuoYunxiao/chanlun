@@ -61,6 +61,43 @@ def normalize(df: pd.DataFrame | None) -> pd.DataFrame:
         )
         out = out[~invalid]
 
+    # 结构不可能的行，分两档处置 —— 这个分档是刻意的，不是随手写的。
+    #
+    # 一档：倒挂（high < low）。价格区间是空的，而分型四条件（chan/fractal.py
+    # 的 `b.high > a.high and b.high > c.high and b.low > a.low and b.low > c.low`
+    # 及对偶）与包含关系判定（chan/include.py 的 `_contains`）**全部**建立在
+    # high/low 的区间比较上。倒挂行不只是"脏一行"：它要么被原样 append 成一根
+    # 倒挂的合并K线，要么与左邻构成包含关系后被 `max/max`（向上）或 `min/min`
+    # （向下）吸收 —— 两个方向都可能产出 high < low 的合并K线。所以**剔除**，
+    # 与非正价格同一处置。判据是严格小于，一字板（high == low）不受影响。
+    #
+    # 二档：越界（open 或 close 出了 [low, high]）。**只警告、保留**。open 不参与
+    # 任何判据；close 不参与分型/笔/线段/中枢的极值比较，但会进 MACD
+    # （chan/signal.py 与 chan/divergence.py 都按 `bars["close"]` 现算）⇒ 影响背驰。
+    # 可剔除它会少一根 K 线，包含处理与分型跟着重排 —— 那个代价大于"一个字段偏
+    # 一点"，所以在拿到实测证据之前先只观测。实测（2026-10-06，全库 5613 个
+    # parquet / 9,119,671 行）倒挂 2 行、越界 62 行，见
+    # docs/evidence/2026-10-06-行情结构不可能的行.md。
+    upside_down = out["high"] < out["low"]
+    if bool(upside_down.any()):
+        logger.warning(
+            "normalize: 剔除 %d 根倒挂 K 线（high < low，前几根 ts=%s）",
+            int(upside_down.sum()),
+            ", ".join(out.loc[upside_down, "ts"].head(5).astype(str)),
+        )
+        out = out[~upside_down]
+
+    out_of_range = (out["open"] > out["high"]) | (out["open"] < out["low"]) | (
+        out["close"] > out["high"]
+    ) | (out["close"] < out["low"])
+    if bool(out_of_range.any()):
+        logger.warning(
+            "normalize: 保留 %d 根字段越界 K 线（open/close 出了 [low, high]，"
+            "前几根 ts=%s）—— 仅观测，不剔除",
+            int(out_of_range.sum()),
+            ", ".join(out.loc[out_of_range, "ts"].head(5).astype(str)),
+        )
+
     out = out.drop_duplicates(subset=["ts"], keep="last")
     out = out.sort_values("ts", kind="stable").reset_index(drop=True)
     return out

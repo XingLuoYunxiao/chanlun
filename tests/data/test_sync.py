@@ -43,6 +43,34 @@ class _FixedCal:
 CAL = _FixedCal()
 
 
+class _PendingCal:
+    """把"今天"钉在 **2026-10-01 当天**（它自己是交易日，但源还没有它的 K 线）。
+
+    2026-10-09 00:06 的补跑就是这个形状：`last_trading_day(2026-10-09)` 返回
+    2026-10-09，而本地最后一根是 2026-10-08 —— 于是 `start_for` 认为
+    「下一交易日 10-09 还没到 `end`」，返回 10-09 去取，可开盘前源一根都没有。
+    """
+
+    END = dt.date(2026, 10, 1)
+
+    def last_trading_day(self, d) -> dt.date:  # noqa: ANN001 - 测试桩
+        return self.END
+
+    def next_trading_day(self, d) -> dt.date:  # noqa: ANN001
+        table = {
+            "2026-09-28": dt.date(2026, 9, 29),
+            "2026-09-29": dt.date(2026, 9, 30),
+            "2026-09-30": dt.date(2026, 10, 1),  # == END，不算"已是最新"
+        }
+        key = str(d)[:10]
+        if key not in table:
+            raise AssertionError(f"测试桩没定义这个日期的下一交易日: {d}")
+        return table[key]
+
+
+PENDING = _PendingCal()
+
+
 def _bars(ts_list: list[str], base: float = 10.0) -> pd.DataFrame:
     return pd.DataFrame(
         {
@@ -158,6 +186,66 @@ def test_sync_one_records_an_empty_source_as_skipped(cfg, conn, monkeypatch):
     assert out.rows == 0
     row = meta.get_sync(conn, "600000", "day")
     assert int(row["rows"]) == 0 and row["error"] is None
+
+
+def test_sync_one_does_not_erase_the_watermark_when_the_source_has_no_new_bar(
+    cfg, conn, monkeypatch
+):
+    """源对"还没开盘的那个交易日"返回零行，不许把已有水位抹成"从未同步"。
+
+    2026-10-09 00:06 的补跑就是这个形状：本地最后一根是 10-08，`start_for`
+    算出下一交易日 10-09（`<= end`），于是去取 10-09 —— 可开盘前源一根都没有。
+    旧代码把 `start_ts/end_ts/rows` 写成 `None/None/0`，`check_sufficiency`
+    随即判「meta.sync_state 无该周期记录（尚未同步）」，这只票当天被踢出结构快照。
+    实测 23 只（`000001` 平安银行、`000002` 万科A、`000006` 深振业A …）。
+    """
+    store.upsert("600000", "day", _bars(["2026-09-29", "2026-09-30"]))
+    meta.set_sync(
+        conn, "600000", "day", "2026-09-29", "2026-09-30", 2, str(cfg.bs_adjust), error=None
+    )
+
+    monkeypatch.setattr(sync, "fetch_bars", lambda *a, **k: _bars([]))
+    out = sync.sync_one(conn, cfg, "600000", "day", cal=PENDING)
+
+    assert out.status == "skipped"
+    row = meta.get_sync(conn, "600000", "day")
+    assert row["start_ts"] == "2026-09-29" and row["end_ts"] == "2026-09-30", (
+        "零行只说明「这段没有新数据」，不说明「这只票没有数据」"
+    )
+    assert int(row["rows"]) == 2
+    assert row["error"] is None, "零行不是错误，别在页面上报成失败"
+
+
+def test_a_zero_row_sync_does_not_make_the_code_look_never_synced(cfg, conn, monkeypatch):
+    """钉住后果本身：水位被抹掉的下游就是「数据不足：尚未同步，已跳过」。"""
+    from chanlun.scan.scanner import check_sufficiency
+
+    store.upsert("600000", "day", _bars(["2026-09-29", "2026-09-30"]))
+    meta.set_sync(
+        conn, "600000", "day", "2026-09-29", "2026-09-30", 2, str(cfg.bs_adjust), error=None
+    )
+    monkeypatch.setattr(sync, "fetch_bars", lambda *a, **k: _bars([]))
+    sync.sync_one(conn, cfg, "600000", "day", cal=PENDING)
+
+    row = meta.get_sync(conn, "600000", "day")
+    suf = check_sufficiency(store.read("600000", "day"), "day", row["start_ts"])
+    assert "尚未同步" not in suf.reason, (
+        f"本地 parquet 明明是完整的，却被判成从未同步：{suf.reason}"
+    )
+
+
+def test_sync_one_keeps_the_previous_watermark_when_local_is_empty(cfg, conn, monkeypatch):
+    """本地也没有、源也没有 —— 也只能保留原水位，不许改写它。"""
+    meta.set_sync(
+        conn, "600000", "day", "2026-01-05", "2026-09-30", 180, str(cfg.bs_adjust), error=None
+    )
+    monkeypatch.setattr(sync, "fetch_bars", lambda *a, **k: _bars([]))
+    out = sync.sync_one(conn, cfg, "600000", "day", cal=PENDING)
+
+    assert out.status == "skipped"
+    row = meta.get_sync(conn, "600000", "day")
+    assert row["start_ts"] == "2026-01-05" and row["end_ts"] == "2026-09-30"
+    assert int(row["rows"]) == 180
 
 
 def test_sync_one_records_a_failure_without_raising(cfg, conn, monkeypatch):

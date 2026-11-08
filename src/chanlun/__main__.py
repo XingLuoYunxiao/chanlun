@@ -8,6 +8,7 @@
     python -m chanlun backtest [--period day] [--codes ...]
     python -m chanlun tdx [--download] [--src DIR] [--period day] [--dry-run]
     python -m chanlun factors [--codes ... | --all] [--src DIR] [--dry-run]
+    python -m chanlun industry [--level 1|2] [--check] [--json]
     python -m chanlun serve [--host 127.0.0.1] [--port 8888]
 
 约定：
@@ -36,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import logging
 import sqlite3
 import sys
@@ -48,12 +50,14 @@ from tqdm import tqdm
 
 from .calendar import calendar_for, get_calendar
 from .chan.macd import macd
+from .chan.recursion import MAX_DEPTH
 from .config import PROJECT_ROOT, Config, load_config
 from .data import markets, meta, periods, quality, sources, store
 from .data import sync as sync_mod
 from .data.baostock_source import strip_bs_code, to_bs_code
 from .data.factors import MIN_OVERLAP
 from .data.sources import fetch_bars
+from .data.types import DataSourceError
 from .data.universe import build_universe
 from .notify import build_notifier, notify_scan, notify_track
 from .scan import (
@@ -70,7 +74,19 @@ log = logging.getLogger("chanlun")
 
 # 首次同步的起点：与 `data/sync.py` 共用一份，避免两处口径分叉。
 FULL_START = sync_mod.FULL_START
-PERIODS = ("day", "60", "30", "15", "5")
+#: CLI 认得的周期。**`"1"` 是 2026-10-13 补的**：pytdx 实测能取到 1 分钟
+#: （股票 23520 根 / 指数 22320 根，约 4.5 个月）—— 在此之前 1 分钟**没有任何来源**
+#: （baostock 报 `10004012`、腾讯 320 根、新浪 1023 根、东财只留 1 个交易日），
+#: 所以它不在表里。级别名链早就支持 `1`（`chan/pivot.py::LEVEL_UP`）。
+PERIODS = ("1", "5", "15", "30", "60", "day")
+
+#: 连续这么多只失败就停批（见 `_sync_period`）。
+#:
+#: 「单只失败不中断整批」的前提是**失败是零星的**。整批连续失败说明的是数据源
+#: 或会话出了系统性问题，此时继续跑完剩下的几千只票只是在烧时间：每只票都要
+#: 先把 `RETRIES × SOCKET_TIMEOUT` 的重试预算烧光（约 93 秒），5471 只 ≈ 141 小时。
+#: 20 只 × 93 秒 ≈ 31 分钟，足够判断"今天这条链路是坏的"，也还留得住重跑的窗口。
+MAX_CONSECUTIVE_FAILURES = 20
 
 
 # ---------------- 入口 ----------------
@@ -93,10 +109,20 @@ def main(argv: list[str] | None = None) -> int:
         from .backtest import cli as backtest_cli
 
         return int(backtest_cli.run_command(args, cfg))
+    if args.command == "import-text":
+        return _cmd_import_text(args, cfg)
+    if args.command == "bars":
+        return _cmd_bars(args, cfg)
+    if args.command == "signal-trail":
+        return _cmd_signal_trail(args, cfg)
     if args.command == "tdx":
         return _cmd_tdx(args, cfg)
     if args.command == "factors":
         return _cmd_factors(args, cfg)
+    if args.command == "industry":
+        return _cmd_industry(args, cfg)
+    if args.command == "levels":
+        return _cmd_levels(args, cfg)
     if args.command == "serve":
         return _cmd_serve(args, cfg)
     if args.command == "seed-watchlist":
@@ -171,6 +197,8 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_daily_parser(sub)
     _add_tdx_parser(sub)
     _add_factors_parser(sub)
+    _add_industry_parser(sub)
+    _add_levels_parser(sub)
 
     # Task 14/15 的子命令由各自模块提供参数定义，父分发器只负责挂上去：
     # 参数长在谁身上，谁的 CLI 测试就覆盖得到，不会出现「父命令与子命令两套参数」。
@@ -249,9 +277,105 @@ def _add_daily_parser(sub) -> argparse.ArgumentParser:
 
 
 # ---------------- 子命令 ----------------
+def _add_import_text_parser(sub) -> argparse.ArgumentParser:
+    """从**文本导出**导入 K 线（CSV/TSV/txt）。
+
+    存在的理由：通达信 macOS 版**没有 vipdoc**（包内不存在 `.lc5`/`fzline` 任何字面量，
+    见 D-09 变更历史），而它**有导出（CSV/txt/Excel）**。所以 macOS 上拿本地 K 线
+    现实做法是「客户端导出 → 这个命令导入」。
+    """
+    p = sub.add_parser("import-text", help="从文本导出（CSV/TSV/txt）导入 K 线")
+    p.add_argument("--src", required=True, help="导出文件路径")
+    p.add_argument("--code", required=True, help="落库键，如 sh.600030 / 600030 / sw.801010")
+    p.add_argument(
+        "--period", default=None,
+        help="周期。**含时刻的数据必须显式给**（1/5/15/30/60）—— "
+             "从时间戳只能看出「是不是分钟」，看不出「几分钟」，猜错会把 5 分钟静默存成日线",
+    )
+    p.add_argument("--adjust", default="raw", help="这份导出的复权口径，原样记录（默认 raw）")
+    p.add_argument("--encoding", default=None, help="强制编码；缺省依次试 utf-8-sig/utf-8/gb18030")
+    p.add_argument("--dry-run", action="store_true", help="只解析与统计，不落库")
+    p.add_argument(
+        "--replace", action="store_true",
+        help="**整份替换**同名 (code, period)。缺省是**按 ts 合并**（绝不销毁已有数据）")
+    return p
+
+
+def _cmd_import_text(args, cfg: Config) -> int:
+    """把一份文本导出写进本地库。**口径照实记录，不猜。**"""
+    from .data import sources, textimport
+
+    src = Path(args.src)
+    if not src.is_file():
+        print(f"找不到文件：{src}", file=sys.stderr)
+        return 2
+    try:
+        df = textimport.load(src, args.encoding or None)
+    except textimport.TextImportError as exc:
+        print(f"读不成 K 线：{exc}", file=sys.stderr)
+        return 2
+
+    has_time = " " in str(df["ts"].iloc[0])
+    period = args.period
+    if period is None:
+        if has_time:
+            print(
+                "这份数据带时刻（是分钟线），但**从时间戳看不出是几分钟**。\n"
+                "  请显式给 --period（1/5/15/30/60）—— 猜错会把 5 分钟静默存成日线，\n"
+                "  而两边看起来都「导入成功」。",
+                file=sys.stderr,
+            )
+            return 2
+        period = "day"
+
+    try:
+        key = sources.store_key_for(args.code)
+    except Exception as exc:
+        print(f"认不出代码 {args.code!r}：{exc}", file=sys.stderr)
+        return 2
+
+    first, last = str(df["ts"].iloc[0]), str(df["ts"].iloc[-1])
+    print(
+        f"文本导入：{src.name} → {key}[{period}]  {len(df)} 行  {first} ~ {last}  "
+        f"口径={args.adjust}"
+    )
+    if args.dry_run:
+        print("  （--dry-run：没有写库）")
+        return 0
+
+    # ★ **默认合并，不默认替换。** 这里踩过一次：起先用 `store.write`（整份替换，
+    # 与 `tdx` 同语义），结果拿一个 2 行的测试文件把 `data/5/sh/600030.parquet`
+    # 的 **78432 根真数据**覆写掉了 —— 而命令只打印「已写入」，看不出任何异常。
+    # 这正是 D-19 那条「`store.write` 是换源不是补充」。导入一段导出**不该**有
+    # 抹掉历史的权力，所以默认 `upsert`（按 ts 合并），要整份替换必须显式 `--replace`。
+    conn = meta.init()
+    try:
+        if args.replace:
+            store.write(key, period, df)
+            written = len(df)
+        else:
+            written = store.upsert(key, period, df)
+        stored = store.read(key, period)
+        meta.set_sync(
+            conn, key, period,
+            str(stored["ts"].iloc[0]) if len(stored) else first,
+            str(stored["ts"].iloc[-1]) if len(stored) else last,
+            len(stored), str(args.adjust), error=None,
+        )
+    finally:
+        conn.close()
+    verb = "整份替换" if args.replace else f"合并（新增 {written} 行）"
+    print(f"  {verb} → {store.path_for(key, period)}，现共 {len(stored)} 行")
+    return 0
+
+
 def _add_tdx_parser(sub) -> argparse.ArgumentParser:
     """通达信整包导入。`--period` 故意不用 argparse 的 choices：
     分钟周期要在 `_cmd_tdx` 里给出「官方没有公开分钟整包」的解释，而不是一句 usage。"""
+    _add_import_text_parser(sub)
+    _add_bars_parser(sub)
+    _add_signal_trail_parser(sub)
+
     p = sub.add_parser("tdx", help="导入通达信 vipdoc 整包（官方只公开日线）")
     p.add_argument("--download", action="store_true", help="先下载官方整包（约 551 MB）再解压")
     p.add_argument(
@@ -266,6 +390,9 @@ def _add_tdx_parser(sub) -> argparse.ArgumentParser:
     )
     p.add_argument("--codes", default=None, help="逗号分隔代码，缺省为目录内全部")
     p.add_argument("--dry-run", action="store_true", help="只统计不落库")
+    p.add_argument(
+        "--allow-unverified", action="store_true",
+        help="分钟周期专用：允许写入**未通过日线交叉验证**的数据（默认拒绝写入）")
     return p
 
 
@@ -285,6 +412,21 @@ def _add_factors_parser(sub) -> argparse.ArgumentParser:
     p.add_argument("--period", default="day", help="反推所依据的行情周期，目前只有 day")
     p.add_argument("--min-overlap", type=int, default=MIN_OVERLAP, help="两份数据最少重叠根数")
     p.add_argument("--dry-run", action="store_true", help="只反推不落库")
+    return p
+
+
+def _add_industry_parser(sub) -> argparse.ArgumentParser:
+    """申万行业板块（一级/二级行业指数）。"""
+    p = sub.add_parser(
+        "industry",
+        help="列出申万一级/二级行业指数（内置清单；--check 联网核对）")
+    p.add_argument(
+        "--level", default="", choices=("", "1", "2"),
+        help="只列一个级别：1=一级行业，2=二级行业；缺省两个都列")
+    p.add_argument(
+        "--check", action="store_true",
+        help="联网拉数据商的板块列表，与内置清单逐条对照（有差异退出码 1）")
+    p.add_argument("--json", action="store_true", help="输出 JSON，便于脚本消费")
     return p
 
 
@@ -453,6 +595,9 @@ def _cmd_sync(args, cfg: Config) -> int:
     finally:
         conn.close()
     print(f"同步完成: 成功 {out.ok} 失败 {out.failed} 跳过 {out.skipped}（共 {out.total} 只）")
+    if out.aborted:
+        print(f"已停批：{out.aborted}")
+        return 1
     return 0 if (out.ok > 0 or out.failed == 0) else 1
 
 
@@ -474,10 +619,15 @@ class SyncOutcome:
     #: 整包导入必须分市场报，不能报一个笼统的"最新日期"：北交所实测落后沪深一整年
     #: （2025-09-30 vs 2026-09-30），一个平均数会把这个事实抹掉。
     newest: tuple[tuple[str, str], ...] = ()
+    #: 连续失败触发的停批原因；空串表示整批都跑过了。停批意味着这一天的数据
+    #: **大面积缺失**，跟「零星的几只票取不到」不是一回事，必须能看出来。
+    aborted: str = ""
 
     def summary(self) -> str:
         text = (f"{self.period}: 成功 {self.ok} 失败 {self.failed} 跳过 {self.skipped}"
                 f"（共 {self.total} 只）")
+        if self.aborted:
+            text += f"；**已停批** {self.aborted}"
         if self.newest:
             text += "；最新 " + " ".join(f"{m} {d}" for m, d in self.newest)
         return f"{text}；首个错误：{self.first_error}" if self.first_error else text
@@ -550,7 +700,10 @@ def _switch_note(conn: sqlite3.Connection, source: str) -> str:
 
 def _sync_period(conn: sqlite3.Connection, cfg: Config, period: str, *, codes,
                  full: bool, since: dt.date | None, workers: int) -> SyncOutcome:
-    """同步一个周期。**单只失败不中断整批**，错误逐只写入 `meta.sync_state.error`。"""
+    """同步一个周期。**单只失败不中断整批**，错误逐只写入 `meta.sync_state.error`。
+
+    唯一的例外是「连续失败」：见 `MAX_CONSECUTIVE_FAILURES`。
+    """
     cal = get_calendar()
     today = dt.date.today()
     end = cal.last_trading_day(today)
@@ -563,6 +716,8 @@ def _sync_period(conn: sqlite3.Connection, cfg: Config, period: str, *, codes,
 
     ok = failed = skipped = 0
     first_error = ""
+    aborted = ""
+    consecutive = 0
     for raw in tqdm(codes, desc=f"sync {period}", unit="只"):
         # 单只同步的全部逻辑在 `data/sync.py`：命令行与看盘页的「同步这个周期」
         # 按钮共用一份，免得两处的增量起点/复权口径各写一套、最后分叉成两个库。
@@ -571,13 +726,22 @@ def _sync_period(conn: sqlite3.Connection, cfg: Config, period: str, *, codes,
         )
         if out.status == "ok":
             ok += 1
+            consecutive = 0
         elif out.status == "failed":
             failed += 1
+            consecutive += 1
             first_error = first_error or f"{raw}: {out.error}"
+            if consecutive >= MAX_CONSECUTIVE_FAILURES:
+                aborted = (f"连续 {consecutive} 只失败，停批（疑似数据源不可用或会话失效）；"
+                           f"最后一只 {raw}: {out.error}")
+                log.error("sync %s 停批：%s", period, aborted)
+                break
         else:
+            # 零行 = 源对该票无数据（退市/停牌/当天 bar 未发布）；不能据此推断会话是活的（D-48）
             skipped += 1
+            consecutive = 0
     return SyncOutcome(period=period, ok=ok, failed=failed, skipped=skipped,
-                       total=len(codes), first_error=first_error)
+                       total=len(codes), first_error=first_error, aborted=aborted)
 
 
 # ---------------- 每日流水线（Task 16） ----------------
@@ -619,19 +783,66 @@ def _csv(text: str | None) -> tuple[str, ...]:
     return tuple(t.strip() for t in str(text).split(",") if t.strip())
 
 
+def _adjust_mix_warning(conn, period: str, src) -> str:
+    """分钟线按 **raw** 落库，而日线多半还是 baostock **前复权** —— 同一只票两个口径。
+
+    这不影响**帧内**的递归（递归只用一张 bar 帧，口径自洽），但会让「5 分钟级别」与
+    「日线级别」两套结构建在不同的价格序列上，跨周期比较失真；也正好踩在 D-19
+    「跨口径拼接会在除权日长出假跳空」那条上。
+
+    要统一就按 D-19 的顺序：**先 `factors` 反推因子表**（切源之后再也反推不出来），
+    再用 `tdx --period day` 把日线也换成 raw。`adjust == "3"` 是申万行业板块
+    （指数没有除权，不复权就是它的正确口径），不算混用。
+    """
+    from .data import tdx          # `_cmd_tdx` 里也是局部 import，这里同样局部取
+
+    if str(period) not in tdx.MINUTE_PERIODS:
+        return ""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM sync_state "
+        "WHERE period='day' AND adjust NOT IN ('raw', '3')"
+    ).fetchone()
+    n = int(row["n"]) if row is not None else 0
+    if not n:
+        return ""
+    return (
+        f"  ⚠ 口径混用：{period} 分钟线是 **raw（不复权）**，而库里 {n} 条日线仍是 "
+        f"baostock **前复权**（adjust=2）。\n"
+        f"    帧内递归不受影响（只用一张 bar 帧），但跨周期比较会失真。要统一按 D-19 的顺序：\n"
+        f"      1) python -m chanlun factors                    # 先反推因子表（切源后再也反推不出来）\n"
+        f"      2) python -m chanlun tdx --period day --src {src}"
+    )
+
+
 def _cmd_tdx(args, cfg: Config) -> int:
     """把 vipdoc 整包导进本地库（口径 raw）。北交所改号合并与逐市场最新日期都要看得见。"""
     from .data import tdx
 
-    if args.period != "day":
-        print(
-            f"通达信：官方只公开日线整包（hsjday.zip），没有公开的分钟整包，"
-            f"因此 --period {args.period} 无法导入；分钟数据请走 baostock。",
-            file=sys.stderr,
-        )
-        return 2
-
     src = Path(args.src)
+    if args.period != "day":
+        # 分钟线**没有官方整包**（`--download` 那条路走不通），但客户端自带的
+        # 「盘后数据下载」会把分钟线落成本地 vipdoc 目录，`--src` 指向它即可。
+        folder = src / "sh" / tdx.FOLDERS.get(args.period, "?")
+        if args.download:
+            print(
+                f"通达信：官方只公开日线整包（hsjday.zip），没有公开的分钟整包，"
+                f"因此 --period {args.period} 不能配合 --download。"
+                f"分钟线请用**通达信 iMac 版**（{tdx.MAC_CLIENT_URL}）的"
+                f"「盘后数据下载」落到本地，再用 --src 指向那个 vipdoc 目录导入。",
+                file=sys.stderr,
+            )
+            return 2
+        if not folder.exists():
+            print(
+                f"通达信：{folder} 不存在。\n"
+                f"  --period {args.period} 需要本地 vipdoc 的分钟目录（{tdx.FOLDERS[args.period]}），"
+                f"它由客户端「盘后数据下载」生成。\n"
+                f"  通达信官方 iMac 版（支持 Intel/M1–M4）：{tdx.MAC_CLIENT_URL}\n"
+                f"  装好后在客户端里下载分钟数据，再把 --src 指向它的 vipdoc 目录。",
+                file=sys.stderr,
+            )
+            return 2
+
     if args.download:
         zip_path = tdx.fetch_package(src)
         print(f"整包已就位：{zip_path}")
@@ -642,7 +853,12 @@ def _cmd_tdx(args, cfg: Config) -> int:
     codes = _csv(args.codes) or None
     conn = None if args.dry_run else meta.init()
     try:
-        stats = tdx.import_dir(src, conn, args.period, markets, kinds, codes, args.dry_run)
+        stats = tdx.import_dir(
+            src, conn, args.period, markets, kinds, codes, args.dry_run,
+            allow_unverified=bool(args.allow_unverified),
+        )
+        # 口径告警要在 conn 关掉之前取（它要查 sync_state）。
+        mix = _adjust_mix_warning(conn, args.period, src) if conn is not None else ""
     finally:
         if conn is not None:
             conn.close()
@@ -652,6 +868,22 @@ def _cmd_tdx(args, cfg: Config) -> int:
         f"空文件 {stats.skipped_empty} 改号合并 {stats.skipped_alias} "
         f"共 {stats.rows} 行（口径 raw）"
     )
+    if str(args.period) in tdx.MINUTE_PERIODS:
+        # 分钟线多一道门：不交叉验证就不落库。这里把两个数分开报 ——
+        # 「解不出来」与「解出来但对不上」是两回事，混在一个「失败」里没法排查。
+        print(
+            f"  分钟线交叉验证：通过 {stats.verified} 只、"
+            f"未通过（未落库）{stats.unverified} 只"
+        )
+        if stats.unverified and not args.allow_unverified:
+            print(
+                "  未通过的那些**没有写入**。先确认 vipdoc 里有没有同口径的 "
+                "`{market}/lday/*.day`（raw 日线）当参照；确实要强行导入加 "
+                "--allow-unverified，但那等于放弃「不写没核对过的解码」这条约束。",
+                file=sys.stderr,
+            )
+        if stats.ok and not args.dry_run and mix:
+            print(mix, file=sys.stderr)
     newest = dict(stats.newest_by_market)
     top = max(newest.values(), default="")
     for market in markets:
@@ -662,7 +894,9 @@ def _cmd_tdx(args, cfg: Config) -> int:
             continue
         stale = ""
         if top:
-            gap = (dt.date.fromisoformat(top) - dt.date.fromisoformat(end)).days
+            # 分钟线的 `ts` 是 `YYYY-MM-DD HH:MM`，日线是 `YYYY-MM-DD` ——
+            # 比较「落后多少天」只取日期部分，否则 `fromisoformat` 会直接抛。
+            gap = (dt.date.fromisoformat(top[:10]) - dt.date.fromisoformat(end[:10])).days
             if gap > TDX_STALE_DAYS:
                 stale = f"（陈旧）落后最新 {gap} 天"
         print(f"  最新 {name} {end}{stale}")
@@ -719,6 +953,62 @@ def _cmd_factors(args, cfg: Config) -> int:
         if res.status not in ("written", "dry_run"):
             print(f"  {res.status} {res.code}: {res.note}", file=sys.stderr)
     return 0 if written or args.dry_run else 1
+
+
+def _cmd_industry(args, cfg: Config) -> int:
+    """列出申万行业板块；`--check` 时联网把内置清单和实测列表对一遍。
+
+    **清单内置、不落库**（D-44）：行业分类几年才调一次，而搜索与取名是热路径。
+    代价是它会过期，所以 `--check` 必须能把「过期」变成一句能看懂的话 + 非 0 退出码 ——
+    否则清单只会安静地烂掉。**只报差异，不改清单**：申万真的调整了分类，还是
+    数据商换了接口，这两件事要人来分辨。
+    """
+    from .data import industry
+
+    level = str(getattr(args, "level", "") or "").strip()
+    boards = industry.all_boards(level)
+    if args.json:
+        payload: dict[str, Any] = {
+            "checked_on": industry.CHECKED_ON,
+            "count": len(boards),
+            "items": [b.as_dict() for b in boards],
+        }
+    if not args.check:
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
+        for lv in (industry.LEVELS if not level else (level,)):
+            group = [b for b in boards if b.level == lv]
+            print(f"{industry.LEVEL_NAMES[lv]}（{len(group)} 个，清单核对于 {industry.CHECKED_ON}）:")
+            for b in group:
+                print(f"  {b.code}  {b.name}")
+        return 0
+
+    # --check：联网核对。级别缺省两个都查 —— 只查一个级别很容易被误当成「清单没问题」。
+    levels = (level,) if level else industry.LEVELS
+    bad = 0
+    report: dict[str, Any] = {"checked_on": industry.CHECKED_ON, "levels": {}}
+    for lv in levels:
+        try:
+            live = industry.fetch_live(lv)
+        except DataSourceError as exc:
+            # 联网失败**不算清单不一致**，但必须报出来：否则「拉不到」会被读成「没问题」。
+            print(f"{industry.LEVEL_NAMES[lv]}: 核对失败 —— {exc}", file=sys.stderr)
+            report["levels"][lv] = {"error": str(exc)}
+            bad += 1
+            continue
+        diffs = industry.diff(live)
+        report["levels"][lv] = {"live": len(live), "diffs": diffs}
+        if diffs:
+            bad += 1
+            print(f"{industry.LEVEL_NAMES[lv]}: 实测 {len(live)} 个，与内置清单不一致：")
+            for line in diffs:
+                print(f"  {line}")
+        else:
+            print(f"{industry.LEVEL_NAMES[lv]}: 实测 {len(live)} 个，与内置清单一致。")
+    if args.json:
+        print(json.dumps({**payload, "check": report}, ensure_ascii=False, indent=2))
+    return 1 if bad else 0
 
 
 def _cmd_daily(args, cfg: Config) -> int:
@@ -794,13 +1084,18 @@ def _run_daily(args, cfg: Config, conn: sqlite3.Connection) -> DailyReport:
 
 
 def _daily_exit_code(rep: DailyReport) -> int:
-    """只有「数据一条都没进来」才算失败。
+    """只有「数据一条都没进来」或者「整批停批」才算失败。
 
     非交易日、dry-run、以及部分周期失败都返回 0：定时任务的价值在于**持续记录**，
     动不动就非 0 退出只会让人对红色告警麻木。
+
+    停批是例外：它意味着这一天的数据**大面积缺失**，而 launchd 只记退出码 ——
+    退出码是这条链路唯一能被外部看见的信号。
     """
     if rep.dry_run or not rep.trading_day:
         return 0
+    if any(o.aborted for o in rep.sync):
+        return 1
     if rep.sync and all(o.total > 0 and o.ok == 0 and o.failed > 0 for o in rep.sync):
         return 1
     return 0
@@ -1010,7 +1305,14 @@ def _is_minute_period(period: str) -> bool:
 
 def _codes_for_period(conn: sqlite3.Connection, period: str, codes: Sequence[str],
                       *, explicit: bool) -> list[str]:
-    """按周期给出**取数范围**：日线=给定范围；分钟=自选池（除非显式指定了 `--codes`）。"""
+    """按周期给出**取数范围**：日线=给定范围；分钟=自选池（除非显式指定了 `--codes`）。
+
+    分钟只跑自选池，是因为**全市场跑不起**：baostock 5 分钟实测 85 秒/只。
+    2026-10-13 试过把「全部指数与申万板块」也纳进来（它们走东财、快到几乎不花时间），
+    但核对后发现**申万根本没有分钟源**（东财的 `90.` 前缀不是申万，见 D-52 被否决方案 5），
+    而 A 股指数**自选池里本来就都有** —— 纳进来只是把范围从 13 变成 13 再叠 155 条
+    无意义的「跳过」，于是回退。真要扩容得先解决申万的源。
+    """
     if not _is_minute_period(period) or explicit:
         return [str(c) for c in codes]
     return [str(r["code"]) for r in meta.get_watchlist(conn)]
@@ -1038,8 +1340,35 @@ def _resolve_codes(args) -> list[str]:
         # 保留原始写法（可能带 sh./sz. 前缀），标准化放到同步循环内，
         # 让无法识别的代码走「单只失败」路径
         return [raw.strip() for raw in str(args.codes).split(",") if raw.strip()]
-    # 全市场：品种表含退市股，避免幸存者偏差
-    return [s.code for s in build_universe()]
+    # 全市场 + 指数 + 申万行业（后两者不在 universe 里，见 _market_scope）
+    return _market_scope()
+
+
+def _market_scope() -> list[str]:
+    """`daily` 全市场模式下的同步范围：A 股股票 + 指数 + 申万行业板块。
+
+    **为什么不能只返回 `universe`** —— `universe` 只收 A 股股票（5471 只），
+    指数与行业板块**不在里面**，于是 `daily` 从来不同步它们。实测
+    2026-10-13：申万 155 个里 **144 个停在 2026-09-30**、
+    `sh.000905` / `sh.000688` 停在 09-30、`hk.hsi` / `hk.hstech` 停在 10-05。
+    这就是 D-49 登记的「定时任务对 7 个 A 股指数与 4 个港美自选是零覆盖」。
+
+    三类的数据源不同（A 股股票与 A 股指数走 baostock，申万走腾讯板块接口，
+    hk/us 走腾讯/新浪），但 `sync` 已按市场分发，这里只需把代码给全。
+    """
+    from .data import industry as industry_mod
+
+    codes = [s.code for s in build_universe()]
+    codes += [c for c, _ in meta.DEFAULT_WATCHLIST]
+    codes += [b.code for b in industry_mod.all_boards()]
+    # 去重保序：重复代码会让同一只被同步两遍（多一次登录/一次请求）。
+    seen: set[str] = set()
+    out: list[str] = []
+    for c in codes:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
 
 
 def _start_for(
@@ -1063,6 +1392,261 @@ def _record(
     error: str | None,
 ) -> None:
     meta.set_sync(conn, code, period, start_ts, end_ts, rows, adjust, error=error)
+
+
+def _add_bars_parser(sub) -> argparse.ArgumentParser:
+    """导出某只票某个周期的行情，**三种复权格式任选**。
+
+    存在的理由：三种口径在页面（复权按钮）与接口（`?adjust=`）上都有，但**命令行
+    没有出口** —— 而「把三份不同口径的数据交给别的工具」正是命令行该干的事。
+    它同时是「验证三种格式真的不同」最直接的手段。
+    """
+    p = sub.add_parser("bars", help="导出行情（raw/qfq/hfq 三种复权格式任选）")
+    p.add_argument("--code", required=True, help="落库键，如 sh.600030 / 600030")
+    p.add_argument("--period", default="day", choices=list(PERIODS), help="周期（缺省 day）")
+    p.add_argument(
+        "--adjust", default="qfq", choices=("raw", "qfq", "hfq"),
+        help="复权格式：raw 不复权 / qfq 前复权 / hfq 后复权（缺省 qfq，与页面一致）",
+    )
+    p.add_argument("--limit", type=int, default=None, help="只输出最后 N 根（缺省全量）")
+    p.add_argument("--csv", action="store_true", help="输出 CSV（默认给人看的表格）")
+    p.add_argument("--out", default=None, help="写到文件（缺省打到 stdout）")
+    return p
+
+
+def _cmd_bars(args, cfg: Config) -> int:
+    """读 + 复权 + 输出。**复权逻辑复用页面那一份实现**，不在这里再写一遍。"""
+    import sys as _sys
+
+    from .data import periods as periods_mod
+    from .web.api import _period_frame as period_frame
+
+    code = str(args.code).strip()
+    period = str(args.period)
+    if not store.exists(code, periods_mod.base_period(period)):
+        print(f"{code}：{period} 周期本地没有数据。"
+              f"先跑 `python -m chanlun sync --period {period} --codes {code}`", file=_sys.stderr)
+        return 2
+    df, effective, note, _fp = period_frame(
+        code, period, adjust=str(args.adjust), meta_db=cfg.data.meta_db
+    )
+    if len(df) == 0:
+        print(f"{code}：{period} 的行情文件是空的", file=_sys.stderr)
+        return 2
+    if args.limit:
+        df = df.tail(int(args.limit)).reset_index(drop=True)
+
+    if args.csv:
+        body = df.to_csv(index=False)
+    else:
+        body = df.to_string(index=False)
+    header = (
+        f"# {code} {period} 复权={effective}（请求 {args.adjust}）共 {len(df)} 根\n"
+        f"# {note}\n"
+    )
+    if args.out:
+        Path(args.out).write_text(header + body, encoding="utf-8")
+        print(f"已写 {args.out}（{len(df)} 根，口径 {effective}）")
+    else:
+        print(header + body, end="" if body.endswith("\n") else "\n")
+    return 0
+
+
+def _add_signal_trail_parser(sub) -> argparse.ArgumentParser:
+    """**信号留痕**：当时标过、后来被走势证伪的买卖点。
+
+    用户要的：买卖点是需要后续走势确认的**当下判断**；未确认的那些如果后来被证伪了，
+    不能悄悄从图上消失，要留一条记录说「这里当时标过，从某一刻起不再成立」。
+    """
+    p = sub.add_parser(
+        "signal-trail",
+        help="列出买卖点的存亡履历（存活 / **被证伪**，带「证伪于」的时刻）")
+    p.add_argument("--code", required=True, help="落库键，如 600030 / sh.000300")
+    p.add_argument("--period", default="day", choices=list(PERIODS), help="周期（缺省 day）")
+    p.add_argument(
+        "--step", type=int, default=200,
+        help="每隔多少根 bar 算一次 as-of 快照（缺省 200）。**这就是留痕的分辨率**："
+             "越小越准、越慢。2.2 万根的 1 分钟序列取 200 约 110 次全算、3 秒左右",
+    )
+    p.add_argument("--all", action="store_true", help="连存活的也列出来（缺省只列被证伪的）")
+    p.add_argument("--json", action="store_true", help="输出 JSON，便于脚本消费")
+    return p
+
+
+def _cmd_signal_trail(args, cfg: Config) -> int:
+    from .chan.audit import trail
+    from .chan.types import to_jsonable
+
+    try:
+        tr = trail(str(args.code), str(args.period), step=int(args.step))
+    except ValueError as exc:
+        print(str(exc))
+        return 2
+
+    if args.json:
+        print(json.dumps({
+            "code": tr.code, "period": tr.period, "bars": tr.bars, "step": tr.step,
+            "checkpoints": len(tr.checkpoints),
+            "entries": to_jsonable(tr.entries),
+        }, ensure_ascii=False, indent=2, default=str))
+        return 0
+
+    print(f"{tr.code}  {tr.period} 周期  {tr.bars} 根，{len(tr.checkpoints)} 个检查点"
+          f"（每 {tr.step} 根算一次）")
+    print(f"  信号 {len(tr.entries)} 条：存活 {len(tr.alive)}、**被证伪 {len(tr.falsified)}**")
+    show = list(tr.entries) if args.all else list(tr.falsified)
+    if not show:
+        print("\n  没有被证伪的信号。（注意：这不等于「信号从没错过」——"
+              "留痕的分辨率由 --step 决定，调小会看到更多）")
+        return 0
+    print(f"\n  {'标注':<6}{'类型':<5}{'信号时刻':<19}{'首次标注':<19}"
+          f"{'最后成立':<19}{'证伪于':<19}价格")
+    for e in show:
+        print(f"  {e.label:<6}{e.kind:<5}{e.ts:<19}{e.first_seen:<19}"
+              f"{e.last_seen:<19}{(e.falsified_at or '—'):<19}{e.price:.3f}")
+    print("\n  「被证伪」= **把后来的 bar 也纳入计算后，这个买卖点不再成立**；")
+    print("  不是「价格走反了」（那是策略问题），而是结构本身重画后它不存在了。")
+    return 0
+
+
+def _add_levels_parser(sub) -> argparse.ArgumentParser:
+    """级别递归（第 84 课的 `f2(an)=an+1`）。"""
+    p = sub.add_parser(
+        "levels",
+        help="打印一只票的**级别递归**结构：线段 → 各级中枢 / 走势类型（D-51）")
+    p.add_argument(
+        "--codes", required=True,
+        help="逗号分隔代码（落库键，如 sh.600030）；只读本地数据，不联网")
+    p.add_argument(
+        "--period", default="day", choices=list(PERIODS),
+        help="基准显微镜周期（缺省 day）。递归**从这一级的线段出发**，"
+             "再逐级上推；注意级别名只是相对基准的递归深度标签，"
+             "不是「这张图对应的中枢级别」（第 63 课）")
+    p.add_argument(
+        "--max-depth", type=int, default=MAX_DEPTH,
+        help=f"最多升几级（缺省 {MAX_DEPTH}）；正常终止是「某一级构不出中枢」")
+    p.add_argument("--verbose", action="store_true", help="逐条列出中枢与走势类型")
+    p.add_argument("--json", action="store_true", help="输出 JSON，便于脚本消费")
+    p.add_argument(
+        "--adjust", default="qfq", choices=("raw", "qfq", "hfq"),
+        help="复权口径（默认 qfq，与页面/接口一致）。**它决定图上是什么价，"
+             "因而决定线段、中枢与递归的产出** —— 换口径结果会变，这是有意的。"
+             "没有因子表的票只有落库那一态，会如实说明。",
+    )
+    return p
+
+
+def _cmd_levels(args, cfg: Config) -> int:
+    """打印级别递归结构。**只读**：不联网、不落库、不改任何判据。
+
+    这个子命令存在的理由：在它之前，真递归只能从 Python 里调
+    `chan.recursion.build_levels`，命令行没有任何出口可以人工核对 ——
+    而「人工看一眼划分对不对」正是这类结构工具最主要的检查方式。
+    """
+    from .chan.engine import ChanEngine
+    from .chan.recursion import build_levels, validate_levels
+    from .chan.types import to_jsonable
+
+    period = str(args.period)
+    codes = [c.strip() for c in str(args.codes).split(",") if c.strip()]
+    if not codes:
+        print("--codes 是空的")
+        return 2
+
+    # 口径是递归的**前提**（换口径 → 换价格 → 换线段 → 换中枢），所以它必须显示出来。
+    # 复权逻辑走**页面/接口那一份实现**，不在这里再写一遍 —— 两份实现的话命令行与页面
+    # 会给出不同的结构，而且没人会发现。
+    from .data import periods as periods_mod
+    from .web.api import _period_frame as period_frame
+
+    # `_period_frame` 要的是**库文件路径**，不是连接：它内部会 `meta.init(meta_db)`
+    # 再 `close()` —— 传一个长期连接进去会被它关掉（实测报「Cannot operate on a
+    # closed database」）。页面那边传的也是路径。
+    meta_db = cfg.data.meta_db
+    return _levels_loop(args, codes, period, period_frame, periods_mod,
+                        ChanEngine, build_levels, validate_levels, to_jsonable, meta_db)
+
+
+def _levels_loop(args, codes, period, period_frame, periods_mod,
+                 ChanEngine, build_levels, validate_levels, to_jsonable, meta_db) -> int:
+    rc = 0
+    for i, code in enumerate(codes):
+        if i:
+            print()
+        if not store.exists(code, periods_mod.base_period(period)):
+            print(f"{code}：{period} 周期本地没有数据。"
+                  f"先跑 `python -m chanlun sync --period {period} --codes {code}`")
+            rc = 1
+            continue
+        bars, effective, note, _fp = period_frame(
+            code, period, adjust=str(args.adjust), meta_db=meta_db
+        )
+        if len(bars) == 0:
+            print(f"{code}：{period} 的行情文件是空的（可能整份都是无效行）")
+            rc = 1
+            continue
+
+        eng = ChanEngine(code, period)
+        snap = eng.full(bars)
+        levels = build_levels(snap.segments, bars=bars,
+                              base_level=period, max_depth=args.max_depth)
+        if not args.json:
+            print(f"  复权口径：{effective}   {note}")
+        problems = validate_levels(levels)
+
+        if args.json:
+            print(json.dumps(
+                {"code": code, "period": period,
+                 "segments": len(snap.segments),
+                 "levels": to_jsonable(levels),
+                 "problems": problems},
+                ensure_ascii=False, indent=2))
+        else:
+            _print_levels(code, period, snap, bars, levels, verbose=args.verbose)
+
+        if problems:
+            print(f"\n  递归不变量违规 {len(problems)} 条（实现或调用方有问题）：")
+            for prob in problems:
+                print(f"    - {prob}")
+            rc = 1
+    return rc
+
+
+def _print_levels(code, period, snap, bars, levels, *, verbose: bool) -> None:
+    first, last = str(bars["ts"].iloc[0]), str(bars["ts"].iloc[-1])
+    print(f"{code}   基准显微镜={period}   bar={len(bars)} 根（{first} ~ {last}）")
+    print(f"  L0 输入：{len(snap.segments)} 根线段"
+          f"（已确认 {len(snap.confirmed_segments)} 根）")
+    print()
+    print(f"  {'级别':<8}{'深度':>4}{'中枢':>6}{'走势类型':>9}   来源")
+    for i, lv in enumerate(levels):
+        if lv.depth == 0:
+            src = "线段直接构成（f1）"
+        else:
+            src = f"由 {len(levels[i - 1].trends)} 个 {levels[i - 1].level} 级走势类型上推（f2）"
+        print(f"  {lv.level:<8}{lv.depth:>4}{len(lv.pivots):>6}{len(lv.trends):>9}   {src}")
+
+    last_lv = levels[-1]
+    if len(last_lv.trends) < 3:
+        print(f"\n  上推停止在 {last_lv.level}：只有 {len(last_lv.trends)} 个走势类型，"
+              f"不足 3 个，构不出再上一级中枢。")
+
+    if not verbose:
+        print("\n  （加 --verbose 逐条列出中枢与走势类型；--json 给脚本用）")
+        return
+
+    for lv in levels:
+        print(f"\n  ── {lv.level} 级（depth={lv.depth}）")
+        for p in lv.pivots:
+            print(f"    P{p.idx:<3} ZD={p.zd:<12.4f} ZG={p.zg:<12.4f} "
+                  f"DD={p.dd:<12.4f} GG={p.gg:<12.4f} "
+                  f"{p.start_ts} ~ {p.end_ts}  {p.status.value}"
+                  + ("  [段数到顶]" if p.capped else ""))
+        for t in lv.trends:
+            print(f"    T{t.idx:<3} {t.kind.value:<14} dir={t.direction:+d} "
+                  f"中枢[{t.start_idx}..{t.end_idx}]×{t.pivot_count} "
+                  f"区间[{t.low:.4f}, {t.high:.4f}] "
+                  f"{t.start_ts} ~ {t.end_ts}  {t.status.value}")
 
 
 if __name__ == "__main__":
